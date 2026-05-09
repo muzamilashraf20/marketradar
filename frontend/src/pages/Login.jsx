@@ -17,7 +17,7 @@ export default function Login() {
       const endpoint = isLogin ? '/api/login' : '/api/register'
       const body = isLogin ? { email, password } : { email, password, name }
 
-      const res = await fetch(`http://localhost:5000${endpoint}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
