@@ -8,7 +8,10 @@ dotenv.config()
 
 const app = express()
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:5174'],
+  app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:5174', 'https://marketradar-taupe.vercel.app'],
+  credentials: true
+})),
   credentials: true
 }))
 app.use(express.json())
