@@ -87,27 +87,28 @@ export default function LandingPage() {
         </div>
 
         <div style={{ display: 'flex', gap: '2rem', alignItems: 'center' }}>
-          {['Features', 'Pricing', 'About'].map(item => (
-            <span key={item} style={{ fontSize: '13px', color: '#8A9BB0', cursor: 'pointer', transition: 'color 0.2s' }}
+          {[
+            { label: 'Features', id: 'features' },
+            { label: 'Pricing', id: 'pricing' },
+            { label: 'About', id: 'about' },
+          ].map(item => (
+            <span key={item.label}
+              style={{ fontSize: '13px', color: '#8A9BB0', cursor: 'pointer', transition: 'color 0.2s' }}
               onMouseEnter={e => e.target.style.color = '#F0F4F8'}
               onMouseLeave={e => e.target.style.color = '#8A9BB0'}
-            >{item}</span>
+              onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth' })}
+            >{item.label}</span>
           ))}
-          <button onClick={() => navigate('/')} style={{
-            padding: '8px 20px',
-            borderRadius: '8px',
+          <button onClick={() => navigate('/login')} style={{
+            padding: '8px 20px', borderRadius: '8px',
             border: '1px solid #00D4AA',
             background: 'rgba(0,212,170,0.1)',
-            color: '#00D4AA',
-            fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+            color: '#00D4AA', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
           }}>Sign In</button>
-          <button onClick={() => navigate('/')} style={{
-            padding: '8px 20px',
-            borderRadius: '8px',
-            border: 'none',
-            background: '#00D4AA',
-            color: '#000',
-            fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+          <button onClick={() => navigate('/login')} style={{
+            padding: '8px 20px', borderRadius: '8px',
+            border: 'none', background: '#00D4AA',
+            color: '#000', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
           }}>Get Access →</button>
         </div>
       </nav>
@@ -117,12 +118,9 @@ export default function LandingPage() {
         minHeight: '100vh',
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
-        textAlign: 'center',
-        padding: '0 2rem',
-        position: 'relative',
-        overflow: 'hidden',
+        textAlign: 'center', padding: '0 2rem',
+        position: 'relative', overflow: 'hidden',
       }}>
-        {/* Glow BG */}
         <div style={{
           position: 'absolute', top: '20%', left: '50%',
           transform: `translateX(-50%) translateY(${scrollY * 0.3}px)`,
@@ -130,14 +128,7 @@ export default function LandingPage() {
           background: 'radial-gradient(circle, rgba(0,212,170,0.08) 0%, transparent 70%)',
           pointerEvents: 'none',
         }} />
-        <div style={{
-          position: 'absolute', top: '30%', left: '20%',
-          width: '300px', height: '300px',
-          background: 'radial-gradient(circle, rgba(77,166,255,0.06) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
 
-        {/* Badge */}
         <div style={{
           display: 'inline-flex', alignItems: 'center', gap: '8px',
           padding: '6px 16px', borderRadius: '20px',
@@ -154,19 +145,16 @@ export default function LandingPage() {
           LIVE — Real-time market intelligence
         </div>
 
-        {/* Headline */}
         <h1 style={{
           fontSize: 'clamp(2.5rem, 6vw, 5rem)',
           fontWeight: 700, lineHeight: 1.1,
-          marginBottom: '1.5rem',
-          maxWidth: '900px',
+          marginBottom: '1.5rem', maxWidth: '900px',
           transform: `translateY(${scrollY * 0.1}px)`,
         }}>
           See What The Market Is{' '}
           <span style={{
             background: 'linear-gradient(135deg, #00D4AA, #4DA6FF)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
           }}>About To Do</span>
           {' '}Before Most Traders Even React
         </h1>
@@ -179,35 +167,26 @@ export default function LandingPage() {
           MarketRadar turns macro news, COT data, and market signals into clear trade direction instantly. No economics background needed.
         </p>
 
-        {/* CTA Buttons */}
         <div style={{ display: 'flex', gap: '12px', marginBottom: '4rem' }}>
-          <button onClick={() => navigate('/')} style={{
+          <button onClick={() => navigate('/login')} style={{
             padding: '14px 32px', borderRadius: '10px',
             border: 'none', background: '#00D4AA',
             color: '#000', fontSize: '15px', fontWeight: 700, cursor: 'pointer',
-            boxShadow: '0 0 30px rgba(0,212,170,0.3)',
-            transition: 'all 0.2s',
+            boxShadow: '0 0 30px rgba(0,212,170,0.3)', transition: 'all 0.2s',
           }}
             onMouseEnter={e => e.target.style.transform = 'scale(1.05)'}
             onMouseLeave={e => e.target.style.transform = 'scale(1)'}
-          >
-            Get Access Now →
-          </button>
-          <button style={{
-            padding: '14px 32px', borderRadius: '10px',
-            border: '1px solid rgba(255,255,255,0.12)',
-            background: 'transparent',
-            color: '#F0F4F8', fontSize: '15px', fontWeight: 600, cursor: 'pointer',
-            transition: 'all 0.2s',
-          }}
-            onMouseEnter={e => e.target.style.borderColor = 'rgba(255,255,255,0.3)'}
-            onMouseLeave={e => e.target.style.borderColor = 'rgba(255,255,255,0.12)'}
-          >
-            View Demo
-          </button>
+          >Get Access Now →</button>
+          <button
+            onClick={() => document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' })}
+            style={{
+              padding: '14px 32px', borderRadius: '10px',
+              border: '1px solid rgba(255,255,255,0.12)',
+              background: 'transparent',
+              color: '#F0F4F8', fontSize: '15px', fontWeight: 600, cursor: 'pointer',
+            }}>View Demo</button>
         </div>
 
-        {/* Stats */}
         <div style={{ display: 'flex', gap: '3rem', flexWrap: 'wrap', justifyContent: 'center' }}>
           {STATS.map(stat => (
             <div key={stat.label} style={{ textAlign: 'center' }}>
@@ -227,14 +206,12 @@ export default function LandingPage() {
         overflow: 'hidden',
         borderTop: '1px solid rgba(255,255,255,0.06)',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
-        padding: '12px 0',
-        background: 'rgba(255,255,255,0.02)',
+        padding: '12px 0', background: 'rgba(255,255,255,0.02)',
       }}>
         <div style={{
           display: 'flex', gap: '3rem',
           transform: `translateX(${tickerPos % 800}px)`,
-          whiteSpace: 'nowrap',
-          transition: 'none',
+          whiteSpace: 'nowrap', transition: 'none',
         }}>
           {[...TICKER_ITEMS, ...TICKER_ITEMS, ...TICKER_ITEMS].map((item, i) => (
             <span key={i} style={{
@@ -264,7 +241,7 @@ export default function LandingPage() {
       </section>
 
       {/* Features Grid */}
-      <section style={{ padding: '4rem 2rem 8rem', maxWidth: '1100px', margin: '0 auto' }}>
+      <section id="features" style={{ padding: '4rem 2rem 8rem', maxWidth: '1100px', margin: '0 auto' }}>
         <AnimatedSection>
           <div style={{ textAlign: 'center', marginBottom: '4rem' }}>
             <div style={{ fontSize: '13px', color: '#00D4AA', letterSpacing: '0.1em', marginBottom: '1rem', fontWeight: 600 }}>
@@ -283,13 +260,10 @@ export default function LandingPage() {
           {FEATURES.map((feature, i) => (
             <AnimatedSection key={feature.title} delay={i * 0.1}>
               <div style={{
-                padding: '1.75rem',
-                background: '#0E1218',
+                padding: '1.75rem', background: '#0E1218',
                 border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: '14px',
-                height: '100%',
-                transition: 'all 0.3s',
-                cursor: 'default',
+                borderRadius: '14px', height: '100%',
+                transition: 'all 0.3s', cursor: 'default',
               }}
                 onMouseEnter={e => {
                   e.currentTarget.style.borderColor = feature.color + '40'
@@ -304,8 +278,7 @@ export default function LandingPage() {
               >
                 <div style={{
                   width: '44px', height: '44px', borderRadius: '10px',
-                  background: `${feature.color}15`,
-                  border: `1px solid ${feature.color}30`,
+                  background: `${feature.color}15`, border: `1px solid ${feature.color}30`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: '20px', marginBottom: '1rem',
                 }}>{feature.icon}</div>
@@ -322,7 +295,7 @@ export default function LandingPage() {
       </section>
 
       {/* Pricing */}
-      <section style={{ padding: '4rem 2rem 8rem', maxWidth: '800px', margin: '0 auto', textAlign: 'center' }}>
+      <section id="pricing" style={{ padding: '4rem 2rem 8rem', maxWidth: '800px', margin: '0 auto', textAlign: 'center' }}>
         <AnimatedSection>
           <div style={{ fontSize: '13px', color: '#00D4AA', letterSpacing: '0.1em', marginBottom: '1rem', fontWeight: 600 }}>
             PRICING
@@ -334,8 +307,7 @@ export default function LandingPage() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             {[
               {
-                name: 'Basic', price: '$29', period: '/month',
-                color: '#4DA6FF',
+                name: 'Basic', price: '$29', period: '/month', color: '#4DA6FF',
                 features: ['Bias Matrix', 'Economic Calendar', 'Session Tracker', 'News Feed'],
               },
               {
@@ -348,8 +320,7 @@ export default function LandingPage() {
                 padding: '2rem',
                 background: plan.popular ? 'rgba(0,212,170,0.06)' : '#0E1218',
                 border: `1px solid ${plan.popular ? 'rgba(0,212,170,0.3)' : 'rgba(255,255,255,0.06)'}`,
-                borderRadius: '16px',
-                position: 'relative',
+                borderRadius: '16px', position: 'relative',
               }}>
                 {plan.popular && (
                   <div style={{
@@ -373,13 +344,12 @@ export default function LandingPage() {
                     </div>
                   ))}
                 </div>
-                <button onClick={() => navigate('/')} style={{
+                <button onClick={() => navigate('/login')} style={{
                   width: '100%', padding: '12px',
                   borderRadius: '8px', border: 'none',
                   background: plan.popular ? '#00D4AA' : 'rgba(255,255,255,0.08)',
                   color: plan.popular ? '#000' : '#F0F4F8',
                   fontSize: '14px', fontWeight: 700, cursor: 'pointer',
-                  transition: 'all 0.2s',
                 }}>
                   Get Started →
                 </button>
@@ -389,10 +359,9 @@ export default function LandingPage() {
         </AnimatedSection>
       </section>
 
-      {/* CTA Final */}
-      <section style={{
-        padding: '6rem 2rem',
-        textAlign: 'center',
+      {/* About / CTA Final */}
+      <section id="about" style={{
+        padding: '6rem 2rem', textAlign: 'center',
         background: 'linear-gradient(180deg, transparent, rgba(0,212,170,0.04))',
         borderTop: '1px solid rgba(255,255,255,0.06)',
       }}>
@@ -406,7 +375,7 @@ export default function LandingPage() {
           <p style={{ fontSize: '17px', color: '#8A9BB0', marginBottom: '2rem' }}>
             Join thousands of traders who see the market clearly.
           </p>
-          <button onClick={() => navigate('/')} style={{
+          <button onClick={() => navigate('/login')} style={{
             padding: '16px 40px', borderRadius: '10px',
             border: 'none', background: '#00D4AA',
             color: '#000', fontSize: '16px', fontWeight: 700, cursor: 'pointer',
@@ -425,7 +394,7 @@ export default function LandingPage() {
         flexWrap: 'wrap', gap: '1rem',
       }}>
         <div style={{ fontWeight: 700, fontSize: '15px', color: '#00D4AA' }}>
-         Market<span style={{ color: '#4A5568' }}>Radar</span>
+          Market<span style={{ color: '#4A5568' }}>Radar</span>
         </div>
         <div style={{ fontSize: '12px', color: '#4A5568' }}>
           © 2025 MarketRadar. Not financial advice.
