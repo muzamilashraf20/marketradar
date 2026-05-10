@@ -117,5 +117,15 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   }
   res.json({ received: true })
 })
-
+app.get('/api/prices', async (req, res) => {
+  const symbols = 'EUR/USD,GBP/USD,USD/JPY,USD/CHF,AUD/USD,NZD/USD,USD/CAD,XAU/USD,BTC/USD,ETH/USD'
+  try {
+    const response = await axios.get(
+      `https://api.twelvedata.com/price?symbol=${symbols}&apikey=${process.env.TWELVEDATA_API_KEY}`
+    )
+    res.json({ success: true, data: response.data })
+  } catch (e) {
+    res.status(500).json({ error: 'Price fetch failed' })
+  }
+})
 app.listen(5000, () => console.log('Backend running on port 5000'))
