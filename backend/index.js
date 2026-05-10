@@ -8,10 +8,7 @@ dotenv.config()
 
 const app = express()
 app.use(cors({
-  app.use(cors({
   origin: ['http://localhost:5173', 'http://localhost:5174', 'https://marketradar-taupe.vercel.app'],
-  credentials: true
-})),
   credentials: true
 }))
 app.use(express.json())
@@ -71,7 +68,7 @@ app.post('/api/checkout', async (req, res) => {
           attributes: {
             checkout_data: {},
             product_options: {
-              redirect_url: 'http://localhost:5173/?payment=success',
+              redirect_url: 'https://marketradar-taupe.vercel.app/?payment=success',
             },
           },
           relationships: {
