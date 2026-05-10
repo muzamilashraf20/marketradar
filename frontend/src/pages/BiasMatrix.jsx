@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 
 const PAIRS_DATA = [
@@ -28,6 +28,18 @@ const TIMEFRAMES = ['Daily', 'Weekly', 'Monthly']
 export default function BiasMatrix() {
   const [activeCategory, setActiveCategory] = useState('All')
   const [activeTF, setActiveTF] = useState('Daily')
+  const [livePrices, setLivePrices] = useState({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/prices`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) setLivePrices(data.data)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
 
   const filtered = activeCategory === 'All'
     ? PAIRS_DATA
@@ -65,6 +77,13 @@ export default function BiasMatrix() {
         ))}
       </div>
 
+      {/* Loading indicator */}
+      {loading && (
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+          🔄 Fetching live prices...
+        </div>
+      )}
+
       {/* Cards Grid */}
       <div style={{
         display: 'grid',
@@ -73,6 +92,7 @@ export default function BiasMatrix() {
       }}>
         {filtered.map(item => {
           const s = BIAS_STYLES[item.bias]
+          const livePrice = livePrices[item.pair]?.price
           return (
             <div key={item.pair} className="card" style={{ padding: '1.25rem' }}>
 
@@ -96,13 +116,19 @@ export default function BiasMatrix() {
                 }}>{item.bias === 'Bullish' ? '▲' : item.bias === 'Bearish' ? '▼' : '—'} {item.bias.toUpperCase()}</span>
               </div>
 
-              {/* Price */}
+              {/* Price — Live ya fallback */}
               <div style={{
                 fontSize: '26px', fontWeight: 700,
                 fontFamily: 'var(--font-mono)',
                 color: 'var(--text-primary)',
                 marginBottom: '8px',
-              }}>{item.price}</div>
+                display: 'flex', alignItems: 'center', gap: '8px'
+              }}>
+                {livePrice || item.price}
+                {livePrice && (
+                  <span style={{ fontSize: '9px', color: '#00D4AA', fontWeight: 600 }}>● LIVE</span>
+                )}
+              </div>
 
               {/* Strength Bar */}
               <div style={{ marginBottom: '10px' }}>
