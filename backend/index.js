@@ -3,7 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
-
+import Anthropic from '@anthropic-ai/sdk'
 dotenv.config()
 
 const app = express()
@@ -128,4 +128,24 @@ app.get('/api/prices', async (req, res) => {
     res.status(500).json({ error: 'Price fetch failed' })
   }
 })
+// ─── Anthropic AI Route ───────────────────────────────────────
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+app.post('/api/ai', async (req, res) => {
+  const { prompt, system } = req.body
+  if (!prompt) return res.status(400).json({ error: 'Prompt required' })
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 1024,
+      system: system || 'You are a financial markets analyst assistant for BiasForge.ai.',
+      messages: [{ role: 'user', content: prompt }],
+    })
+    res.json({ success: true, response: message.content[0].text })
+  } catch (e) {
+    console.error('Anthropic error:', e)
+    res.status(500).json({ error: 'AI request failed' })
+  }
+})
+// ─────────────────────────────────────────────────────────────
 app.listen(5000, () => console.log('Backend running on port 5000'))
