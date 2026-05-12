@@ -1,21 +1,26 @@
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
-import { LogOut, Activity } from 'lucide-react'
+import {
+  LayoutDashboard, TrendingUp, Newspaper, Calendar,
+  ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
+  Settings, LogOut, Activity, X, ChevronRight
+} from 'lucide-react'
 
 const NAV_ITEMS = [
-  { id: 'dashboard',  label: 'Dashboard',     icon: '⬡', path: '/dashboard' },
-  { id: 'bias',       label: 'Bias Matrix',   icon: '◈', path: '/bias' },
-  { id: 'sessions',   label: 'Sessions',      icon: '◷', path: '/sessions' },
-  { id: 'calendar',   label: 'Econ Calendar', icon: '◻', path: '/calendar' },
-  { id: 'cot',        label: 'COT Report',    icon: '◉', path: '/cot' },
-  { id: 'headlines',  label: 'News Feed',     icon: '◈', path: '/news' },
-  { id: 'trump',      label: 'Trump Tracker', icon: '⚑', path: '/trump' },
-  { id: 'pricing',    label: 'Pricing',       icon: '💎', path: '/pricing' },
+  { label: 'Overview',          icon: LayoutDashboard, path: '/dashboard' },
+  { label: 'AI Bias',           icon: TrendingUp,      path: '/bias' },
+  { label: 'Live News',         icon: Newspaper,       path: '/news' },
+  { label: 'Econ Calendar',     icon: Calendar,        path: '/calendar' },
+  { label: 'Prop Firm Mode',    icon: ShieldCheck,     path: '/prop-firm' },
+  { label: 'Event Playbooks',   icon: BookOpen,        path: '/playbooks' },
+  { label: 'COT Report',        icon: PieChart,        path: '/cot' },
+  { label: 'Trump Tracker',     icon: Flag,            path: '/trump' },
 ]
 
-export default function Sidebar() {
-  const location = useLocation()
+export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, logout } = useAuth()
 
   const handleLogout = () => {
@@ -23,162 +28,111 @@ export default function Sidebar() {
     navigate('/login')
   }
 
-  const initial = user?.email?.charAt(0).toUpperCase() || 'U'
-  const displayName = user?.user_metadata?.name || user?.email?.split('@')[0] || 'User'
+  const handleNav = (path) => {
+    navigate(path)
+    onClose?.()
+  }
+
+  const email = user?.email || ''
+  const initial = email.charAt(0).toUpperCase() || 'U'
+  const plan = user?.plan || 'Pro'
 
   return (
-    <aside style={{
-      width: '220px',
-      minHeight: '100vh',
-      background: 'var(--bg-surface)',
-      borderRight: '1px solid var(--border)',
-      display: 'flex',
-      flexDirection: 'column',
-      position: 'fixed',
-      left: 0, top: 0, bottom: 0,
-      zIndex: 100,
-    }}>
+    <div className="w-[240px] h-full bg-[#020617] border-r border-white/10 flex flex-col">
 
       {/* Logo */}
-      <div style={{
-        padding: '1.25rem',
-        borderBottom: '1px solid var(--border)',
-      }}>
+      <div className="px-5 py-5 border-b border-white/10 flex items-center justify-between">
         <div
-          onClick={() => navigate('/dashboard')}
-          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+          className="flex items-center gap-2.5 cursor-pointer"
+          onClick={() => handleNav('/dashboard')}
         >
-          <div style={{
-            width: '32px', height: '32px',
-            borderRadius: '8px',
-            background: 'linear-gradient(135deg, #22d3ee, #10b981)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            <Activity size={16} color="#000" strokeWidth={3} />
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center shrink-0">
+            <Activity size={16} className="text-black" strokeWidth={3} />
           </div>
           <div>
-            <div style={{
-              fontWeight: 800,
-              fontSize: '15px',
-              letterSpacing: '-0.02em',
-              color: '#f0f4f8',
-              lineHeight: 1,
-            }}>
-              Bias<span style={{ color: '#22d3ee' }}>Forge</span>
-              <span style={{ color: '#64748b', fontSize: '11px', fontWeight: 500 }}>.ai</span>
+            <div className="text-sm font-black tracking-tight text-white leading-none">
+              Bias<span className="text-cyan-400">Forge</span>
+              <span className="text-slate-500 text-xs font-medium">.ai</span>
             </div>
-            <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px', letterSpacing: '0.1em' }}>
-              PRO TERMINAL
-            </div>
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/20 mt-0.5 inline-block">
+              {plan}
+            </span>
           </div>
         </div>
+
+        {/* Mobile close */}
+        <button
+          onClick={onClose}
+          className="md:hidden text-slate-500 hover:text-white transition-colors"
+        >
+          <X size={18} />
+        </button>
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: '0.75rem', overflowY: 'auto' }}>
-        {NAV_ITEMS.map(item => {
+      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon
           const isActive = location.pathname === item.path
           return (
             <button
-              key={item.id}
-              onClick={() => navigate(item.path)}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                padding: '9px 12px',
-                borderRadius: 'var(--radius-md)',
-                border: 'none',
-                background: isActive ? 'rgba(34, 211, 238, 0.08)' : 'transparent',
-                color: isActive ? '#22d3ee' : 'var(--text-secondary)',
-                fontFamily: 'var(--font-display)',
-                fontSize: '13px',
-                fontWeight: isActive ? 600 : 400,
-                cursor: 'pointer',
-                marginBottom: '2px',
-                textAlign: 'left',
-                borderLeft: isActive ? '2px solid #22d3ee' : '2px solid transparent',
-                transition: 'all 0.15s ease',
-              }}
+              key={item.path}
+              onClick={() => handleNav(item.path)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 text-left group ${
+                isActive
+                  ? 'bg-cyan-500/10 border-l-2 border-cyan-400 text-white pl-[10px]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5 border-l-2 border-transparent'
+              }`}
             >
-              <span style={{ fontSize: '15px' }}>{item.icon}</span>
-              {item.label}
+              <Icon
+                size={16}
+                className={isActive ? 'text-cyan-400' : 'text-slate-500 group-hover:text-slate-300'}
+              />
+              <span>{item.label}</span>
+              {isActive && (
+                <ChevronRight size={12} className="ml-auto text-cyan-400/60" />
+              )}
             </button>
           )
         })}
       </nav>
 
-      {/* User + Logout */}
-      <div style={{
-        padding: '0.75rem 1rem',
-        borderTop: '1px solid var(--border)',
-      }}>
+      {/* Divider */}
+      <div className="mx-3 border-t border-white/10" />
+
+      {/* Bottom section */}
+      <div className="px-3 py-4 space-y-1">
+
+        {/* Settings */}
+        <button
+          onClick={() => handleNav('/settings')}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 transition-all duration-150"
+        >
+          <Settings size={16} className="text-slate-500" />
+          Settings
+        </button>
+
         {/* User info */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          marginBottom: '8px',
-        }}>
-          <div style={{
-            width: '32px', height: '32px',
-            borderRadius: '50%',
-            background: 'linear-gradient(135deg, #22d3ee, #10b981)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '12px', fontWeight: 700, color: '#000',
-            flexShrink: 0,
-          }}>
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 mt-2">
+          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0">
             {initial}
           </div>
-          <div style={{ overflow: 'hidden' }}>
-            <div style={{
-              fontSize: '12px', fontWeight: 600,
-              color: 'var(--text-primary)',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>
-              {displayName}
-            </div>
-            <div style={{ fontSize: '10px', color: '#22d3ee' }}>PRO</div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-white font-medium truncate">{email}</p>
+            <p className="text-[10px] text-cyan-400">{plan} Plan</p>
           </div>
         </div>
 
-        {/* Logout Button */}
+        {/* Logout */}
         <button
           onClick={handleLogout}
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 12px',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            background: 'transparent',
-            color: 'var(--text-muted)',
-            fontSize: '12px',
-            fontWeight: 500,
-            cursor: 'pointer',
-            transition: 'all 0.15s ease',
-            fontFamily: 'var(--font-display)',
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = 'rgba(255,77,106,0.08)'
-            e.currentTarget.style.color = '#ff4d6a'
-            e.currentTarget.style.borderColor = 'rgba(255,77,106,0.2)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = 'var(--text-muted)'
-            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'
-          }}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-red-400 hover:bg-red-500/5 transition-all duration-150 group"
         >
-          <LogOut size={14} />
+          <LogOut size={16} className="text-slate-500 group-hover:text-red-400" />
           Sign Out
         </button>
-      </div>
 
-    </aside>
+      </div>
+    </div>
   )
 }
