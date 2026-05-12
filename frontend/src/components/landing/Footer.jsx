@@ -7,15 +7,15 @@ const productLinks = [
 ]
 
 const companyLinks = [
-  { label: 'Blog', href: '#' },
-  { label: 'Contact', href: '#' },
-  { label: 'Changelog', href: '#' },
+  { label: 'Blog', href: '/blog' },
+  { label: 'Contact', href: '/contact' },
+  { label: 'Changelog', href: '/changelog' },
 ]
 
 const legalLinks = [
-  { label: 'Terms', href: '#' },
-  { label: 'Privacy', href: '#' },
-  { label: 'Refund Policy', href: '#' },
+  { label: 'Terms', href: '/terms' },
+  { label: 'Privacy', href: '/privacy' },
+  { label: 'Refund Policy', href: '/refund' },
 ]
 
 const socials = [

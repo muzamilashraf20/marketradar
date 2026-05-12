@@ -9,6 +9,12 @@ import Sessions from './pages/Sessions'
 import COTReport from './pages/COTReport'
 import Pricing from './pages/Pricing'
 import Login from './pages/Login'
+import Terms from './pages/Terms'
+import Privacy from './pages/Privacy'
+import Refund from './pages/Refund'
+import Contact from './pages/Contact'
+import Blog from './pages/Blog'
+import Changelog from './pages/Changelog'
 import DashboardLayout from './components/layout/DashboardLayout'
 
 function ComingSoon({ title }) {
@@ -30,9 +36,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Main */}
         <Route path="/landing" element={<LandingPage />} />
         <Route path="/" element={<Dashboard />} />
-        <Route path="/bias" element={<BiasMatrix />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/calendar" element={<EconomicCalendar />} />
         <Route path="/cot" element={<COTReport />} />
@@ -40,6 +46,14 @@ export default function App() {
         <Route path="/trump" element={<TrumpTracker />} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/login" element={<Login />} />
+
+        {/* Footer Pages */}
+        <Route path="/terms" element={<Terms />} />
+        <Route path="/privacy" element={<Privacy />} />
+        <Route path="/refund" element={<Refund />} />
+        <Route path="/contact" element={<Contact />} />
+        <Route path="/blog" element={<Blog />} />
+        <Route path="/changelog" element={<Changelog />} />
       </Routes>
     </BrowserRouter>
   )
