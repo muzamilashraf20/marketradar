@@ -16,6 +16,7 @@ import Contact from './pages/Contact'
 import Blog from './pages/Blog'
 import Changelog from './pages/Changelog'
 import DashboardLayout from './components/layout/DashboardLayout'
+import ProtectedRoute from './components/common/ProtectedRoute'
 
 function ComingSoon({ title }) {
   return (
@@ -36,24 +37,24 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Main */}
+        {/* Public Routes */}
         <Route path="/landing" element={<LandingPage />} />
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/sessions" element={<Sessions />} />
-        <Route path="/calendar" element={<EconomicCalendar />} />
-        <Route path="/cot" element={<COTReport />} />
-        <Route path="/news" element={<NewsFeed />} />
-        <Route path="/trump" element={<TrumpTracker />} />
-        <Route path="/pricing" element={<Pricing />} />
         <Route path="/login" element={<Login />} />
-
-        {/* Footer Pages */}
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/refund" element={<Refund />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/blog" element={<Blog />} />
         <Route path="/changelog" element={<Changelog />} />
+        <Route path="/pricing" element={<Pricing />} />
+
+        {/* Protected Routes */}
+        <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/sessions" element={<ProtectedRoute><Sessions /></ProtectedRoute>} />
+        <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
+        <Route path="/cot" element={<ProtectedRoute><COTReport /></ProtectedRoute>} />
+        <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
+        <Route path="/trump" element={<ProtectedRoute><TrumpTracker /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   )
