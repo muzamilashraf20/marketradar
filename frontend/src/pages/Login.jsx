@@ -1,160 +1,265 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { Eye, EyeOff, Activity } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
   const navigate = useNavigate()
-  const { login } = useAuth()
-  const [isLogin, setIsLogin] = useState(true)
+  const { login, user } = useAuth()
+
+  const [tab, setTab] = useState('signin')
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
+  const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+
+  // Already logged in → redirect
+  useEffect(() => {
+    if (user) navigate('/dashboard', { replace: true })
+  }, [user, navigate])
+
+  const validate = () => {
+    const errors = {}
+    if (tab === 'signup' && !name.trim()) errors.name = 'Name is required'
+    if (!email.trim()) errors.email = 'Email is required'
+    else if (!/\S+@\S+\.\S+/.test(email)) errors.email = 'Enter a valid email'
+    if (!password) errors.password = 'Password is required'
+    else if (password.length < 6) errors.password = 'Password must be at least 6 characters'
+    return errors
+  }
 
   const handleSubmit = async () => {
-    setLoading(true)
     setError('')
-    try {
-      const endpoint = isLogin ? '/api/login' : '/api/register'
-      const body = isLogin ? { email, password } : { email, password, name }
+    const errors = validate()
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      return
+    }
+    setFieldErrors({})
+    setLoading(true)
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
+    try {
+      const endpoint = tab === 'signin' ? '/api/login' : '/api/register'
+      const body = tab === 'signin'
+        ? { email, password }
+        : { email, password, name }
+
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${endpoint}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      )
       const data = await res.json()
 
       if (data.success) {
         login(data.user, data.session)
-        navigate('/')
+        navigate('/dashboard', { replace: true })
       } else {
-        setError(data.error || 'Something went wrong')
+        setError(data.error || 'Something went wrong. Please try again.')
       }
-    } catch (e) {
-      setError('Server error — make sure backend is running')
+    } catch {
+      setError('Cannot connect to server. Please try again later.')
     }
+
     setLoading(false)
   }
 
-  return (
-    <div style={{
-      minHeight: '100vh',
-      background: '#080B10',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: "'Syne', sans-serif",
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      <div style={{
-        position: 'absolute', top: '20%', left: '50%',
-        transform: 'translateX(-50%)',
-        width: '500px', height: '500px',
-        background: 'radial-gradient(circle, rgba(0,212,170,0.06) 0%, transparent 70%)',
-        pointerEvents: 'none',
-      }} />
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') handleSubmit()
+  }
 
-      <div style={{
-        width: '100%', maxWidth: '420px',
-        background: '#0E1218',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '16px',
-        padding: '2.5rem',
-        position: 'relative',
-        zIndex: 1,
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ fontSize: '22px', fontWeight: 700, letterSpacing: '0.08em', marginBottom: '6px' }}>
-            <span style={{ color: '#00D4AA' }}>Bias</span>
-            <span style={{ color: '#8A9BB0' }}>Forge</span>
-            <span style={{ color: '#00D4AA', fontSize: '14px' }}>.ai</span>
+  const switchTab = (t) => {
+    setTab(t)
+    setError('')
+    setFieldErrors({})
+  }
+
+  return (
+    <div className="min-h-screen bg-[#030712] flex flex-col items-center justify-center px-4 py-12">
+
+      {/* Background glow */}
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Back to Landing */}
+      <div className="w-full max-w-md mb-6">
+        <Link
+          to="/landing"
+          className="text-slate-500 hover:text-slate-300 text-sm flex items-center gap-1.5 transition-colors w-fit"
+        >
+          ← Back to Landing
+        </Link>
+      </div>
+
+      {/* Card */}
+      <div className="w-full max-w-md bg-[#0a0f1a] border border-white/10 rounded-2xl p-8 shadow-2xl relative z-10">
+
+        {/* Logo */}
+        <div className="flex items-center gap-2.5 mb-8">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center shrink-0">
+            <Activity size={18} className="text-black" strokeWidth={3} />
           </div>
-          <div style={{ fontSize: '13px', color: '#4A5568' }}>
-            {isLogin ? 'Welcome back — sign in to continue' : 'Create your account'}
-          </div>
+          <span className="text-xl font-black tracking-tight text-white">
+            Bias<span className="text-cyan-400">Forge</span>
+            <span className="text-slate-500 text-sm font-medium">.ai</span>
+          </span>
         </div>
 
-        <div style={{
-          display: 'flex', background: '#141920', borderRadius: '10px',
-          padding: '4px', marginBottom: '1.5rem',
-          border: '1px solid rgba(255,255,255,0.06)',
-        }}>
-          {['Sign In', 'Sign Up'].map((tab, i) => (
-            <button key={tab} onClick={() => { setIsLogin(i === 0); setError('') }} style={{
-              flex: 1, padding: '8px', borderRadius: '7px', border: 'none',
-              background: (i === 0) === isLogin ? '#1E2733' : 'transparent',
-              color: (i === 0) === isLogin ? '#F0F4F8' : '#4A5568',
-              fontSize: '13px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
-            }}>{tab}</button>
+        {/* Tabs */}
+        <div className="flex bg-white/5 rounded-xl p-1 mb-8 border border-white/10">
+          {[
+            { key: 'signin', label: 'Sign In' },
+            { key: 'signup', label: 'Sign Up' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => switchTab(t.key)}
+              className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                tab === t.key
+                  ? 'bg-white/10 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              {t.label}
+            </button>
           ))}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {!isLogin && (
+        {/* Heading */}
+        <div className="mb-6">
+          <h1 className="text-xl font-bold text-white">
+            {tab === 'signin' ? 'Welcome back' : 'Create your account'}
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">
+            {tab === 'signin'
+              ? 'Sign in to access your BiasForge dashboard.'
+              : 'Start your free trial. No credit card required.'}
+          </p>
+        </div>
+
+        {/* Form */}
+        <div className="space-y-4" onKeyDown={handleKeyDown}>
+
+          {/* Name — signup only */}
+          {tab === 'signup' && (
             <div>
-              <label style={{ fontSize: '11px', color: '#8A9BB0', letterSpacing: '0.06em', display: 'block', marginBottom: '6px' }}>FULL NAME</label>
-              <input type="text" value={name} onChange={e => setName(e.target.value)}
+              <label className="text-xs text-slate-400 uppercase tracking-wider mb-1.5 block">
+                Full Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={e => { setName(e.target.value); setFieldErrors(p => ({ ...p, name: '' })) }}
                 placeholder="Your name"
-                style={{ width: '100%', padding: '11px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', background: '#141920', color: '#F0F4F8', fontSize: '14px', outline: 'none', boxSizing: 'border-box', fontFamily: "'Syne', sans-serif" }}
-                onFocus={e => e.target.style.borderColor = '#00D4AA'}
-                onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'}
+                className={`w-full bg-white/5 border rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 transition-colors ${
+                  fieldErrors.name ? 'border-red-500/60' : 'border-white/10'
+                }`}
               />
+              {fieldErrors.name && (
+                <p className="text-red-400 text-xs mt-1">{fieldErrors.name}</p>
+              )}
             </div>
           )}
 
+          {/* Email */}
           <div>
-            <label style={{ fontSize: '11px', color: '#8A9BB0', letterSpacing: '0.06em', display: 'block', marginBottom: '6px' }}>EMAIL</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+            <label className="text-xs text-slate-400 uppercase tracking-wider mb-1.5 block">
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => { setEmail(e.target.value); setFieldErrors(p => ({ ...p, email: '' })) }}
               placeholder="you@example.com"
-              style={{ width: '100%', padding: '11px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', background: '#141920', color: '#F0F4F8', fontSize: '14px', outline: 'none', boxSizing: 'border-box', fontFamily: "'Syne', sans-serif" }}
-              onFocus={e => e.target.style.borderColor = '#00D4AA'}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'}
+              className={`w-full bg-white/5 border rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 transition-colors ${
+                fieldErrors.email ? 'border-red-500/60' : 'border-white/10'
+              }`}
             />
+            {fieldErrors.email && (
+              <p className="text-red-400 text-xs mt-1">{fieldErrors.email}</p>
+            )}
           </div>
 
+          {/* Password */}
           <div>
-            <label style={{ fontSize: '11px', color: '#8A9BB0', letterSpacing: '0.06em', display: 'block', marginBottom: '6px' }}>PASSWORD</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-              placeholder="••••••••"
-              style={{ width: '100%', padding: '11px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)', background: '#141920', color: '#F0F4F8', fontSize: '14px', outline: 'none', boxSizing: 'border-box', fontFamily: "'Syne', sans-serif" }}
-              onFocus={e => e.target.style.borderColor = '#00D4AA'}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'}
-            />
+            <label className="text-xs text-slate-400 uppercase tracking-wider mb-1.5 block">
+              Password
+            </label>
+            <div className="relative">
+              <input
+                type={showPass ? 'text' : 'password'}
+                value={password}
+                onChange={e => { setPassword(e.target.value); setFieldErrors(p => ({ ...p, password: '' })) }}
+                placeholder="••••••••"
+                className={`w-full bg-white/5 border rounded-xl px-4 py-3 pr-12 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 transition-colors ${
+                  fieldErrors.password ? 'border-red-500/60' : 'border-white/10'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass(!showPass)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {fieldErrors.password && (
+              <p className="text-red-400 text-xs mt-1">{fieldErrors.password}</p>
+            )}
           </div>
 
+          {/* Global Error */}
           {error && (
-            <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(255,77,106,0.1)', border: '1px solid rgba(255,77,106,0.25)', color: '#FF4D6A', fontSize: '12px' }}>
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
               {error}
             </div>
           )}
 
-          <button onClick={handleSubmit} disabled={loading} style={{
-            width: '100%', padding: '13px', borderRadius: '8px', border: 'none',
-            background: '#00D4AA', color: '#000', fontSize: '14px', fontWeight: 700,
-            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1,
-            marginTop: '4px', transition: 'all 0.2s', fontFamily: "'Syne', sans-serif",
-          }}>
-            {loading ? 'Please wait...' : isLogin ? 'Sign In →' : 'Create Account →'}
+          {/* Submit */}
+          <button
+            onClick={handleSubmit}
+            disabled={loading}
+            className="w-full py-3.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-bold text-sm transition-all duration-200 mt-2 flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                Please wait...
+              </>
+            ) : (
+              tab === 'signin' ? 'Sign In →' : 'Create Account →'
+            )}
           </button>
+
         </div>
 
-        <div style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '12px', color: '#4A5568' }}>
-          {isLogin ? "Don't have an account? " : "Already have an account? "}
-          <span onClick={() => { setIsLogin(!isLogin); setError('') }}
-            style={{ color: '#00D4AA', cursor: 'pointer', fontWeight: 600 }}>
-            {isLogin ? 'Sign Up' : 'Sign In'}
-          </span>
-        </div>
+        {/* Terms line — signup only */}
+        {tab === 'signup' && (
+          <p className="text-slate-600 text-xs text-center mt-4">
+            By signing up, you agree to our{' '}
+            <Link to="/terms" className="text-slate-400 hover:text-cyan-400 transition-colors">Terms</Link>
+            {' '}and{' '}
+            <Link to="/privacy" className="text-slate-400 hover:text-cyan-400 transition-colors">Privacy Policy</Link>.
+          </p>
+        )}
 
-        <div style={{ textAlign: 'center', marginTop: '1rem', fontSize: '11px', color: '#2D3748' }}>
-          🔒 Secured by Supabase Auth
-        </div>
+        {/* Switch tab */}
+        <p className="text-slate-500 text-sm text-center mt-5">
+          {tab === 'signin' ? "Don't have an account? " : 'Already have an account? '}
+          <button
+            onClick={() => switchTab(tab === 'signin' ? 'signup' : 'signin')}
+            className="text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
+          >
+            {tab === 'signin' ? 'Sign Up' : 'Sign In'}
+          </button>
+        </p>
+
       </div>
-
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&display=swap');`}</style>
     </div>
   )
 }
