@@ -1,4 +1,4 @@
-import express from 'express'
+﻿import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
@@ -20,6 +20,7 @@ const supabase = createClient(
 
 const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
 const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const PLANS = {
   basic_monthly:  { variantId: '1619191', name: 'Basic Monthly' },
@@ -58,7 +59,6 @@ app.post('/api/checkout', async (req, res) => {
   const { planKey } = req.body
   const plan = PLANS[planKey]
   if (!plan) return res.status(400).json({ error: 'Invalid plan' })
-
   try {
     const response = await axios.post(
       'https://api.lemonsqueezy.com/v1/checkouts',
@@ -72,12 +72,8 @@ app.post('/api/checkout', async (req, res) => {
             },
           },
           relationships: {
-            store: {
-              data: { type: 'stores', id: String(LS_STORE_ID) }
-            },
-            variant: {
-              data: { type: 'variants', id: String(plan.variantId) }
-            }
+            store: { data: { type: 'stores', id: String(LS_STORE_ID) } },
+            variant: { data: { type: 'variants', id: String(plan.variantId) } }
           }
         }
       },
@@ -92,7 +88,7 @@ app.post('/api/checkout', async (req, res) => {
     const checkoutUrl = response.data.data.attributes.url
     res.json({ success: true, url: checkoutUrl })
   } catch (e) {
-    console.error('FULL ERROR:', JSON.stringify(e.response?.data, null, 2))
+    console.error('Checkout error:', JSON.stringify(e.response?.data, null, 2))
     res.status(500).json({ error: 'Checkout failed', detail: e.response?.data })
   }
 })
@@ -104,7 +100,6 @@ app.get('/api/plans', (req, res) => {
 app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const event = req.headers['x-event-name']
   const payload = JSON.parse(req.body)
-
   if (event === 'subscription_created' || event === 'order_created') {
     const email = payload.data?.attributes?.user_email
     const variantId = String(payload.data?.attributes?.variant_id)
@@ -117,6 +112,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   }
   res.json({ received: true })
 })
+
 app.get('/api/prices', async (req, res) => {
   const symbols = 'EUR/USD,GBP/USD,USD/JPY,USD/CHF,AUD/USD,NZD/USD,USD/CAD,XAU/USD,BTC/USD,ETH/USD'
   try {
@@ -128,9 +124,8 @@ app.get('/api/prices', async (req, res) => {
     res.status(500).json({ error: 'Price fetch failed' })
   }
 })
-// ─── Anthropic AI Route ───────────────────────────────────────
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+// ─── Anthropic AI Route ───────────────────────────────────────
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body
   if (!prompt) return res.status(400).json({ error: 'Prompt required' })
@@ -147,5 +142,60 @@ app.post('/api/ai', async (req, res) => {
     res.status(500).json({ error: 'AI request failed' })
   }
 })
-// ─────────────────────────────────────────────────────────────
+
+// ─── AI Bias Route (Anthropic) ────────────────────────────────
+app.post('/api/bias', async (req, res) => {
+  const { symbol, timeframe, propFirm } = req.body
+  if (!symbol) return res.status(400).json({ error: 'Symbol required' })
+
+  const remainingBudget = (propFirm?.maxDailyDrawdown || 1000) + (propFirm?.currentDailyPnl || 0)
+  const now = new Date().toISOString()
+
+  const prompt = `Analyze ${symbol} for ${timeframe || 'intraday'} trading bias as of ${now}.
+Consider: Fed/ECB/BOJ/BOE central bank policies, recent CPI/NFP/GDP data, DXY direction, risk sentiment, intermarket flows, geopolitical factors.
+
+Return ONLY this exact JSON (no markdown, no explanation):
+{
+  "symbol": "${symbol}",
+  "direction": "Bullish",
+  "confidence": 75,
+  "timeframe": "${timeframe || 'intraday'}",
+  "reasoning": "2-3 sentence macro reasoning",
+  "keyDrivers": ["driver1", "driver2", "driver3"],
+  "scenarios": [
+    {"condition": "if X happens", "outcome": "price does Y", "probability": "High"},
+    {"condition": "if X happens", "outcome": "price does Y", "probability": "Medium"}
+  ],
+  "levels": {
+    "entry": "price zone",
+    "target1": "price level",
+    "target2": "price level",
+    "invalidation": "price level"
+  },
+  "propFirmRisk": {
+    "recommendedRisk": "0.5%",
+    "maxLots": "0.25",
+    "remainingDailyBudget": "$${remainingBudget}",
+    "status": "SAFE",
+    "warning": null
+  },
+  "generatedAt": "${now}"
+}`
+
+  try {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 2048,
+      system: 'You are a senior macro trader for BiasForge.ai. Return ONLY valid JSON. No markdown. No explanation. No code blocks.',
+      messages: [{ role: 'user', content: prompt }],
+    })
+    const text = message.content[0].text.trim().replace(/```json|```/g, '').trim()
+    const bias = JSON.parse(text)
+    res.json({ success: true, bias })
+  } catch (e) {
+    console.error('Bias error:', e.message)
+    res.status(500).json({ success: false, error: 'AI analysis failed. Please try again.' })
+  }
+})
+
 app.listen(5000, () => console.log('Backend running on port 5000'))

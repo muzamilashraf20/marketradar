@@ -1,183 +1,371 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
+import {
+  TrendingUp, TrendingDown, Minus, ShieldCheck,
+  ShieldAlert, ShieldX, RefreshCw, ChevronRight,
+  Target, AlertTriangle, BookOpen
+} from 'lucide-react'
 
-const PAIRS_DATA = [
-  { pair: 'EUR/USD', category: 'Forex', bias: 'Bearish', price: '1.1750', support: '1.1600', resistance: '1.1850', summary: 'Fed hawkish stance keeping dollar strong. ECB dovish signals weighing on Euro amid macro uncertainty.', strength: 28 },
-  { pair: 'GBP/USD', category: 'Forex', bias: 'Bullish', price: '1.3515', support: '1.3390', resistance: '1.3700', summary: 'GBP strength from positive UK labor data. Sterling up on peace deal hopes and BoE patience.', strength: 72 },
-  { pair: 'USD/JPY', category: 'Forex', bias: 'Bullish', price: '158.96', support: '157.30', resistance: '160.45', summary: 'BoJ ultra-loose policy continues. Dollar demand strong on US-Iran tensions and risk-off sentiment.', strength: 75 },
-  { pair: 'USD/CHF', category: 'Forex', bias: 'Neutral', price: '0.9124', support: '0.9050', resistance: '0.9200', summary: 'CHF holding as safe haven. Mixed signals from SNB and global risk sentiment.', strength: 50 },
-  { pair: 'AUD/USD', category: 'Forex', bias: 'Bearish', price: '0.6412', support: '0.6350', resistance: '0.6500', summary: 'China slowdown weighing on AUD. Commodities under pressure amid global demand concerns.', strength: 30 },
-  { pair: 'NZD/USD', category: 'Forex', bias: 'Bearish', price: '0.5891', support: '0.5800', resistance: '0.5980', summary: 'RBNZ dovish. NZD under pressure from weak dairy prices and China exposure.', strength: 32 },
-  { pair: 'USD/CAD', category: 'Forex', bias: 'Neutral', price: '1.3845', support: '1.3750', resistance: '1.3950', summary: 'Oil price uncertainty creating mixed CAD signals. BoC on hold watching inflation data.', strength: 48 },
-  { pair: 'XAU/USD', category: 'Gold', bias: 'Neutral', price: '4,752', support: '4,710', resistance: '4,880', summary: 'Gold consolidating in $4,750-$4,881 range. Mixed signals from ceasefire uncertainty and inflation.', strength: 50 },
-  { pair: 'BTC/USD', category: 'Crypto', bias: 'Bullish', price: '$78,194', support: '$75,000', resistance: '$80,000', summary: 'Bitcoin broke above $78K with strong ETF inflows of $238-663M over consecutive days.', strength: 78 },
-  { pair: 'ETH/USD', category: 'Crypto', bias: 'Neutral', price: '$2,403', support: '$2,292', resistance: '$2,450', summary: 'ETH testing critical support with mixed signals. Institutional accumulation vs DeFi security concerns.', strength: 50 },
-  { pair: 'US30',   category: 'Index',  bias: 'Bullish', price: '49,466', support: '48,800', resistance: '50,200', summary: 'Dow supported by rate cut hopes and strong earnings season. Risk-on sentiment building.', strength: 68 },
-  { pair: 'NAS100', category: 'Index',  bias: 'Bullish', price: '26,479', support: '25,900', resistance: '27,000', summary: 'Nasdaq led higher by mega-cap tech. AI spending boom supporting growth outlook.', strength: 74 },
-]
+const ASSETS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'NAS100', 'BTC']
+const TIMEFRAMES = ['intraday', 'swing']
 
-const BIAS_STYLES = {
-  Bullish: { bg: 'rgba(0,212,170,0.12)', color: '#00D4AA', border: 'rgba(0,212,170,0.3)' },
-  Bearish: { bg: 'rgba(255,77,106,0.12)', color: '#FF4D6A', border: 'rgba(255,77,106,0.3)' },
-  Neutral: { bg: 'rgba(138,155,176,0.1)', color: '#8A9BB0', border: 'rgba(138,155,176,0.2)' },
+const MOCK_BIAS = {
+  symbol: 'EURUSD',
+  direction: 'Bullish',
+  confidence: 78,
+  timeframe: 'intraday',
+  reasoning: 'ECB maintained hawkish tone in recent minutes while US CPI came in softer than expected at 3.2%. DXY weakness is supporting EUR strength with risk-on flows dominating.',
+  keyDrivers: [
+    'ECB hawkish stance — no rate cuts signaled',
+    'US CPI missed expectations (3.2% vs 3.4%)',
+    'Risk-on flows supporting EUR demand',
+  ],
+  scenarios: [
+    { condition: 'If price holds above 1.0850', outcome: 'Bullish continuation toward 1.0920-1.0950', probability: 'High' },
+    { condition: 'If US Retail Sales surprises positive', outcome: 'Reversal risk toward 1.0800 support', probability: 'Medium' },
+  ],
+  levels: {
+    entry: '1.0855 - 1.0870',
+    target1: '1.0920',
+    target2: '1.0950',
+    invalidation: '1.0820',
+  },
+  propFirmRisk: {
+    recommendedRisk: '0.5%',
+    maxLots: '0.25',
+    remainingDailyBudget: '$800',
+    status: 'SAFE',
+    warning: null,
+  },
+  generatedAt: new Date().toISOString(),
 }
 
-const CATEGORIES = ['All', 'Forex', 'Gold', 'Crypto', 'Index']
-const TIMEFRAMES = ['Daily', 'Weekly', 'Monthly']
+function DirectionBadge({ direction }) {
+  if (direction === 'Bullish') return (
+    <div className="flex items-center gap-2 text-emerald-400">
+      <TrendingUp size={20} />
+      <span className="text-2xl font-black">BULLISH</span>
+    </div>
+  )
+  if (direction === 'Bearish') return (
+    <div className="flex items-center gap-2 text-red-400">
+      <TrendingDown size={20} />
+      <span className="text-2xl font-black">BEARISH</span>
+    </div>
+  )
+  return (
+    <div className="flex items-center gap-2 text-slate-400">
+      <Minus size={20} />
+      <span className="text-2xl font-black">NEUTRAL</span>
+    </div>
+  )
+}
+
+function RiskBadge({ status }) {
+  if (status === 'SAFE') return (
+    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
+      <ShieldCheck size={12} /> SAFE
+    </div>
+  )
+  if (status === 'CAUTION') return (
+    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-bold">
+      <ShieldAlert size={12} /> CAUTION
+    </div>
+  )
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-bold">
+      <ShieldX size={12} /> DANGER
+    </div>
+  )
+}
+
+function ProbabilityBadge({ probability }) {
+  const styles = {
+    High: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    Medium: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    Low: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
+  }
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${styles[probability] || styles.Low}`}>
+      {probability}
+    </span>
+  )
+}
+
+function SkeletonCard() {
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 animate-pulse">
+      <div className="h-4 bg-white/10 rounded w-1/3 mb-4" />
+      <div className="h-8 bg-white/10 rounded w-2/3 mb-3" />
+      <div className="h-3 bg-white/10 rounded w-full mb-2" />
+      <div className="h-3 bg-white/10 rounded w-4/5" />
+    </div>
+  )
+}
 
 export default function BiasMatrix() {
-  const [activeCategory, setActiveCategory] = useState('All')
-  const [activeTF, setActiveTF] = useState('Daily')
-  const [livePrices, setLivePrices] = useState({})
-  const [loading, setLoading] = useState(true)
+  const [selectedAsset, setSelectedAsset] = useState('EURUSD')
+  const [selectedTf, setSelectedTf] = useState('intraday')
+  const [loading, setLoading] = useState(false)
+  const [bias, setBias] = useState(null)
+  const [error, setError] = useState('')
 
-  useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/prices`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) setLivePrices(data.data)
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
+  const generateBias = async () => {
+    setLoading(true)
+    setError('')
+    setBias(null)
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/bias`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: selectedAsset,
+            timeframe: selectedTf,
+            propFirm: { accountSize: 50000, maxDailyDrawdown: 1000, currentDailyPnl: 0 },
+          }),
+        }
+      )
+      const data = await res.json()
+      if (data.success) {
+        setBias(data.bias)
+      } else {
+        setError(data.error || 'AI analysis failed')
+        setBias(MOCK_BIAS) // fallback to mock
+      }
+    } catch {
+      setError('Cannot connect to server — showing demo data')
+      setBias(MOCK_BIAS) // fallback to mock
+    }
+    setLoading(false)
+  }
 
-  const filtered = activeCategory === 'All'
-    ? PAIRS_DATA
-    : PAIRS_DATA.filter(p => p.category === activeCategory)
+  const directionColor = bias?.direction === 'Bullish'
+    ? 'text-emerald-400' : bias?.direction === 'Bearish'
+    ? 'text-red-400' : 'text-slate-400'
 
   return (
-    <DashboardLayout title="Bias Matrix" subtitle="AI-powered directional bias for all markets">
+    <DashboardLayout title="AI Bias Engine" subtitle="AI-powered macro trading bias">
+      <div className="space-y-6 max-w-5xl">
 
-      {/* Timeframe Selector */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>TF:</span>
-        {TIMEFRAMES.map(tf => (
-          <button key={tf} onClick={() => setActiveTF(tf)} style={{
-            padding: '4px 14px',
-            borderRadius: '20px',
-            border: '1px solid var(--border)',
-            background: activeTF === tf ? 'var(--accent-purple)' : 'var(--bg-card)',
-            color: activeTF === tf ? '#fff' : 'var(--text-secondary)',
-            fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-          }}>{tf}</button>
-        ))}
-      </div>
+        {/* Controls */}
+        <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+          <h2 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+            <TrendingUp size={15} className="text-cyan-400" />
+            Generate AI Bias
+          </h2>
 
-      {/* Category Filter */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-        {CATEGORIES.map(cat => (
-          <button key={cat} onClick={() => setActiveCategory(cat)} style={{
-            padding: '5px 16px',
-            borderRadius: '20px',
-            border: '1px solid var(--border)',
-            background: activeCategory === cat ? 'var(--accent-green)' : 'var(--bg-card)',
-            color: activeCategory === cat ? '#000' : 'var(--text-secondary)',
-            fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-          }}>{cat}</button>
-        ))}
-      </div>
+          {/* Asset selector */}
+          <div className="mb-4">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Select Asset</p>
+            <div className="flex flex-wrap gap-2">
+              {ASSETS.map(asset => (
+                <button
+                  key={asset}
+                  onClick={() => setSelectedAsset(asset)}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all ${
+                    selectedAsset === asset
+                      ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400'
+                      : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
+                  }`}
+                >
+                  {asset}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* Loading indicator */}
-      {loading && (
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-          🔄 Fetching live prices...
+          {/* Timeframe */}
+          <div className="mb-5">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Timeframe</p>
+            <div className="flex gap-2">
+              {TIMEFRAMES.map(tf => (
+                <button
+                  key={tf}
+                  onClick={() => setSelectedTf(tf)}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all capitalize ${
+                    selectedTf === tf
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                      : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Generate button */}
+          <button
+            onClick={generateBias}
+            disabled={loading}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-bold text-sm transition-all shadow-lg shadow-cyan-500/20"
+          >
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+            {loading ? 'Analyzing markets...' : 'Generate AI Bias'}
+          </button>
+
+          {error && (
+            <p className="mt-3 text-xs text-amber-400 flex items-center gap-1.5">
+              <AlertTriangle size={12} /> {error}
+            </p>
+          )}
         </div>
-      )}
 
-      {/* Cards Grid */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, minmax(0,1fr))',
-        gap: '12px',
-      }}>
-        {filtered.map(item => {
-          const s = BIAS_STYLES[item.bias]
-          const livePrice = livePrices[item.pair]?.price
-          return (
-            <div key={item.pair} className="card" style={{ padding: '1.25rem' }}>
+        {/* Loading skeletons */}
+        {loading && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[1,2,3,4].map(i => <SkeletonCard key={i} />)}
+          </div>
+        )}
 
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+        {/* Results */}
+        {bias && !loading && (
+          <div className="space-y-4">
+
+            {/* Direction Card */}
+            <div className={`bg-white/[0.03] border rounded-2xl p-6 ${
+              bias.direction === 'Bullish' ? 'border-emerald-500/20' :
+              bias.direction === 'Bearish' ? 'border-red-500/20' : 'border-white/10'
+            }`}>
+              <div className="flex items-start justify-between mb-4">
                 <div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                    {item.pair}
-                  </div>
-                  <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {item.category} · {activeTF}
-                  </div>
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
+                    {bias.symbol} · {bias.timeframe}
+                  </p>
+                  <DirectionBadge direction={bias.direction} />
                 </div>
-                <span style={{
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  background: s.bg,
-                  color: s.color,
-                  border: `1px solid ${s.border}`,
-                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
-                }}>{item.bias === 'Bullish' ? '▲' : item.bias === 'Bearish' ? '▼' : '—'} {item.bias.toUpperCase()}</span>
-              </div>
-
-              {/* Price — Live ya fallback */}
-              <div style={{
-                fontSize: '26px', fontWeight: 700,
-                fontFamily: 'var(--font-mono)',
-                color: 'var(--text-primary)',
-                marginBottom: '8px',
-                display: 'flex', alignItems: 'center', gap: '8px'
-              }}>
-                {livePrice || item.price}
-                {livePrice && (
-                  <span style={{ fontSize: '9px', color: '#00D4AA', fontWeight: 600 }}>● LIVE</span>
-                )}
-              </div>
-
-              {/* Strength Bar */}
-              <div style={{ marginBottom: '10px' }}>
-                <div style={{ height: '3px', background: 'var(--border)', borderRadius: '2px' }}>
-                  <div style={{
-                    height: '100%', width: `${item.strength}%`,
-                    background: s.color, borderRadius: '2px',
-                    transition: 'width 0.4s ease',
-                  }} />
+                <div className="text-right">
+                  <p className="text-xs text-slate-500 mb-1">Confidence</p>
+                  <p className={`text-4xl font-black ${directionColor}`}>
+                    {bias.confidence}%
+                  </p>
                 </div>
               </div>
 
-              {/* Summary */}
-              <div style={{
-                fontSize: '11px', color: 'var(--text-secondary)',
-                lineHeight: 1.6, marginBottom: '12px',
-              }}>{item.summary}</div>
+              {/* Confidence bar */}
+              <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-1000 ${
+                    bias.direction === 'Bullish' ? 'bg-emerald-400' :
+                    bias.direction === 'Bearish' ? 'bg-red-400' : 'bg-slate-400'
+                  }`}
+                  style={{ width: `${bias.confidence}%` }}
+                />
+              </div>
+            </div>
 
-              {/* Support / Resistance */}
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <div style={{
-                  flex: 1, padding: '6px 10px',
-                  background: 'rgba(0,212,170,0.06)',
-                  border: '1px solid rgba(0,212,170,0.15)',
-                  borderRadius: 'var(--radius-sm)',
-                }}>
-                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>SUPPORT</div>
-                  <div style={{ fontSize: '12px', fontWeight: 600, color: '#00D4AA', fontFamily: 'var(--font-mono)' }}>
-                    {item.support}
+            {/* Reasoning + Key Drivers */}
+            <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+              <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                <BookOpen size={14} className="text-cyan-400" />
+                AI Reasoning
+              </h3>
+              <p className="text-sm text-slate-300 leading-relaxed mb-4">{bias.reasoning}</p>
+              <div className="space-y-2">
+                {bias.keyDrivers.map((driver, i) => (
+                  <div key={i} className="flex items-center gap-2.5 text-sm text-slate-400">
+                    <ChevronRight size={14} className="text-cyan-400 shrink-0" />
+                    {driver}
                   </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Scenarios + Levels */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* Scenarios */}
+              <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                  <AlertTriangle size={14} className="text-amber-400" />
+                  Scenarios
+                </h3>
+                <div className="space-y-3">
+                  {bias.scenarios.map((s, i) => (
+                    <div key={i} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-xs font-semibold text-slate-300">{s.condition}</p>
+                        <ProbabilityBadge probability={s.probability} />
+                      </div>
+                      <p className="text-xs text-slate-500">{s.outcome}</p>
+                    </div>
+                  ))}
                 </div>
-                <div style={{
-                  flex: 1, padding: '6px 10px',
-                  background: 'rgba(255,77,106,0.06)',
-                  border: '1px solid rgba(255,77,106,0.15)',
-                  borderRadius: 'var(--radius-sm)',
-                }}>
-                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>RESISTANCE</div>
-                  <div style={{ fontSize: '12px', fontWeight: 600, color: '#FF4D6A', fontFamily: 'var(--font-mono)' }}>
-                    {item.resistance}
-                  </div>
+              </div>
+
+              {/* Levels */}
+              <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
+                  <Target size={14} className="text-cyan-400" />
+                  Key Levels
+                </h3>
+                <div className="space-y-2.5">
+                  {[
+                    { label: 'Entry Zone', value: bias.levels.entry, color: 'text-cyan-400' },
+                    { label: 'Target 1', value: bias.levels.target1, color: 'text-emerald-400' },
+                    { label: 'Target 2', value: bias.levels.target2, color: 'text-emerald-300' },
+                    { label: 'Invalidation', value: bias.levels.invalidation, color: 'text-red-400' },
+                  ].map(level => (
+                    <div key={level.label} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
+                      <span className="text-xs text-slate-500">{level.label}</span>
+                      <span className={`text-sm font-bold font-mono ${level.color}`}>{level.value}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
             </div>
-          )
-        })}
-      </div>
 
+            {/* Prop Firm Risk */}
+            <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <ShieldCheck size={14} className="text-emerald-400" />
+                  Prop Firm Risk Assessment
+                </h3>
+                <RiskBadge status={bias.propFirmRisk.status} />
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: 'Recommended Risk', value: bias.propFirmRisk.recommendedRisk },
+                  { label: 'Max Lots', value: bias.propFirmRisk.maxLots },
+                  { label: 'Daily Budget Left', value: bias.propFirmRisk.remainingDailyBudget },
+                  { label: 'Status', value: bias.propFirmRisk.status },
+                ].map(item => (
+                  <div key={item.label} className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+                    <p className="text-[10px] text-slate-500 mb-1">{item.label}</p>
+                    <p className="text-sm font-bold text-white">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+              {bias.propFirmRisk.warning && (
+                <div className="mt-3 flex items-center gap-2 text-amber-400 text-xs">
+                  <AlertTriangle size={12} />
+                  {bias.propFirmRisk.warning}
+                </div>
+              )}
+            </div>
+
+            {/* Generated at */}
+            <p className="text-xs text-slate-600 text-center">
+              Generated at {new Date(bias.generatedAt).toLocaleString()} · BiasForge AI
+            </p>
+
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!bias && !loading && (
+          <div className="text-center py-16 bg-white/[0.02] border border-white/10 rounded-2xl">
+            <TrendingUp size={32} className="text-slate-600 mx-auto mb-3" />
+            <p className="text-slate-400 font-semibold mb-1">No bias generated yet</p>
+            <p className="text-slate-600 text-sm">Select an asset and click "Generate AI Bias"</p>
+          </div>
+        )}
+
+      </div>
     </DashboardLayout>
   )
 }
