@@ -1,283 +1,283 @@
-import { useState, useEffect } from 'react'
-import DashboardLayout from '../components/layout/DashboardLayout'
-import { Calendar, AlertTriangle, Minus, ChevronDown, RefreshCw } from 'lucide-react'
+import { useEffect, useState, useMemo } from 'react';
+import { Calendar, RefreshCw, AlertTriangle, Clock, Search, Filter } from 'lucide-react';
+import DashboardLayout from '../components/layout/DashboardLayout';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'
+const CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 
-const IMPACT_CONFIG = {
-  High:   { color: 'text-red-400',   bg: 'bg-red-500/10',   border: 'border-red-500/20',   icon: AlertTriangle, dot: 'bg-red-400' },
-  Medium: { color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', icon: ChevronDown,   dot: 'bg-amber-400' },
-  Low:    { color: 'text-slate-400', bg: 'bg-white/5',      border: 'border-white/10',     icon: Minus,         dot: 'bg-slate-500' },
-}
-
-function isSameDay(dateStr) {
-  const d = new Date(dateStr)
-  const now = new Date()
-  return d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-}
-
-function formatDate(dateStr) {
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-}
-
-function formatTime(dateStr) {
-  const date = new Date(dateStr)
-  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
-}
-
-function SkeletonRow() {
-  return (
-    <tr className="border-b border-white/5">
-      {[...Array(7)].map((_, i) => (
-        <td key={i} className="px-4 py-3">
-          <div className="h-4 bg-white/5 rounded animate-pulse" style={{ width: `${60 + i * 10}%` }} />
-        </td>
-      ))}
-    </tr>
-  )
-}
-
-function ValueCell({ value }) {
-  if (!value) return <span className="text-slate-600">—</span>
-  return <span className="text-white font-medium">{value}</span>
-}
+// For dev CORS issues, we can use a proxy if needed
+const PROXY_URL = 'https://api.allorigins.win/get?url=';
 
 export default function EconomicCalendar() {
-  const [events, setEvents] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [highOnly, setHighOnly] = useState(false)
-  const [view, setView] = useState('today') // 'today' | 'week'
-  const [lastUpdated, setLastUpdated] = useState(null)
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
 
-  const fetchCalendar = async () => {
-    setLoading(true)
-    setError(null)
+  const [dayFilter, setDayFilter] = useState('Today');
+  const [currencyFilter, setCurrencyFilter] = useState('All');
+  const [impactFilter, setImpactFilter] = useState('All');
+  const [search, setSearch] = useState('');
+
+  const fetchCalendar = async (isRetry = false) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/calendar`)
-      if (!res.ok) throw new Error('Failed to fetch calendar')
-      const data = await res.json()
-      setEvents(Array.isArray(data) ? data : [])
-      setLastUpdated(new Date())
+      setLoading(true);
+      setError('');
+
+      let url = CALENDAR_URL;
+
+      // If direct fetch fails due to CORS, use proxy
+      if (isRetry) {
+        url = PROXY_URL + encodeURIComponent(CALENDAR_URL);
+      }
+
+      const res = await fetch(url);
+
+      if (!res.ok) {
+        throw new Error(`HTTP Error: ${res.status}`);
+      }
+
+      let data;
+
+      if (isRetry) {
+        const json = await res.json();
+        data = JSON.parse(json.contents);
+      } else {
+        data = await res.json();
+      }
+
+      // Normalize data
+      const normalized = data.map((item, index) => ({
+        id: `${item.date || ''}-${item.country || ''}-${item.title || ''}-${index}`,
+        title: item.title || 'Event',
+        currency: item.country || 'N/A',
+        date: item.date,
+        impact: item.impact || 'Low',
+        forecast: item.forecast || '-',
+        previous: item.previous || '-',
+        actual: item.actual || '-',
+      }));
+
+      setEvents(normalized);
+      setError('');
     } catch (err) {
-      setError('Could not load calendar data. Please try again.')
+      console.error("Calendar fetch error:", err);
+      setError('Could not load calendar. Trying alternative method...');
+
+      // Auto retry with proxy once
+      if (retryCount === 0) {
+        setRetryCount(1);
+        setTimeout(() => fetchCalendar(true), 800);
+      } else {
+        setError('Failed to load economic calendar. Please refresh or try again later.');
+      }
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    fetchCalendar();
+  }, []);
+
+  const filteredEvents = useMemo(() => {
+    return events
+      .filter((event) => {
+        if (dayFilter === 'Today' && !isToday(event.date)) return false;
+        return true;
+      })
+      .filter((event) => {
+        if (currencyFilter !== 'All' && event.currency !== currencyFilter) return false;
+        return true;
+      })
+      .filter((event) => {
+        if (impactFilter !== 'All' && event.impact.toLowerCase() !== impactFilter.toLowerCase()) return false;
+        return true;
+      })
+      .filter((event) => {
+        if (!search.trim()) return true;
+        return event.title.toLowerCase().includes(search.toLowerCase());
+      })
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [events, dayFilter, currencyFilter, impactFilter, search]);
+
+  function isToday(dateString) {
+    if (!dateString) return false;
+    const eventDate = new Date(dateString);
+    const today = new Date();
+    return (
+      eventDate.getFullYear() === today.getFullYear() &&
+      eventDate.getMonth() === today.getMonth() &&
+      eventDate.getDate() === today.getDate()
+    );
   }
 
-  useEffect(() => { fetchCalendar() }, [])
+  function getCountdown(dateString) {
+    if (!dateString) return 'N/A';
+    const now = new Date();
+    const eventDate = new Date(dateString);
+    const diff = eventDate - now;
 
-  // Filter by view
-  let filtered = view === 'today'
-    ? events.filter(e => isSameDay(e.date))
-    : events
+    if (diff < 0) return 'Released';
 
-  // Filter by impact
-  if (highOnly) filtered = filtered.filter(e => e.impact === 'High')
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
 
-  // Group by date (only for week view)
-  const grouped = filtered.reduce((acc, event) => {
-    const day = formatDate(event.date)
-    if (!acc[day]) acc[day] = []
-    acc[day].push(event)
-    return acc
-  }, {})
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    return `${minutes}m`;
+  }
 
-  const todayLabel = new Date().toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
-  })
+  const highImpactToday = events.filter(
+    (event) => isToday(event.date) && (event.impact || '').toLowerCase() === 'high'
+  ).length;
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3 mb-1">
-              <div className="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
-                <Calendar size={18} className="text-cyan-400" />
-              </div>
-              <h1 className="text-xl font-bold text-white">Economic Calendar</h1>
+            <div className="flex items-center gap-2 text-cyan-400 text-sm font-semibold mb-2">
+              <Calendar className="w-4 h-4" />
+              LIVE ECONOMIC CALENDAR
             </div>
-            <p className="text-slate-400 text-sm ml-12">
-              {view === 'today' ? todayLabel : 'This week — all macro events'}
-              {lastUpdated && (
-                <span className="text-slate-600 ml-2">· Updated {lastUpdated.toLocaleTimeString()}</span>
-              )}
-            </p>
+            <h1 className="text-3xl font-black text-white tracking-tight">
+              Economic Calendar
+            </h1>
+            <p className="text-slate-400 mt-1">Track high-impact events and market movers.</p>
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={() => fetchCalendar()}
+            disabled={loading}
+            className="flex items-center gap-2 px-5 py-2.5 bg-white/5 border border-white/10 rounded-xl text-slate-300 hover:text-white hover:border-cyan-500/30 transition-all disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh Data
+          </button>
+        </div>
 
-            {/* Today / Week Toggle */}
-            <div className="flex items-center bg-white/5 border border-white/10 rounded-lg p-1">
-              <button
-                onClick={() => setView('today')}
-                className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                  view === 'today'
-                    ? 'bg-cyan-500 text-black'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Today
-              </button>
-              <button
-                onClick={() => setView('week')}
-                className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                  view === 'week'
-                    ? 'bg-cyan-500 text-black'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                This Week
-              </button>
-            </div>
-
-            {/* High Impact Toggle */}
-            <button
-              onClick={() => setHighOnly(!highOnly)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-semibold transition-all ${
-                highOnly
-                  ? 'bg-red-500/10 border-red-500/30 text-red-400'
-                  : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
-              }`}
-            >
-              <AlertTriangle size={13} />
-              High Impact Only
-            </button>
-
-            {/* Refresh */}
-            <button
-              onClick={fetchCalendar}
-              disabled={loading}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-xs font-semibold text-slate-400 hover:text-white transition-all disabled:opacity-50"
-            >
-              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
+        {/* Stats */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <p className="text-sm text-slate-400">Total Events</p>
+            <p className="text-3xl font-bold text-white mt-1">{events.length}</p>
+          </div>
+          <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5">
+            <p className="text-sm text-red-300">High Impact Today</p>
+            <p className="text-3xl font-bold text-white mt-1">{highImpactToday}</p>
+          </div>
+          <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-2xl p-5">
+            <p className="text-sm text-cyan-300">Showing</p>
+            <p className="text-3xl font-bold text-white mt-1">{filteredEvents.length}</p>
           </div>
         </div>
 
-        {/* Impact Legend */}
-        <div className="flex items-center gap-5 text-xs text-slate-500">
-          <span className="font-medium text-slate-400">Impact:</span>
-          {Object.entries(IMPACT_CONFIG).map(([label, cfg]) => (
-            <div key={label} className="flex items-center gap-1.5">
-              <div className={`w-2 h-2 rounded-full ${cfg.dot}`} />
-              <span className={cfg.color}>{label}</span>
+        {/* Filters */}
+        <div className="bg-[#020617] border border-white/10 rounded-2xl p-5">
+          <div className="flex flex-wrap gap-3">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-3.5 text-slate-500" size={18} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search events..."
+                className="w-full bg-[#030712] border border-white/10 rounded-xl pl-10 py-3 text-sm focus:outline-none focus:border-cyan-500"
+              />
             </div>
-          ))}
+
+            <select value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500">
+              <option value="Today">Today</option>
+              <option value="This Week">This Week</option>
+            </select>
+
+            <select value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value)} className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500">
+              <option value="All">All Currencies</option>
+              {['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD','CNY'].map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+
+            <select value={impactFilter} onChange={(e) => setImpactFilter(e.target.value)} className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500">
+              <option value="All">All Impact</option>
+              <option value="High">High Impact</option>
+              <option value="Medium">Medium Impact</option>
+              <option value="Low">Low Impact</option>
+            </select>
+          </div>
         </div>
 
         {/* Error */}
         {error && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-300 text-sm">
             {error}
           </div>
         )}
 
-        {/* Table */}
-        {!error && (
-          <div className="rounded-xl border border-white/10 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-white/10 bg-white/5">
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Currency</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Impact</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Event</th>
-                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Actual</th>
-                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Forecast</th>
-                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Previous</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    [...Array(8)].map((_, i) => <SkeletonRow key={i} />)
-                  ) : view === 'today' ? (
-                    // TODAY VIEW — flat list, no grouping
-                    filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="px-4 py-16 text-center text-slate-500">
-                          <Calendar size={28} className="mx-auto mb-3 opacity-30" />
-                          <p>No events scheduled for today.</p>
-                        </td>
-                      </tr>
-                    ) : (
-                      filtered.map((event, idx) => {
-                        const impact = IMPACT_CONFIG[event.impact] || IMPACT_CONFIG.Low
-                        const Icon = impact.icon
-                        return (
-                          <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition-colors duration-100">
-                            <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{formatTime(event.date)}</td>
-                            <td className="px-4 py-3">
-                              <span className="text-xs font-bold px-2 py-1 rounded-md bg-white/10 text-slate-300">
-                                {event.country}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-md border ${impact.bg} ${impact.border} ${impact.color}`}>
-                                <Icon size={11} />
-                                {event.impact}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-white font-medium max-w-[260px]">{event.title}</td>
-                            <td className="px-4 py-3 text-right"><ValueCell value={event.actual} /></td>
-                            <td className="px-4 py-3 text-right text-slate-400"><ValueCell value={event.forecast} /></td>
-                            <td className="px-4 py-3 text-right text-slate-500"><ValueCell value={event.previous} /></td>
-                          </tr>
-                        )
-                      })
-                    )
-                  ) : (
-                    // WEEK VIEW — grouped by day
-                    Object.entries(grouped).map(([day, dayEvents]) => (
-                      <>
-                        <tr key={`day-${day}`} className="border-b border-white/5 bg-white/[0.02]">
-                          <td colSpan={7} className="px-4 py-2 text-xs font-bold text-slate-500 uppercase tracking-widest">
-                            {day}
-                          </td>
-                        </tr>
-                        {dayEvents.map((event, idx) => {
-                          const impact = IMPACT_CONFIG[event.impact] || IMPACT_CONFIG.Low
-                          const Icon = impact.icon
-                          return (
-                            <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition-colors duration-100">
-                              <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{formatTime(event.date)}</td>
-                              <td className="px-4 py-3">
-                                <span className="text-xs font-bold px-2 py-1 rounded-md bg-white/10 text-slate-300">
-                                  {event.country}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-md border ${impact.bg} ${impact.border} ${impact.color}`}>
-                                  <Icon size={11} />
-                                  {event.impact}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-white font-medium max-w-[260px]">{event.title}</td>
-                              <td className="px-4 py-3 text-right"><ValueCell value={event.actual} /></td>
-                              <td className="px-4 py-3 text-right text-slate-400"><ValueCell value={event.forecast} /></td>
-                              <td className="px-4 py-3 text-right text-slate-500"><ValueCell value={event.previous} /></td>
-                            </tr>
-                          )
-                        })}
-                      </>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+        {/* Loading */}
+        {loading && (
+          <div className="space-y-3">
+            {[1,2,3,4].map(i => (
+              <div key={i} className="h-24 bg-white/5 border border-white/10 rounded-2xl animate-pulse" />
+            ))}
           </div>
         )}
 
+        {/* Events List */}
+        {!loading && filteredEvents.length > 0 && (
+          <div className="space-y-3">
+            {filteredEvents.map(event => (
+              <div key={event.id} className="bg-[#020617] border border-white/10 rounded-2xl p-5 hover:border-cyan-500/30 transition-all">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-semibold text-white">{event.title}</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {new Date(event.date).toLocaleString('en-US', { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric', 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                      })}
+                    </p>
+                  </div>
+
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${event.impact === 'High' ? 'bg-red-500/10 border-red-500/30 text-red-400' : event.impact === 'Medium' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-slate-500/10 border-slate-500/30 text-slate-400'}`}>
+                    {event.impact}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 text-sm">
+                  <div>
+                    <p className="text-slate-500 text-xs">Currency</p>
+                    <p className="text-cyan-300 font-medium">{event.currency}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 text-xs">Forecast</p>
+                    <p className="text-white">{event.forecast}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 text-xs">Previous</p>
+                    <p className="text-white">{event.previous}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 text-xs">Countdown</p>
+                    <p className="text-emerald-400 font-medium">{getCountdown(event.date)}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && filteredEvents.length === 0 && !error && (
+          <div className="text-center py-16">
+            <AlertTriangle className="mx-auto w-10 h-10 text-slate-500 mb-4" />
+            <p className="text-white font-semibold">No events match your filters</p>
+            <p className="text-slate-500 mt-1">Try changing the filters above</p>
+          </div>
+        )}
       </div>
     </DashboardLayout>
-  )
+  );
 }
