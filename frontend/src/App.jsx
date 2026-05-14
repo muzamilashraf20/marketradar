@@ -17,6 +17,9 @@ import Refund from './pages/Refund'
 import Contact from './pages/Contact'
 import Blog from './pages/Blog'
 import Changelog from './pages/Changelog'
+import PropFirm from './pages/PropFirm'
+import Playbooks from './pages/Playbooks'
+import SettingsPage from './pages/Settings'
 import ProtectedRoute from './components/common/ProtectedRoute'
 
 function RootRedirect() {
@@ -55,6 +58,9 @@ export default function App() {
         <Route path="/cot" element={<ProtectedRoute><COTReport /></ProtectedRoute>} />
         <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
         <Route path="/trump" element={<ProtectedRoute><TrumpTracker /></ProtectedRoute>} />
+        <Route path="/prop-firm" element={<ProtectedRoute><PropFirm /></ProtectedRoute>} />
+        <Route path="/playbooks" element={<ProtectedRoute><Playbooks /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 
         {/* 404 fallback */}
         <Route path="*" element={<Navigate to="/landing" replace />} />

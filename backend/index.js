@@ -1,10 +1,8 @@
 ﻿import express from 'express'
 import cors from 'cors'
-import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
-dotenv.config()
 
 const app = express()
 app.use(cors({
@@ -125,7 +123,6 @@ app.get('/api/prices', async (req, res) => {
   }
 })
 
-// ─── Anthropic AI Route ───────────────────────────────────────
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body
   if (!prompt) return res.status(400).json({ error: 'Prompt required' })
@@ -143,50 +140,17 @@ app.post('/api/ai', async (req, res) => {
   }
 })
 
-// ─── AI Bias Route (Anthropic) ────────────────────────────────
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe, propFirm } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
-
   const remainingBudget = (propFirm?.maxDailyDrawdown || 1000) + (propFirm?.currentDailyPnl || 0)
   const now = new Date().toISOString()
-
-  const prompt = `Analyze ${symbol} for ${timeframe || 'intraday'} trading bias as of ${now}.
-Consider: Fed/ECB/BOJ/BOE central bank policies, recent CPI/NFP/GDP data, DXY direction, risk sentiment, intermarket flows, geopolitical factors.
-
-Return ONLY this exact JSON (no markdown, no explanation):
-{
-  "symbol": "${symbol}",
-  "direction": "Bullish",
-  "confidence": 75,
-  "timeframe": "${timeframe || 'intraday'}",
-  "reasoning": "2-3 sentence macro reasoning",
-  "keyDrivers": ["driver1", "driver2", "driver3"],
-  "scenarios": [
-    {"condition": "if X happens", "outcome": "price does Y", "probability": "High"},
-    {"condition": "if X happens", "outcome": "price does Y", "probability": "Medium"}
-  ],
-  "levels": {
-    "entry": "price zone",
-    "target1": "price level",
-    "target2": "price level",
-    "invalidation": "price level"
-  },
-  "propFirmRisk": {
-    "recommendedRisk": "0.5%",
-    "maxLots": "0.25",
-    "remainingDailyBudget": "$${remainingBudget}",
-    "status": "SAFE",
-    "warning": null
-  },
-  "generatedAt": "${now}"
-}`
-
+  const prompt = `Analyze ${symbol} for ${timeframe || 'intraday'} trading bias as of ${now}.`
   try {
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: 2048,
-      system: 'You are a senior macro trader for BiasForge.ai. Return ONLY valid JSON. No markdown. No explanation. No code blocks.',
+      system: 'You are a senior macro trader for BiasForge.ai. Return ONLY valid JSON.',
       messages: [{ role: 'user', content: prompt }],
     })
     const text = message.content[0].text.trim().replace(/```json|```/g, '').trim()
@@ -194,7 +158,21 @@ Return ONLY this exact JSON (no markdown, no explanation):
     res.json({ success: true, bias })
   } catch (e) {
     console.error('Bias error:', e.message)
-    res.status(500).json({ success: false, error: 'AI analysis failed. Please try again.' })
+    res.status(500).json({ success: false, error: 'AI analysis failed.' })
+  }
+})
+
+app.get('/api/calendar', async (req, res) => {
+  try {
+    const response = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
+    })
+    if (!response.ok) return res.status(502).json({ error: 'Failed to fetch calendar data.' })
+    const data = await response.json()
+    return res.json(data)
+  } catch (err) {
+    console.error('Calendar fetch error:', err.message)
+    return res.status(500).json({ error: 'Internal server error.' })
   }
 })
 
