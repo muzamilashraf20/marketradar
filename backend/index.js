@@ -1,10 +1,14 @@
-﻿import express from 'express'
+﻿import 'dotenv/config'
+import express from 'express'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
+import Parser from 'rss-parser'
 
 const app = express()
+const rssParser = new Parser()
+
 app.use(cors({
   origin: ['http://localhost:5173', 'http://localhost:5174', 'https://marketradar-taupe.vercel.app'],
   credentials: true
@@ -143,7 +147,6 @@ app.post('/api/ai', async (req, res) => {
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe, propFirm } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
-  const remainingBudget = (propFirm?.maxDailyDrawdown || 1000) + (propFirm?.currentDailyPnl || 0)
   const now = new Date().toISOString()
   const prompt = `Analyze ${symbol} for ${timeframe || 'intraday'} trading bias as of ${now}.`
   try {
@@ -173,6 +176,62 @@ app.get('/api/calendar', async (req, res) => {
   } catch (err) {
     console.error('Calendar fetch error:', err.message)
     return res.status(500).json({ error: 'Internal server error.' })
+  }
+})
+
+app.get('/api/news', async (req, res) => {
+  const feeds = [
+    { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
+    { name: 'Nasdaq', url: 'https://www.nasdaq.com/feed/rssoutbound?category=Markets' },
+    { name: 'Fox Business', url: 'https://feeds.foxbusiness.com/foxbusiness/markets' },
+    { name: 'Reuters', url: 'https://feeds.reuters.com/reuters/topNews' },
+    { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' },
+  ]
+
+  try {
+    const results = await Promise.allSettled(
+      feeds.map(feed =>
+        rssParser.parseURL(feed.url).then(parsed =>
+          parsed.items.slice(0, 12).map(item => ({
+            source: feed.name,
+            title: item.title || '',
+            summary: item.contentSnippet || item.content || '',
+            url: item.link || '',
+            publishedAt: item.pubDate
+              ? new Date(item.pubDate).toISOString()
+              : new Date().toISOString(),
+            impact: 5,
+            category: 'General',
+          }))
+        )
+      )
+    )
+
+    let articles = []
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        articles.push(...r.value)
+      } else {
+        console.error(`Feed failed [${feeds[i].name}]:`, r.reason?.message)
+      }
+    })
+
+    if (articles.length === 0) {
+      return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
+    }
+
+    // Sort by latest first
+    articles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+
+    return res.json({ success: true, articles })
+
+  } catch (e) {
+    console.error('News route error:', e.message)
+    return res.status(500).json({
+      success: false,
+      error: 'News fetch failed.',
+      detail: e.message
+    })
   }
 })
 
