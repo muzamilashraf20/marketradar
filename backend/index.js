@@ -172,15 +172,14 @@ app.get('/api/calendar', async (req, res) => {
   }
 
   try {
-    // Get this week's date range
     const now = new Date()
-    const monday = new Date(now)
-    monday.setDate(now.getDate() - now.getDay() + 1)
-    const sunday = new Date(monday)
-    sunday.setDate(monday.getDate() + 6)
+    const fromDate = new Date(now)
+    fromDate.setDate(now.getDate() - 3)
+    const toDate = new Date(now)
+    toDate.setDate(now.getDate() + 7)
 
-    const from = monday.toISOString().split('T')[0]
-    const to = sunday.toISOString().split('T')[0]
+    const from = fromDate.toISOString().split('T')[0]
+    const to = toDate.toISOString().split('T')[0]
 
     const response = await fetch(
       `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`,
@@ -194,15 +193,14 @@ app.get('/api/calendar', async (req, res) => {
     const data = await response.json()
     const events = data.economicCalendar || []
 
-    // Normalize to our format
-    const normalized = events.map((item, index) => ({
+    const normalized = events.map((item) => ({
       title: item.event || 'Economic Event',
       country: item.country || 'N/A',
       date: item.time ? new Date(item.time * 1000).toISOString() : new Date().toISOString(),
       impact: item.impact === 3 ? 'High' : item.impact === 2 ? 'Medium' : 'Low',
-      forecast: item.estimate !== null && item.estimate !== undefined ? String(item.estimate) : '-',
-      previous: item.prev !== null && item.prev !== undefined ? String(item.prev) : '-',
-      actual: item.actual !== null && item.actual !== undefined ? String(item.actual) : '-',
+      forecast: item.estimate != null ? String(item.estimate) : '-',
+      previous: item.prev != null ? String(item.prev) : '-',
+      actual: item.actual != null ? String(item.actual) : '-',
     }))
 
     return res.json(normalized)
@@ -254,7 +252,6 @@ app.get('/api/news', async (req, res) => {
       return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
     }
 
-    // Sort by latest first
     articles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
 
     return res.json({ success: true, articles })
