@@ -171,12 +171,15 @@ app.get('/api/calendar', async (req, res) => {
     return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
   }
 
+  // Sirf yeh major trading currencies
+  const majorCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD']
+
   try {
     const now = new Date()
     const fromDate = new Date(now)
     fromDate.setDate(now.getDate() - 3)
     const toDate = new Date(now)
-    toDate.setDate(now.getDate() + 7)
+    toDate.setDate(now.getDate() + 14) // 2 weeks ahead
 
     const from = fromDate.toISOString().split('T')[0]
     const to = toDate.toISOString().split('T')[0]
@@ -193,15 +196,31 @@ app.get('/api/calendar', async (req, res) => {
     const data = await response.json()
     const events = data.economicCalendar || []
 
-    const normalized = events.map((item) => ({
+    // Sirf major currencies filter karo
+    const filtered = events.filter(item =>
+      majorCurrencies.includes(item.country?.toUpperCase())
+    )
+
+    const normalized = filtered.map((item) => ({
       title: item.event || 'Economic Event',
-      country: item.country || 'N/A',
+      country: item.country?.toUpperCase() || 'N/A',
       date: item.time ? new Date(item.time).toISOString() : new Date().toISOString(),
-      impact: item.impact === 3 ? 'High' : item.impact === 2 ? 'Medium' : 'Low',
+      impact: item.impact?.toLowerCase() === 'high' ? 'High'
+            : item.impact?.toLowerCase() === 'medium' ? 'Medium'
+            : 'Low',
       forecast: item.estimate != null ? String(item.estimate) : '-',
       previous: item.prev != null ? String(item.prev) : '-',
       actual: item.actual != null ? String(item.actual) : '-',
     }))
+
+    // High impact pehle, phir date se sort
+    normalized.sort((a, b) => {
+      const impactOrder = { High: 0, Medium: 1, Low: 2 }
+      if (impactOrder[a.impact] !== impactOrder[b.impact]) {
+        return impactOrder[a.impact] - impactOrder[b.impact]
+      }
+      return new Date(a.date) - new Date(b.date)
+    })
 
     return res.json(normalized)
 
