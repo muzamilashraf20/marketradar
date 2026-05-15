@@ -166,17 +166,33 @@ app.post('/api/bias', async (req, res) => {
 })
 
 app.get('/api/calendar', async (req, res) => {
-  try {
-    const response = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
-      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
-    })
-    if (!response.ok) return res.status(502).json({ error: 'Failed to fetch calendar data.' })
-    const data = await response.json()
-    return res.json(data)
-  } catch (err) {
-    console.error('Calendar fetch error:', err.message)
-    return res.status(500).json({ error: 'Internal server error.' })
+  const urls = [
+    'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+    'https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json',
+  ]
+
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.forexfactory.com/',
+        },
+        signal: AbortSignal.timeout(8000)
+      })
+      if (!response.ok) continue
+      const data = await response.json()
+      if (Array.isArray(data) && data.length > 0) {
+        return res.json(data)
+      }
+    } catch (err) {
+      console.error(`Calendar URL failed [${url}]:`, err.message)
+      continue
+    }
   }
+
+  return res.status(502).json({ error: 'Failed to fetch calendar data.' })
 })
 
 app.get('/api/news', async (req, res) => {
