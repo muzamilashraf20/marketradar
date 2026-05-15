@@ -117,7 +117,6 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
       <div className="bg-[#020617] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
 
-        {/* Modal Header */}
         <div className="flex items-start justify-between p-6 border-b border-white/10">
           <div>
             <div className="flex items-center gap-2 text-cyan-400 text-xs font-semibold mb-1">
@@ -139,7 +138,6 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
           </button>
         </div>
 
-        {/* Loading */}
         {loading && (
           <div className="p-8 text-center">
             <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -147,18 +145,15 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
           </div>
         )}
 
-        {/* Error */}
         {error && (
           <div className="p-6">
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-300 text-sm">{error}</div>
           </div>
         )}
 
-        {/* Analysis */}
         {!loading && analysis && (
           <div className="p-6 space-y-6">
 
-            {/* Overall Bias */}
             <div className={`rounded-xl p-5 border ${analysis.biasDirection === 'bullish' ? 'bg-emerald-500/10 border-emerald-500/30' : analysis.biasDirection === 'bearish' ? 'bg-red-500/10 border-red-500/30' : 'bg-slate-500/10 border-slate-500/30'}`}>
               <div className="flex items-center justify-between">
                 <div>
@@ -175,15 +170,13 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
               <p className="text-sm text-slate-300 mt-3">{analysis.summary}</p>
             </div>
 
-            {/* Forex */}
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">💱 Forex Impact</p>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {analysis.forex?.map((f, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${biasBg(f.bias)}`}>
                     <div className={`flex items-center gap-1 font-bold text-sm ${biasColor(f.bias)}`}>
-                      {biasIcon(f.bias)}
-                      {f.pair}
+                      {biasIcon(f.bias)}{f.pair}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">{f.reason}</p>
                   </div>
@@ -191,15 +184,13 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
               </div>
             </div>
 
-            {/* Indices */}
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">📈 Indices Impact</p>
               <div className="grid grid-cols-3 gap-2">
                 {analysis.indices?.map((idx, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${biasBg(idx.bias)}`}>
                     <div className={`flex items-center gap-1 font-bold text-sm ${biasColor(idx.bias)}`}>
-                      {biasIcon(idx.bias)}
-                      {idx.name}
+                      {biasIcon(idx.bias)}{idx.name}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">{idx.reason}</p>
                   </div>
@@ -207,15 +198,13 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
               </div>
             </div>
 
-            {/* Crypto */}
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🪙 Crypto Impact</p>
               <div className="grid grid-cols-2 gap-2">
                 {analysis.crypto?.map((c, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${biasBg(c.bias)}`}>
                     <div className={`flex items-center gap-1 font-bold text-sm ${biasColor(c.bias)}`}>
-                      {biasIcon(c.bias)}
-                      {c.name}
+                      {biasIcon(c.bias)}{c.name}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">{c.reason}</p>
                   </div>
@@ -223,15 +212,13 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
               </div>
             </div>
 
-            {/* Commodities */}
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🥇 Commodities</p>
               <div className="grid grid-cols-2 gap-2">
                 {analysis.commodities?.map((c, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${biasBg(c.bias)}`}>
                     <div className={`flex items-center gap-1 font-bold text-sm ${biasColor(c.bias)}`}>
-                      {biasIcon(c.bias)}
-                      {c.name}
+                      {biasIcon(c.bias)}{c.name}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">{c.reason}</p>
                   </div>
@@ -239,32 +226,27 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
               </div>
             </div>
 
-            {/* Pre Event Plan */}
             <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
               <p className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-3">⚡ Pre-Release Plan</p>
               <ul className="space-y-2">
                 {analysis.preEventPlan?.map((tip, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
-                    <span className="text-amber-400 mt-0.5">•</span>
-                    {tip}
+                    <span className="text-amber-400 mt-0.5">•</span>{tip}
                   </li>
                 ))}
               </ul>
             </div>
 
-            {/* Post Event Strategy */}
             <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-4">
               <p className="text-xs font-bold text-cyan-400 uppercase tracking-wider mb-2">✅ Post-Release Strategy</p>
               <p className="text-sm text-slate-300">{analysis.postEventStrategy}</p>
             </div>
 
-            {/* Prop Firm Advice */}
             <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4">
               <p className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-2">🎯 Prop Firm Advice</p>
               <p className="text-sm text-slate-300">{analysis.propFirmAdvice}</p>
             </div>
 
-            {/* Disclaimer */}
             <div className="bg-white/5 border border-white/10 rounded-xl p-4">
               <p className="text-xs text-slate-500">
                 ⚠️ <strong className="text-slate-400">Disclaimer:</strong> This analysis is NOT financial advice. Trading news events carries significant risk of loss, including loss of your entire capital. Past performance does not guarantee future results. Always use proper risk management. BiasForge.ai is an educational tool only.
@@ -318,19 +300,36 @@ export default function EconomicCalendar() {
 
   useEffect(() => { fetchCalendar(); }, []);
 
-  const filteredEvents = useMemo(() => {
-    return events
-      .filter(e => dayFilter === 'Today' ? isToday(e.date) : true)
-      .filter(e => currencyFilter !== 'All' ? e.currency === currencyFilter : true)
-      .filter(e => impactFilter !== 'All' ? e.impact.toLowerCase() === impactFilter.toLowerCase() : true)
-      .filter(e => search.trim() ? e.title.toLowerCase().includes(search.toLowerCase()) : true)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-  }, [events, dayFilter, currencyFilter, impactFilter, search]);
-
   function isToday(dateString) {
     if (!dateString) return false;
     const d = new Date(dateString), t = new Date();
     return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
+  }
+
+  function isThisWeek(dateString) {
+    if (!dateString) return false;
+    const d = new Date(dateString);
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(now.getDate() - now.getDay());
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return d >= start && d <= end;
+  }
+
+  function isNextWeek(dateString) {
+    if (!dateString) return false;
+    const d = new Date(dateString);
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(now.getDate() - now.getDay() + 7);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return d >= start && d <= end;
   }
 
   function getCountdown(dateString) {
@@ -343,18 +342,30 @@ export default function EconomicCalendar() {
     return `${m}m`;
   }
 
+  const filteredEvents = useMemo(() => {
+    return events
+      .filter(e => {
+        if (dayFilter === 'Today') return isToday(e.date)
+        if (dayFilter === 'This Week') return isThisWeek(e.date)
+        if (dayFilter === 'Next Week') return isNextWeek(e.date)
+        return true
+      })
+      .filter(e => currencyFilter !== 'All' ? e.currency === currencyFilter : true)
+      .filter(e => impactFilter !== 'All' ? e.impact.toLowerCase() === impactFilter.toLowerCase() : true)
+      .filter(e => search.trim() ? e.title.toLowerCase().includes(search.toLowerCase()) : true)
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [events, dayFilter, currencyFilter, impactFilter, search]);
+
   const highImpactToday = events.filter(e => isToday(e.date) && e.impact?.toLowerCase() === 'high').length;
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
 
-        {/* Analyze Modal */}
         {selectedEvent && (
           <AnalyzeModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
         )}
 
-        {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-cyan-400 text-sm font-semibold mb-2">
@@ -371,7 +382,6 @@ export default function EconomicCalendar() {
           </button>
         </div>
 
-        {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
             <p className="text-sm text-slate-400">Total Events</p>
@@ -387,7 +397,6 @@ export default function EconomicCalendar() {
           </div>
         </div>
 
-        {/* Filters */}
         <div className="bg-[#020617] border border-white/10 rounded-2xl p-5">
           <div className="flex flex-wrap gap-3">
             <div className="relative flex-1 min-w-[200px]">
@@ -400,6 +409,7 @@ export default function EconomicCalendar() {
               className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
               <option value="Today">Today</option>
               <option value="This Week">This Week</option>
+              <option value="Next Week">Next Week</option>
             </select>
             <select value={currencyFilter} onChange={e => setCurrencyFilter(e.target.value)}
               className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
@@ -416,17 +426,14 @@ export default function EconomicCalendar() {
           </div>
         </div>
 
-        {/* Error */}
         {error && <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-red-300 text-sm">{error}</div>}
 
-        {/* Loading */}
         {loading && (
           <div className="space-y-3">
             {[1,2,3,4].map(i => <div key={i} className="h-24 bg-white/5 border border-white/10 rounded-2xl animate-pulse" />)}
           </div>
         )}
 
-        {/* Events List */}
         {!loading && filteredEvents.length > 0 && (
           <div className="space-y-3">
             {filteredEvents.map(event => (
@@ -456,12 +463,9 @@ export default function EconomicCalendar() {
                   <div><p className="text-slate-500 text-xs">Countdown</p><p className="text-emerald-400 font-medium">{getCountdown(event.date)}</p></div>
                 </div>
 
-                {/* Analyze Button */}
                 <div className="mt-4">
-                  <button
-                    onClick={() => setSelectedEvent(event)}
-                    className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold hover:bg-cyan-500/20 transition-all"
-                  >
+                  <button onClick={() => setSelectedEvent(event)}
+                    className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold hover:bg-cyan-500/20 transition-all">
                     <Zap className="w-4 h-4" />
                     AI Analyze — PRO
                   </button>
