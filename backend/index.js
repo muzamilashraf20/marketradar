@@ -196,7 +196,7 @@ app.get('/api/calendar', async (req, res) => {
     const normalized = events.map((item) => ({
       title: item.event || 'Economic Event',
       country: item.country || 'N/A',
-      date: item.time ? new Date(item.time * 1000).toISOString() : new Date().toISOString(),
+      date: item.time ? new Date(item.time).toISOString() : new Date().toISOString(),
       impact: item.impact === 3 ? 'High' : item.impact === 2 ? 'Medium' : 'Low',
       forecast: item.estimate != null ? String(item.estimate) : '-',
       previous: item.prev != null ? String(item.prev) : '-',
