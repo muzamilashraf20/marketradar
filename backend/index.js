@@ -166,33 +166,51 @@ app.post('/api/bias', async (req, res) => {
 })
 
 app.get('/api/calendar', async (req, res) => {
-  const urls = [
-    'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
-    'https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json',
-  ]
-
-  for (const url of urls) {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://www.forexfactory.com/',
-        },
-        signal: AbortSignal.timeout(8000)
-      })
-      if (!response.ok) continue
-      const data = await response.json()
-      if (Array.isArray(data) && data.length > 0) {
-        return res.json(data)
-      }
-    } catch (err) {
-      console.error(`Calendar URL failed [${url}]:`, err.message)
-      continue
-    }
+  const apiKey = process.env.FINNHUB_API_KEY
+  if (!apiKey) {
+    return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
   }
 
-  return res.status(502).json({ error: 'Failed to fetch calendar data.' })
+  try {
+    // Get this week's date range
+    const now = new Date()
+    const monday = new Date(now)
+    monday.setDate(now.getDate() - now.getDay() + 1)
+    const sunday = new Date(monday)
+    sunday.setDate(monday.getDate() + 6)
+
+    const from = monday.toISOString().split('T')[0]
+    const to = sunday.toISOString().split('T')[0]
+
+    const response = await fetch(
+      `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`,
+      { headers: { 'Accept': 'application/json' } }
+    )
+
+    if (!response.ok) {
+      throw new Error(`Finnhub error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    const events = data.economicCalendar || []
+
+    // Normalize to our format
+    const normalized = events.map((item, index) => ({
+      title: item.event || 'Economic Event',
+      country: item.country || 'N/A',
+      date: item.time ? new Date(item.time * 1000).toISOString() : new Date().toISOString(),
+      impact: item.impact === 3 ? 'High' : item.impact === 2 ? 'Medium' : 'Low',
+      forecast: item.estimate !== null && item.estimate !== undefined ? String(item.estimate) : '-',
+      previous: item.prev !== null && item.prev !== undefined ? String(item.prev) : '-',
+      actual: item.actual !== null && item.actual !== undefined ? String(item.actual) : '-',
+    }))
+
+    return res.json(normalized)
+
+  } catch (err) {
+    console.error('Finnhub calendar error:', err.message)
+    return res.status(502).json({ error: 'Failed to fetch calendar data.' })
+  }
 })
 
 app.get('/api/news', async (req, res) => {
