@@ -171,7 +171,6 @@ app.get('/api/calendar', async (req, res) => {
     return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
   }
 
-  // Sirf yeh major trading currencies
   const majorCountries = ['US', 'EU', 'GB', 'JP', 'AU', 'CA', 'CH', 'NZ', 'CN']
 
   try {
@@ -179,7 +178,7 @@ app.get('/api/calendar', async (req, res) => {
     const fromDate = new Date(now)
     fromDate.setDate(now.getDate() - 3)
     const toDate = new Date(now)
-    toDate.setDate(now.getDate() + 14) // 2 weeks ahead
+    toDate.setDate(now.getDate() + 14)
 
     const from = fromDate.toISOString().split('T')[0]
     const to = toDate.toISOString().split('T')[0]
@@ -189,24 +188,21 @@ app.get('/api/calendar', async (req, res) => {
       { headers: { 'Accept': 'application/json' } }
     )
 
-    if (!response.ok) {
-      throw new Error(`Finnhub error: ${response.status}`)
-    }
+    if (!response.ok) throw new Error(`Finnhub error: ${response.status}`)
 
     const data = await response.json()
     const events = data.economicCalendar || []
 
-    // Sirf major currencies filter karo
-   const filtered = events.filter(item =>
-  majorCountries.includes(item.country?.toUpperCase())
-)
+    const filtered = events.filter(item =>
+      majorCountries.includes(item.country?.toUpperCase())
+    )
 
     const normalized = filtered.map((item) => ({
       title: item.event || 'Economic Event',
-     country: ({
-  'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
-  'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD', 'CN': 'CNY'
-})[item.country?.toUpperCase()] || item.country?.toUpperCase() || 'N/A',
+      country: ({
+        'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
+        'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD', 'CN': 'CNY'
+      })[item.country?.toUpperCase()] || item.country?.toUpperCase() || 'N/A',
       date: item.time ? new Date(item.time).toISOString() : new Date().toISOString(),
       impact: item.impact?.toLowerCase() === 'high' ? 'High'
             : item.impact?.toLowerCase() === 'medium' ? 'Medium'
@@ -216,7 +212,6 @@ app.get('/api/calendar', async (req, res) => {
       actual: item.actual != null ? String(item.actual) : '-',
     }))
 
-    // High impact pehle, phir date se sort
     normalized.sort((a, b) => {
       const impactOrder = { High: 0, Medium: 1, Low: 2 }
       if (impactOrder[a.impact] !== impactOrder[b.impact]) {
@@ -243,6 +238,7 @@ app.get('/api/news', async (req, res) => {
   ]
 
   try {
+    // Step 1: Fetch all RSS feeds
     const results = await Promise.allSettled(
       feeds.map(feed =>
         rssParser.parseURL(feed.url).then(parsed =>
@@ -254,8 +250,6 @@ app.get('/api/news', async (req, res) => {
             publishedAt: item.pubDate
               ? new Date(item.pubDate).toISOString()
               : new Date().toISOString(),
-            impact: 5,
-            category: 'General',
           }))
         )
       )
@@ -263,20 +257,77 @@ app.get('/api/news', async (req, res) => {
 
     let articles = []
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled') {
-        articles.push(...r.value)
-      } else {
-        console.error(`Feed failed [${feeds[i].name}]:`, r.reason?.message)
-      }
+      if (r.status === 'fulfilled') articles.push(...r.value)
+      else console.error(`Feed failed [${feeds[i].name}]:`, r.reason?.message)
     })
 
     if (articles.length === 0) {
       return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
     }
 
-    articles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+    // Step 2: Claude se har article ka instant impact score + market tags
+    const titlesForAI = articles
+      .map((a, i) => `${i + 1}. [${a.source}] ${a.title}`)
+      .join('\n')
 
-    return res.json({ success: true, articles })
+    let scoredArticles = articles.map(a => ({
+      ...a,
+      impact: 5,
+      category: 'General',
+      bias: 'neutral',
+      marketTags: [],
+      oneliner: '',
+    }))
+
+    try {
+      const message = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        system: `You are a macro trading analyst for BiasForge.ai.
+For each news headline, return impact score, category, bias, market tags, and one-liner.
+Return ONLY valid JSON array. No markdown. No explanation.
+Example format:
+[
+  {
+    "index": 1,
+    "impact": 8,
+    "category": "Central Bank",
+    "bias": "bearish",
+    "marketTags": ["USD↓", "EUR/USD↑", "Gold↑"],
+    "oneliner": "Fed rate cut signals USD weakness"
+  }
+]
+Impact: 1-10. Bias: bullish/bearish/neutral.
+Categories: Forex, Stocks, Commodities, Crypto, Central Bank, Geopolitical, General.
+MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑`,
+        messages: [{ role: 'user', content: `Score these headlines:\n${titlesForAI}` }],
+      })
+
+      const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
+      const scores = JSON.parse(raw)
+
+      scores.forEach(score => {
+        const idx = score.index - 1
+        if (scoredArticles[idx]) {
+          scoredArticles[idx].impact = score.impact || 5
+          scoredArticles[idx].category = score.category || 'General'
+          scoredArticles[idx].bias = score.bias || 'neutral'
+          scoredArticles[idx].marketTags = score.marketTags || []
+          scoredArticles[idx].oneliner = score.oneliner || ''
+        }
+      })
+    } catch (aiErr) {
+      console.error('AI scoring error:', aiErr.message)
+      // Fallback — continue without AI scores
+    }
+
+    // Step 3: Sort — High impact first, then latest
+    scoredArticles.sort((a, b) => {
+      if (b.impact !== a.impact) return b.impact - a.impact
+      return new Date(b.publishedAt) - new Date(a.publishedAt)
+    })
+
+    return res.json({ success: true, articles: scoredArticles })
 
   } catch (e) {
     console.error('News route error:', e.message)
