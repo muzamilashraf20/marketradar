@@ -20,6 +20,7 @@ import Changelog from './pages/Changelog'
 import PropFirm from './pages/PropFirm'
 import Playbooks from './pages/Playbooks'
 import SettingsPage from './pages/Settings'
+import CurrencyStrength from './pages/CurrencyStrength'
 import ProtectedRoute from './components/common/ProtectedRoute'
 
 function RootRedirect() {
@@ -36,7 +37,6 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Root redirect */}
         <Route path="/" element={<RootRedirect />} />
 
         {/* Public Routes */}
@@ -61,8 +61,8 @@ export default function App() {
         <Route path="/prop-firm" element={<ProtectedRoute><PropFirm /></ProtectedRoute>} />
         <Route path="/playbooks" element={<ProtectedRoute><Playbooks /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+        <Route path="/strength" element={<ProtectedRoute><CurrencyStrength /></ProtectedRoute>} />
 
-        {/* 404 fallback */}
         <Route path="*" element={<Navigate to="/landing" replace />} />
       </Routes>
     </BrowserRouter>
