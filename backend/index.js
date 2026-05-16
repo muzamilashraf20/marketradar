@@ -172,7 +172,7 @@ app.get('/api/calendar', async (req, res) => {
   }
 
   // Sirf yeh major trading currencies
-  const majorCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD']
+  const majorCountries = ['US', 'EU', 'GB', 'JP', 'AU', 'CA', 'CH', 'NZ', 'CN']
 
   try {
     const now = new Date()
@@ -197,13 +197,16 @@ app.get('/api/calendar', async (req, res) => {
     const events = data.economicCalendar || []
 
     // Sirf major currencies filter karo
-    const filtered = events.filter(item =>
-      majorCurrencies.includes(item.country?.toUpperCase())
-    )
+   const filtered = events.filter(item =>
+  majorCountries.includes(item.country?.toUpperCase())
+)
 
     const normalized = filtered.map((item) => ({
       title: item.event || 'Economic Event',
-      country: item.country?.toUpperCase() || 'N/A',
+     country: ({
+  'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
+  'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD', 'CN': 'CNY'
+})[item.country?.toUpperCase()] || item.country?.toUpperCase() || 'N/A',
       date: item.time ? new Date(item.time).toISOString() : new Date().toISOString(),
       impact: item.impact?.toLowerCase() === 'high' ? 'High'
             : item.impact?.toLowerCase() === 'medium' ? 'Medium'
