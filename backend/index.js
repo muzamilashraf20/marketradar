@@ -167,9 +167,7 @@ app.post('/api/bias', async (req, res) => {
 
 app.get('/api/calendar', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
-  if (!apiKey) {
-    return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
-  }
+  if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
 
   const majorCountries = ['US', 'EU', 'GB', 'JP', 'AU', 'CA', 'CH', 'NZ', 'CN']
 
@@ -228,6 +226,127 @@ app.get('/api/calendar', async (req, res) => {
   }
 })
 
+// ─── Currency Strength ────────────────────────────────────────────────────────
+app.get('/api/strength', async (req, res) => {
+  const apiKey = process.env.TWELVEDATA_API_KEY
+
+  // 28 major pairs — yahi se 8 currencies ki strength calculate hogi
+  const pairs = [
+    'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF',
+    'AUD/USD', 'NZD/USD', 'USD/CAD',
+    'EUR/GBP', 'EUR/JPY', 'EUR/CHF', 'EUR/AUD', 'EUR/CAD',
+    'GBP/JPY', 'GBP/CHF', 'GBP/AUD', 'GBP/CAD',
+    'AUD/JPY', 'AUD/CHF', 'AUD/CAD', 'AUD/NZD',
+    'NZD/JPY', 'NZD/CHF', 'NZD/CAD',
+    'CAD/JPY', 'CAD/CHF',
+    'CHF/JPY',
+  ]
+
+  try {
+    // Fetch current prices
+    const symbolStr = pairs.join(',')
+    const response = await axios.get(
+      `https://api.twelvedata.com/price?symbol=${symbolStr}&apikey=${apiKey}`
+    )
+
+    const prices = response.data
+
+    // Calculate strength scores
+    const scores = {
+      USD: 0, EUR: 0, GBP: 0, JPY: 0,
+      AUD: 0, NZD: 0, CAD: 0, CHF: 0
+    }
+    const counts = { ...scores }
+
+    // Fetch previous close for % change
+    const prevResponse = await axios.get(
+      `https://api.twelvedata.com/eod?symbol=${symbolStr}&apikey=${apiKey}`
+    )
+    const prevPrices = prevResponse.data
+
+    pairs.forEach(pair => {
+      const [base, quote] = pair.split('/')
+      const current = parseFloat(prices[pair]?.price)
+      const prev = parseFloat(prevPrices[pair]?.close)
+
+      if (!current || !prev || isNaN(current) || isNaN(prev)) return
+
+      const change = ((current - prev) / prev) * 100
+
+      if (scores[base] !== undefined) {
+        scores[base] += change
+        counts[base]++
+      }
+      if (scores[quote] !== undefined) {
+        scores[quote] -= change
+        counts[quote]++
+      }
+    })
+
+    // Average scores
+    const averaged = {}
+    Object.keys(scores).forEach(currency => {
+      averaged[currency] = counts[currency] > 0
+        ? scores[currency] / counts[currency]
+        : 0
+    })
+
+    // Normalize to 0-100 scale
+    const values = Object.values(averaged)
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    const range = max - min || 1
+
+    const normalized = {}
+    Object.keys(averaged).forEach(currency => {
+      normalized[currency] = Math.round(((averaged[currency] - min) / range) * 100)
+    })
+
+    // Sort strongest first
+    const sorted = Object.entries(normalized)
+      .sort((a, b) => b[1] - a[1])
+      .map(([currency, strength]) => ({
+        currency,
+        strength,
+        raw: averaged[currency].toFixed(4),
+        label: strength >= 70 ? 'Strong'
+             : strength >= 40 ? 'Neutral'
+             : 'Weak',
+      }))
+
+    // Best pairs to trade
+    const strongest = sorted[0]
+    const weakest = sorted[sorted.length - 1]
+    const bestPairs = []
+
+    if (strongest && weakest && strongest.currency !== weakest.currency) {
+      const pair1 = `${strongest.currency}/${weakest.currency}`
+      const pair2 = `${weakest.currency}/${strongest.currency}`
+      bestPairs.push({
+        pair: pair1,
+        action: 'BUY',
+        reason: `${strongest.currency} strongest, ${weakest.currency} weakest`
+      })
+      bestPairs.push({
+        pair: pair2,
+        action: 'SELL',
+        reason: `Sell ${weakest.currency} against ${strongest.currency}`
+      })
+    }
+
+    return res.json({
+      success: true,
+      currencies: sorted,
+      bestPairs,
+      updatedAt: new Date().toISOString()
+    })
+
+  } catch (err) {
+    console.error('Strength error:', err.message)
+    return res.status(500).json({ success: false, error: 'Failed to calculate strength.' })
+  }
+})
+
 app.get('/api/news', async (req, res) => {
   const feeds = [
     { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
@@ -238,7 +357,6 @@ app.get('/api/news', async (req, res) => {
   ]
 
   try {
-    // Step 1: Fetch all RSS feeds
     const results = await Promise.allSettled(
       feeds.map(feed =>
         rssParser.parseURL(feed.url).then(parsed =>
@@ -265,7 +383,6 @@ app.get('/api/news', async (req, res) => {
       return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
     }
 
-    // Step 2: Claude se har article ka instant impact score + market tags
     const titlesForAI = articles
       .map((a, i) => `${i + 1}. [${a.source}] ${a.title}`)
       .join('\n')
@@ -318,10 +435,8 @@ MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑
       })
     } catch (aiErr) {
       console.error('AI scoring error:', aiErr.message)
-      // Fallback — continue without AI scores
     }
 
-    // Step 3: Sort — High impact first, then latest
     scoredArticles.sort((a, b) => {
       if (b.impact !== a.impact) return b.impact - a.impact
       return new Date(b.publishedAt) - new Date(a.publishedAt)
@@ -331,11 +446,7 @@ MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑
 
   } catch (e) {
     console.error('News route error:', e.message)
-    return res.status(500).json({
-      success: false,
-      error: 'News fetch failed.',
-      detail: e.message
-    })
+    return res.status(500).json({ success: false, error: 'News fetch failed.', detail: e.message })
   }
 })
 
