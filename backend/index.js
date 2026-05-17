@@ -166,21 +166,22 @@ app.post('/api/bias', async (req, res) => {
 })
 
 // ============================================
-// 🚀 AI PRE-TRADE GUARDIAN - World's First!
+// 🚀 PRE-TRADE GUARDIAN - Hybrid (Rules + AI)
 // ============================================
 app.post('/api/trade-check', async (req, res) => {
   const {
-    symbol,           // e.g. "EUR/USD"
-    direction,        // "BUY" or "SELL"
-    lotSize,          // e.g. 0.5
-    stopLossPips,     // e.g. 30
-    entryPrice,       // optional
-    accountSize,      // e.g. 50000
-    dailyDrawdownUsed,    // % already used today
-    totalDrawdownUsed,    // % already used total
-    maxDailyDrawdown,     // % limit (e.g. 5)
-    maxTotalDrawdown,     // % limit (e.g. 10)
-    riskPerTrade,         // % (e.g. 1)
+    symbol,
+    direction,
+    lotSize,
+    stopLossPips,
+    entryPrice,
+    accountSize,
+    dailyDrawdownUsed,
+    totalDrawdownUsed,
+    maxDailyDrawdown,
+    maxTotalDrawdown,
+    riskPerTrade,
+    useAI = false, // 🔥 Toggle this to true when credits return
   } = req.body
 
   if (!symbol || !direction || !lotSize || !stopLossPips) {
@@ -191,7 +192,7 @@ app.post('/api/trade-check', async (req, res) => {
   }
 
   try {
-    // 1️⃣ Fetch upcoming economic events (next 4 hours)
+    // 1️⃣ Fetch upcoming high-impact events (next 4 hours)
     let upcomingEvents = []
     try {
       const apiKey = process.env.FINNHUB_API_KEY
@@ -228,77 +229,144 @@ app.post('/api/trade-check', async (req, res) => {
     }
 
     // 2️⃣ Calculate risk metrics
-    const dailyDrawdownRemaining = maxDailyDrawdown - dailyDrawdownUsed
-    const totalDrawdownRemaining = maxTotalDrawdown - totalDrawdownUsed
+    const dailyDrawdownRemaining = (maxDailyDrawdown || 5) - (dailyDrawdownUsed || 0)
+    const totalDrawdownRemaining = (maxTotalDrawdown || 10) - (totalDrawdownUsed || 0)
 
-    // Estimate $ risk for this trade (rough — depends on pair, but standard FX assumption)
-    const pipValue = symbol.toUpperCase().includes('JPY') ? 9.09 : 10 // per 1.0 lot, USD account
+    const pipValue = symbol.toUpperCase().includes('JPY') ? 9.09 : 10
     const estimatedRiskDollars = lotSize * pipValue * stopLossPips
     const estimatedRiskPercent = accountSize ? (estimatedRiskDollars / accountSize) * 100 : 0
 
-    // 3️⃣ Build context for AI
-    const tradeContext = `
-TRADE DETAILS:
-- Symbol: ${symbol}
-- Direction: ${direction}
-- Lot Size: ${lotSize}
-- Stop Loss: ${stopLossPips} pips
-${entryPrice ? `- Entry Price: ${entryPrice}` : ''}
-- Estimated Risk: $${estimatedRiskDollars.toFixed(2)} (${estimatedRiskPercent.toFixed(2)}% of account)
-
-ACCOUNT STATUS:
-- Account Size: $${accountSize?.toLocaleString() || 'N/A'}
-- Daily Drawdown Used: ${dailyDrawdownUsed?.toFixed(1) || 0}% of ${maxDailyDrawdown}% limit
-- Daily Drawdown Remaining: ${dailyDrawdownRemaining?.toFixed(1) || 'N/A'}%
-- Total Drawdown Used: ${totalDrawdownUsed?.toFixed(1) || 0}% of ${maxTotalDrawdown}% limit
-- Total Drawdown Remaining: ${totalDrawdownRemaining?.toFixed(1) || 'N/A'}%
-- Recommended Risk Per Trade: ${riskPerTrade || 1}%
-
-UPCOMING HIGH-IMPACT NEWS (next 4 hours):
-${upcomingEvents.length > 0
-  ? upcomingEvents.map(e => `- ${e.event} (${e.country}) in ${e.minutesUntil} minutes`).join('\n')
-  : '- No high-impact events scheduled'}
-
-CURRENT TIME: ${new Date().toUTCString()}
-`.trim()
-
-    // 4️⃣ Call Claude for verdict
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 1024,
-      system: `You are an elite prop firm risk advisor for BiasForge.ai. Your job is to PROTECT funded traders from blowing their accounts.
-
-You analyze trades BEFORE entry and give a verdict:
-- 🟢 GREEN: Safe to take, all systems go
-- 🟡 YELLOW: Caution, take but reduce size or wait
-- 🔴 RED: Do NOT take this trade, high risk of loss
-
-Decision rules (be strict but fair):
-1. If high-impact news is within 60 minutes → YELLOW or RED
-2. If trade risk > recommended risk per trade → YELLOW
-3. If daily drawdown used > 70% → YELLOW (avoid more risk today)
-4. If daily drawdown used > 90% → RED (account blow-up imminent)
-5. If trade risk would push daily drawdown > limit → RED
-6. If everything is within safe parameters → GREEN
-
-Return ONLY valid JSON in this EXACT format (no markdown, no explanation outside JSON):
-{
-  "verdict": "GREEN" | "YELLOW" | "RED",
-  "headline": "Short verdict statement (max 60 chars)",
-  "reasons": ["reason 1", "reason 2", "reason 3"],
-  "warnings": ["warning if any"],
-  "recommendation": "Specific advice (e.g. 'Reduce to 0.2 lots' or 'Wait until after NFP')",
-  "confidence": 0-100
-}`,
-      messages: [{ role: 'user', content: `Analyze this trade and give verdict:\n\n${tradeContext}` }],
+    // 3️⃣ Match trade currency with upcoming news
+    const tradeCurrencies = symbol.toUpperCase().replace('/', '').match(/.{1,3}/g) || []
+    const currencyMap = {
+      'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
+      'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD'
+    }
+    const conflictingEvents = upcomingEvents.filter(e => {
+      const eventCurrency = currencyMap[e.country?.toUpperCase()]
+      return eventCurrency && tradeCurrencies.includes(eventCurrency)
     })
+    const imminentNews = upcomingEvents.find(e => e.minutesUntil <= 60)
+    const conflictingImminent = conflictingEvents.find(e => e.minutesUntil <= 60)
 
-    const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
-    const verdict = JSON.parse(raw)
+    // 4️⃣ RULE-BASED VERDICT ENGINE
+    const reasons = []
+    const warnings = []
+    let verdict = 'GREEN'
+    let headline = 'Trade conditions look clear'
+    let recommendation = 'Proceed with your planned setup. Stick to your stop loss.'
+    let confidence = 85
+
+    // RED FLAGS (account-threatening)
+    if (dailyDrawdownUsed >= 90) {
+      verdict = 'RED'
+      headline = 'Account blow-up risk — STOP trading today'
+      reasons.push(`Daily drawdown at ${dailyDrawdownUsed.toFixed(1)}% — you're 1 bad trade from violation`)
+      recommendation = 'Close terminal. Resume tomorrow with fresh mindset.'
+      confidence = 98
+    } else if (estimatedRiskPercent > maxDailyDrawdown) {
+      verdict = 'RED'
+      headline = 'Single trade risk exceeds daily limit'
+      reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}% — more than your ${maxDailyDrawdown}% daily cap`)
+      recommendation = `Reduce lot size to ${(lotSize * (maxDailyDrawdown / estimatedRiskPercent) * 0.5).toFixed(2)} or smaller`
+      confidence = 96
+    } else if (conflictingImminent) {
+      verdict = 'RED'
+      headline = `${conflictingImminent.event} in ${conflictingImminent.minutesUntil} min`
+      reasons.push(`High-impact ${currencyMap[conflictingImminent.country?.toUpperCase()] || conflictingImminent.country} news directly affects ${symbol}`)
+      reasons.push('Spreads will widen, slippage likely, stops can get hunted')
+      recommendation = `Wait ${conflictingImminent.minutesUntil + 15} minutes — let post-news volatility settle`
+      confidence = 94
+    }
+    // YELLOW FLAGS (caution warranted)
+    else if (dailyDrawdownUsed >= 70) {
+      verdict = 'YELLOW'
+      headline = 'Daily drawdown danger zone'
+      reasons.push(`${dailyDrawdownUsed.toFixed(1)}% of daily limit used`)
+      reasons.push(`Only $${((accountSize * dailyDrawdownRemaining) / 100).toFixed(0)} loss capacity left`)
+      recommendation = 'Reduce position size by 50%. Avoid revenge trading.'
+      confidence = 88
+    } else if (estimatedRiskPercent > riskPerTrade * 1.5) {
+      verdict = 'YELLOW'
+      headline = 'Risk above your normal per-trade limit'
+      reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}% — your rule is ${riskPerTrade}%`)
+      const suggestedLot = ((accountSize * riskPerTrade) / 100) / (pipValue * stopLossPips)
+      recommendation = `Reduce to ${suggestedLot.toFixed(2)} lots to stay within your ${riskPerTrade}% rule`
+      confidence = 90
+    } else if (imminentNews) {
+      verdict = 'YELLOW'
+      headline = `News event in ${imminentNews.minutesUntil} min`
+      reasons.push(`${imminentNews.event} (${imminentNews.country}) could spike volatility`)
+      reasons.push('Even non-related news affects correlated pairs')
+      recommendation = `Consider waiting ${imminentNews.minutesUntil + 10} min, or use smaller size`
+      confidence = 82
+    } else if (totalDrawdownUsed >= 70) {
+      verdict = 'YELLOW'
+      headline = 'Total drawdown getting tight'
+      reasons.push(`${totalDrawdownUsed.toFixed(1)}% of total drawdown used`)
+      recommendation = 'Trade smaller. Focus on A+ setups only.'
+      confidence = 85
+    }
+    // GREEN — all clear
+    else {
+      reasons.push(`Risk is ${estimatedRiskPercent.toFixed(2)}% of account ($${estimatedRiskDollars.toFixed(0)}) — within your ${riskPerTrade}% rule`)
+      reasons.push(`Daily drawdown only ${dailyDrawdownUsed.toFixed(1)}% used — ${dailyDrawdownRemaining.toFixed(1)}% buffer remaining`)
+      if (upcomingEvents.length === 0) {
+        reasons.push('No high-impact news in next 4 hours')
+      } else {
+        reasons.push(`${upcomingEvents.length} upcoming news event(s) — none affect ${symbol} directly`)
+      }
+    }
+
+    // Extra warnings
+    if (totalDrawdownUsed >= 80 && verdict !== 'RED') {
+      warnings.push(`Total drawdown at ${totalDrawdownUsed.toFixed(1)}% — one more bad day blows the challenge`)
+    }
+    if (upcomingEvents.length >= 3) {
+      warnings.push(`${upcomingEvents.length} high-impact events in next 4h — busy session ahead`)
+    }
+    if (conflictingEvents.length > 0 && verdict === 'GREEN') {
+      warnings.push(`${conflictingEvents[0].event} in ${conflictingEvents[0].minutesUntil}min may affect ${symbol}`)
+    }
+
+    let finalVerdict = {
+      verdict,
+      headline,
+      reasons,
+      warnings,
+      recommendation,
+      confidence,
+      engine: 'rule-based'
+    }
+
+    // 5️⃣ OPTIONAL: Enhance with AI if enabled and credits available
+    if (useAI) {
+      try {
+        const tradeContext = `
+TRADE: ${direction} ${lotSize} lots ${symbol}, SL ${stopLossPips} pips
+RISK: $${estimatedRiskDollars.toFixed(2)} (${estimatedRiskPercent.toFixed(2)}%)
+DRAWDOWN: Daily ${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%, Total ${totalDrawdownUsed?.toFixed(1)}%/${maxTotalDrawdown}%
+NEWS (next 4h): ${upcomingEvents.map(e => `${e.event}(${e.country}) in ${e.minutesUntil}m`).join('; ') || 'none'}
+RULE VERDICT: ${verdict}`.trim()
+
+        const message = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 800,
+          system: `You are an elite prop firm risk advisor. Return ONLY valid JSON with: verdict (GREEN/YELLOW/RED), headline (max 60 chars), reasons (array of 3 strings), warnings (array), recommendation (string), confidence (0-100).`,
+          messages: [{ role: 'user', content: `Refine this trade verdict:\n${tradeContext}` }],
+        })
+        const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
+        const aiVerdict = JSON.parse(raw)
+        finalVerdict = { ...aiVerdict, engine: 'ai-enhanced' }
+      } catch (aiErr) {
+        console.warn('AI enhancement failed, using rule-based:', aiErr.message)
+        // Silently fall back to rule-based — user gets a verdict either way
+      }
+    }
 
     res.json({
       success: true,
-      verdict,
+      verdict: finalVerdict,
       meta: {
         estimatedRiskDollars: estimatedRiskDollars.toFixed(2),
         estimatedRiskPercent: estimatedRiskPercent.toFixed(2),
@@ -316,7 +384,6 @@ Return ONLY valid JSON in this EXACT format (no markdown, no explanation outside
     })
   }
 })
-
 app.get('/api/calendar', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
