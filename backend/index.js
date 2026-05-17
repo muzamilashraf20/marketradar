@@ -230,7 +230,6 @@ app.get('/api/calendar', async (req, res) => {
 app.get('/api/strength', async (req, res) => {
   const apiKey = process.env.TWELVEDATA_API_KEY
 
-  // 28 major pairs — yahi se 8 currencies ki strength calculate hogi
   const pairs = [
     'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF',
     'AUD/USD', 'NZD/USD', 'USD/CAD',
@@ -238,97 +237,73 @@ app.get('/api/strength', async (req, res) => {
     'GBP/JPY', 'GBP/CHF', 'GBP/AUD', 'GBP/CAD',
     'AUD/JPY', 'AUD/CHF', 'AUD/CAD', 'AUD/NZD',
     'NZD/JPY', 'NZD/CHF', 'NZD/CAD',
-    'CAD/JPY', 'CAD/CHF',
-    'CHF/JPY',
+    'CAD/JPY', 'CAD/CHF', 'CHF/JPY',
   ]
 
   try {
-    // Fetch current prices
     const symbolStr = pairs.join(',')
+
+    // Use time_series — 2 candles (today + yesterday) for % change
     const response = await axios.get(
-      `https://api.twelvedata.com/price?symbol=${symbolStr}&apikey=${apiKey}`
+      `https://api.twelvedata.com/time_series?symbol=${symbolStr}&interval=1day&outputsize=2&apikey=${apiKey}`
     )
 
-    const prices = response.data
+    const tsData = response.data
 
-    // Calculate strength scores
-    const scores = {
-      USD: 0, EUR: 0, GBP: 0, JPY: 0,
-      AUD: 0, NZD: 0, CAD: 0, CHF: 0
-    }
-    const counts = { ...scores }
-
-    // Fetch previous close for % change
-    const prevResponse = await axios.get(
-      `https://api.twelvedata.com/eod?symbol=${symbolStr}&apikey=${apiKey}`
-    )
-    const prevPrices = prevResponse.data
+    const scores = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
+    const counts = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
 
     pairs.forEach(pair => {
       const [base, quote] = pair.split('/')
-      const current = parseFloat(prices[pair]?.price)
-      const prev = parseFloat(prevPrices[pair]?.close)
+      const pairData = tsData[pair]
+      if (!pairData?.values || pairData.values.length < 2) return
 
+      const current = parseFloat(pairData.values[0].close)
+      const prev = parseFloat(pairData.values[1].close)
       if (!current || !prev || isNaN(current) || isNaN(prev)) return
 
       const change = ((current - prev) / prev) * 100
 
-      if (scores[base] !== undefined) {
-        scores[base] += change
-        counts[base]++
-      }
-      if (scores[quote] !== undefined) {
-        scores[quote] -= change
-        counts[quote]++
-      }
+      if (scores[base] !== undefined) { scores[base] += change; counts[base]++ }
+      if (scores[quote] !== undefined) { scores[quote] -= change; counts[quote]++ }
     })
 
-    // Average scores
     const averaged = {}
-    Object.keys(scores).forEach(currency => {
-      averaged[currency] = counts[currency] > 0
-        ? scores[currency] / counts[currency]
-        : 0
+    Object.keys(scores).forEach(c => {
+      averaged[c] = counts[c] > 0 ? scores[c] / counts[c] : 0
     })
 
-    // Normalize to 0-100 scale
     const values = Object.values(averaged)
     const min = Math.min(...values)
     const max = Math.max(...values)
     const range = max - min || 1
 
     const normalized = {}
-    Object.keys(averaged).forEach(currency => {
-      normalized[currency] = Math.round(((averaged[currency] - min) / range) * 100)
+    Object.keys(averaged).forEach(c => {
+      normalized[c] = Math.round(((averaged[c] - min) / range) * 100)
     })
 
-    // Sort strongest first
     const sorted = Object.entries(normalized)
       .sort((a, b) => b[1] - a[1])
       .map(([currency, strength]) => ({
         currency,
         strength,
         raw: averaged[currency].toFixed(4),
-        label: strength >= 70 ? 'Strong'
-             : strength >= 40 ? 'Neutral'
-             : 'Weak',
+        label: strength >= 65 ? 'Strong' : strength >= 35 ? 'Neutral' : 'Weak',
       }))
 
-    // Best pairs to trade
     const strongest = sorted[0]
     const weakest = sorted[sorted.length - 1]
     const bestPairs = []
 
     if (strongest && weakest && strongest.currency !== weakest.currency) {
-      const pair1 = `${strongest.currency}/${weakest.currency}`
-      const pair2 = `${weakest.currency}/${strongest.currency}`
       bestPairs.push({
-        pair: pair1,
+        pair: `${strongest.currency}/${weakest.currency}`,
         action: 'BUY',
         reason: `${strongest.currency} strongest, ${weakest.currency} weakest`
       })
       bestPairs.push({
-        pair: pair2,
+        pair: `${weakest.currency}/${strongest.currency}`,
         action: 'SELL',
         reason: `Sell ${weakest.currency} against ${strongest.currency}`
       })
@@ -404,16 +379,7 @@ app.get('/api/news', async (req, res) => {
 For each news headline, return impact score, category, bias, market tags, and one-liner.
 Return ONLY valid JSON array. No markdown. No explanation.
 Example format:
-[
-  {
-    "index": 1,
-    "impact": 8,
-    "category": "Central Bank",
-    "bias": "bearish",
-    "marketTags": ["USD↓", "EUR/USD↑", "Gold↑"],
-    "oneliner": "Fed rate cut signals USD weakness"
-  }
-]
+[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓","EUR/USD↑","Gold↑"],"oneliner":"Fed rate cut signals USD weakness"}]
 Impact: 1-10. Bias: bullish/bearish/neutral.
 Categories: Forex, Stocks, Commodities, Crypto, Central Bank, Geopolitical, General.
 MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑`,
