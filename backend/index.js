@@ -226,7 +226,6 @@ app.get('/api/calendar', async (req, res) => {
   }
 })
 
-// ─── Currency Strength ────────────────────────────────────────────────────────
 app.get('/api/strength', async (req, res) => {
   const apiKey = process.env.TWELVEDATA_API_KEY
 
@@ -242,14 +241,11 @@ app.get('/api/strength', async (req, res) => {
 
   try {
     const symbolStr = pairs.join(',')
-
-    // Use time_series — 2 candles (today + yesterday) for % change
     const response = await axios.get(
       `https://api.twelvedata.com/time_series?symbol=${symbolStr}&interval=1day&outputsize=2&apikey=${apiKey}`
     )
 
     const tsData = response.data
-
     const scores = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
     const counts = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
 
@@ -257,13 +253,10 @@ app.get('/api/strength', async (req, res) => {
       const [base, quote] = pair.split('/')
       const pairData = tsData[pair]
       if (!pairData?.values || pairData.values.length < 2) return
-
       const current = parseFloat(pairData.values[0].close)
       const prev = parseFloat(pairData.values[1].close)
       if (!current || !prev || isNaN(current) || isNaN(prev)) return
-
       const change = ((current - prev) / prev) * 100
-
       if (scores[base] !== undefined) { scores[base] += change; counts[base]++ }
       if (scores[quote] !== undefined) { scores[quote] -= change; counts[quote]++ }
     })
@@ -292,12 +285,12 @@ app.get('/api/strength', async (req, res) => {
         label: strength >= 65 ? 'Strong' : strength >= 35 ? 'Neutral' : 'Weak',
       }))
 
+    const allZero = sorted.every(c => c.strength === 0)
     const strongest = sorted[0]
     const weakest = sorted[sorted.length - 1]
     const bestPairs = []
 
-    const allZero = sorted.every(c => c.strength === 0)
-if (!allZero && strongest && weakest && strongest.currency !== weakest.currency) {
+    if (!allZero && strongest && weakest && strongest.currency !== weakest.currency) {
       bestPairs.push({
         pair: `${strongest.currency}/${weakest.currency}`,
         action: 'BUY',
@@ -310,15 +303,14 @@ if (!allZero && strongest && weakest && strongest.currency !== weakest.currency)
       })
     }
 
-   const allZero = sorted.every(c => c.strength === 0)
+    return res.json({
+      success: true,
+      currencies: sorted,
+      bestPairs,
+      marketClosed: allZero,
+      updatedAt: new Date().toISOString()
+    })
 
-return res.json({
-  success: true,
-  currencies: sorted,
-  bestPairs,
-  marketClosed: allZero,
-  updatedAt: new Date().toISOString()
-})
   } catch (err) {
     console.error('Strength error:', err.message)
     return res.status(500).json({ success: false, error: 'Failed to calculate strength.' })
