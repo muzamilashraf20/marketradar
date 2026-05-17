@@ -296,7 +296,8 @@ app.get('/api/strength', async (req, res) => {
     const weakest = sorted[sorted.length - 1]
     const bestPairs = []
 
-    if (strongest && weakest && strongest.currency !== weakest.currency) {
+    const allZero = sorted.every(c => c.strength === 0)
+if (!allZero && strongest && weakest && strongest.currency !== weakest.currency) {
       bestPairs.push({
         pair: `${strongest.currency}/${weakest.currency}`,
         action: 'BUY',
@@ -318,7 +319,6 @@ return res.json({
   marketClosed: allZero,
   updatedAt: new Date().toISOString()
 })
-
   } catch (err) {
     console.error('Strength error:', err.message)
     return res.status(500).json({ success: false, error: 'Failed to calculate strength.' })
