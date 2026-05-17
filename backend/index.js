@@ -165,6 +165,158 @@ app.post('/api/bias', async (req, res) => {
   }
 })
 
+// ============================================
+// 🚀 AI PRE-TRADE GUARDIAN - World's First!
+// ============================================
+app.post('/api/trade-check', async (req, res) => {
+  const {
+    symbol,           // e.g. "EUR/USD"
+    direction,        // "BUY" or "SELL"
+    lotSize,          // e.g. 0.5
+    stopLossPips,     // e.g. 30
+    entryPrice,       // optional
+    accountSize,      // e.g. 50000
+    dailyDrawdownUsed,    // % already used today
+    totalDrawdownUsed,    // % already used total
+    maxDailyDrawdown,     // % limit (e.g. 5)
+    maxTotalDrawdown,     // % limit (e.g. 10)
+    riskPerTrade,         // % (e.g. 1)
+  } = req.body
+
+  if (!symbol || !direction || !lotSize || !stopLossPips) {
+    return res.status(400).json({
+      success: false,
+      error: 'Required: symbol, direction, lotSize, stopLossPips'
+    })
+  }
+
+  try {
+    // 1️⃣ Fetch upcoming economic events (next 4 hours)
+    let upcomingEvents = []
+    try {
+      const apiKey = process.env.FINNHUB_API_KEY
+      if (apiKey) {
+        const now = new Date()
+        const future = new Date(now.getTime() + 4 * 60 * 60 * 1000)
+        const from = now.toISOString().split('T')[0]
+        const to = future.toISOString().split('T')[0]
+
+        const calResp = await fetch(
+          `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`
+        )
+        if (calResp.ok) {
+          const calData = await calResp.json()
+          const events = calData.economicCalendar || []
+          upcomingEvents = events
+            .filter(e => {
+              if (!e.time) return false
+              const eventTime = new Date(e.time)
+              return eventTime > now && eventTime < future
+            })
+            .filter(e => e.impact?.toLowerCase() === 'high')
+            .slice(0, 5)
+            .map(e => ({
+              event: e.event,
+              country: e.country,
+              time: e.time,
+              minutesUntil: Math.round((new Date(e.time) - now) / 60000)
+            }))
+        }
+      }
+    } catch (calErr) {
+      console.error('Calendar fetch in trade-check:', calErr.message)
+    }
+
+    // 2️⃣ Calculate risk metrics
+    const dailyDrawdownRemaining = maxDailyDrawdown - dailyDrawdownUsed
+    const totalDrawdownRemaining = maxTotalDrawdown - totalDrawdownUsed
+
+    // Estimate $ risk for this trade (rough — depends on pair, but standard FX assumption)
+    const pipValue = symbol.toUpperCase().includes('JPY') ? 9.09 : 10 // per 1.0 lot, USD account
+    const estimatedRiskDollars = lotSize * pipValue * stopLossPips
+    const estimatedRiskPercent = accountSize ? (estimatedRiskDollars / accountSize) * 100 : 0
+
+    // 3️⃣ Build context for AI
+    const tradeContext = `
+TRADE DETAILS:
+- Symbol: ${symbol}
+- Direction: ${direction}
+- Lot Size: ${lotSize}
+- Stop Loss: ${stopLossPips} pips
+${entryPrice ? `- Entry Price: ${entryPrice}` : ''}
+- Estimated Risk: $${estimatedRiskDollars.toFixed(2)} (${estimatedRiskPercent.toFixed(2)}% of account)
+
+ACCOUNT STATUS:
+- Account Size: $${accountSize?.toLocaleString() || 'N/A'}
+- Daily Drawdown Used: ${dailyDrawdownUsed?.toFixed(1) || 0}% of ${maxDailyDrawdown}% limit
+- Daily Drawdown Remaining: ${dailyDrawdownRemaining?.toFixed(1) || 'N/A'}%
+- Total Drawdown Used: ${totalDrawdownUsed?.toFixed(1) || 0}% of ${maxTotalDrawdown}% limit
+- Total Drawdown Remaining: ${totalDrawdownRemaining?.toFixed(1) || 'N/A'}%
+- Recommended Risk Per Trade: ${riskPerTrade || 1}%
+
+UPCOMING HIGH-IMPACT NEWS (next 4 hours):
+${upcomingEvents.length > 0
+  ? upcomingEvents.map(e => `- ${e.event} (${e.country}) in ${e.minutesUntil} minutes`).join('\n')
+  : '- No high-impact events scheduled'}
+
+CURRENT TIME: ${new Date().toUTCString()}
+`.trim()
+
+    // 4️⃣ Call Claude for verdict
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 1024,
+      system: `You are an elite prop firm risk advisor for BiasForge.ai. Your job is to PROTECT funded traders from blowing their accounts.
+
+You analyze trades BEFORE entry and give a verdict:
+- 🟢 GREEN: Safe to take, all systems go
+- 🟡 YELLOW: Caution, take but reduce size or wait
+- 🔴 RED: Do NOT take this trade, high risk of loss
+
+Decision rules (be strict but fair):
+1. If high-impact news is within 60 minutes → YELLOW or RED
+2. If trade risk > recommended risk per trade → YELLOW
+3. If daily drawdown used > 70% → YELLOW (avoid more risk today)
+4. If daily drawdown used > 90% → RED (account blow-up imminent)
+5. If trade risk would push daily drawdown > limit → RED
+6. If everything is within safe parameters → GREEN
+
+Return ONLY valid JSON in this EXACT format (no markdown, no explanation outside JSON):
+{
+  "verdict": "GREEN" | "YELLOW" | "RED",
+  "headline": "Short verdict statement (max 60 chars)",
+  "reasons": ["reason 1", "reason 2", "reason 3"],
+  "warnings": ["warning if any"],
+  "recommendation": "Specific advice (e.g. 'Reduce to 0.2 lots' or 'Wait until after NFP')",
+  "confidence": 0-100
+}`,
+      messages: [{ role: 'user', content: `Analyze this trade and give verdict:\n\n${tradeContext}` }],
+    })
+
+    const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
+    const verdict = JSON.parse(raw)
+
+    res.json({
+      success: true,
+      verdict,
+      meta: {
+        estimatedRiskDollars: estimatedRiskDollars.toFixed(2),
+        estimatedRiskPercent: estimatedRiskPercent.toFixed(2),
+        upcomingEvents,
+        analyzedAt: new Date().toISOString()
+      }
+    })
+
+  } catch (e) {
+    console.error('Trade check error:', e.message)
+    res.status(500).json({
+      success: false,
+      error: 'Trade analysis failed',
+      detail: e.message
+    })
+  }
+})
+
 app.get('/api/calendar', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
