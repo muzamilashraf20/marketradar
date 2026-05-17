@@ -309,12 +309,15 @@ app.get('/api/strength', async (req, res) => {
       })
     }
 
-    return res.json({
-      success: true,
-      currencies: sorted,
-      bestPairs,
-      updatedAt: new Date().toISOString()
-    })
+   const allZero = sorted.every(c => c.strength === 0)
+
+return res.json({
+  success: true,
+  currencies: sorted,
+  bestPairs,
+  marketClosed: allZero,
+  updatedAt: new Date().toISOString()
+})
 
   } catch (err) {
     console.error('Strength error:', err.message)
