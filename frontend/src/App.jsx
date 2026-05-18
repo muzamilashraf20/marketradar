@@ -1,5 +1,7 @@
+import Earnings from './pages/Earnings'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
+
 
 import LandingPage from './pages/LandingPage'
 import Login from './pages/Login'
@@ -66,6 +68,7 @@ export default function App() {
         <Route path="/journal" element={<ProtectedRoute><TradeJournal /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         <Route path="/strength" element={<ProtectedRoute><CurrencyStrength /></ProtectedRoute>} />
+        <Route path="/earnings" element={<ProtectedRoute><Earnings /></ProtectedRoute>} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />

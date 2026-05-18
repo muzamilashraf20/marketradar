@@ -753,5 +753,69 @@ app.get('/api/cot', async (req, res) => {
     })
   }
 })
+// ============================================
+// 📅 EARNINGS CALENDAR - Finnhub API
+// ============================================
+app.get('/api/earnings', async (req, res) => {
+  const apiKey = process.env.FINNHUB_API_KEY
+  if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
+
+  try {
+    const now = new Date()
+    const fromDate = new Date(now)
+    fromDate.setDate(now.getDate() - 1)
+    const toDate = new Date(now)
+    toDate.setDate(now.getDate() + 14)
+
+    const from = fromDate.toISOString().split('T')[0]
+    const to = toDate.toISOString().split('T')[0]
+
+    const response = await fetch(
+      `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${apiKey}`,
+      { headers: { 'Accept': 'application/json' } }
+    )
+
+    if (!response.ok) throw new Error(`Finnhub error: ${response.status}`)
+
+    const data = await response.json()
+    const earnings = data.earningsCalendar || []
+
+    // Normalize and sort
+    const normalized = earnings.map(item => ({
+      symbol: item.symbol || '—',
+      date: item.date || '',
+      hour: item.hour || 'amc', // bmo = before market open, amc = after market close
+      epsEstimate: item.epsEstimate != null ? item.epsEstimate : null,
+      epsActual: item.epsActual != null ? item.epsActual : null,
+      revenueEstimate: item.revenueEstimate != null ? item.revenueEstimate : null,
+      revenueActual: item.revenueActual != null ? item.revenueActual : null,
+      quarter: item.quarter || null,
+      year: item.year || null,
+    }))
+
+    // Sort by date, then by symbol
+    normalized.sort((a, b) => {
+      if (a.date !== b.date) return new Date(a.date) - new Date(b.date)
+      return a.symbol.localeCompare(b.symbol)
+    })
+
+    return res.json({
+      success: true,
+      earnings: normalized,
+      from,
+      to,
+      total: normalized.length,
+      fetchedAt: new Date().toISOString(),
+    })
+
+  } catch (err) {
+    console.error('Earnings fetch error:', err.message)
+    return res.status(502).json({
+      success: false,
+      error: 'Failed to fetch earnings data',
+      detail: err.message,
+    })
+  }
+})
 
 app.listen(5000, () => console.log('Backend running on port 5000'))
