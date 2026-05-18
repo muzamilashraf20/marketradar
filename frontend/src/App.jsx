@@ -1,4 +1,4 @@
-import Earnings from './pages/Earnings'
+import Earnings from './pages/EarningsCalendar'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 
