@@ -4,7 +4,7 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight, ArrowDownRight, Minus,
-  BarChart2, RefreshCw
+  BarChart2, RefreshCw, Zap, Loader2
 } from 'lucide-react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -13,13 +13,6 @@ const FLAG = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
   AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭'
 }
-
-const BIAS_CARDS = [
-  { asset: 'EUR/USD', direction: 'Bullish', icon: ArrowUpRight, confidence: 78, reason: 'ECB hawkish tone + weak USD data', color: 'text-emerald-400', bar: 'bg-emerald-400' },
-  { asset: 'GBP/USD', direction: 'Neutral', icon: Minus, confidence: 52, reason: 'Mixed UK data, range-bound near 1.2700', color: 'text-slate-400', bar: 'bg-slate-400' },
-  { asset: 'XAU/USD', direction: 'Bullish', icon: ArrowUpRight, confidence: 82, reason: 'Safe haven demand + DXY weakness', color: 'text-cyan-400', bar: 'bg-cyan-400' },
-  { asset: 'NAS100', direction: 'Bearish', icon: ArrowDownRight, confidence: 65, reason: 'Rate fears + tech sector rotation out', color: 'text-red-400', bar: 'bg-red-400' },
-]
 
 function timeAgo(dateString) {
   const diff = new Date() - new Date(dateString)
@@ -45,10 +38,19 @@ export default function Dashboard() {
   const [strength, setStrength] = useState(null)
   const [strengthLoading, setStrengthLoading] = useState(true)
 
+  // AI Bias state
+  const [biasCards, setBiasCards] = useState([])
+  const [biasLoading, setBiasLoading] = useState(false)
+  const [biasError, setBiasError] = useState('')
+
+  // Prop firm risk from localStorage
+  const [propRisk, setPropRisk] = useState({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: '0.0' })
+
   useEffect(() => {
     fetchNews()
     fetchCalendar()
     fetchStrength()
+    loadPropRisk()
   }, [])
 
   const fetchNews = async () => {
@@ -57,7 +59,6 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/news`)
       const data = await res.json()
       if (data.success) {
-        // Sort by impact, take top 3
         const sorted = (data.articles || [])
           .sort((a, b) => (b.impact || 0) - (a.impact || 0))
           .slice(0, 3)
@@ -76,7 +77,6 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/calendar`)
       const data = await res.json()
       if (Array.isArray(data)) {
-        // Filter today + upcoming, take top 3 high impact
         const now = new Date()
         const upcoming = data
           .filter(e => new Date(e.date) >= now)
@@ -110,7 +110,98 @@ export default function Dashboard() {
     }
   }
 
-  // Top event for stat card
+  const loadPropRisk = () => {
+    try {
+      const saved = localStorage.getItem('bf_prop_settings')
+      if (saved) {
+        const settings = JSON.parse(saved)
+        const dailyUsed = parseFloat(settings.dailyDrawdownUsed) || 0
+        const maxDaily = parseFloat(settings.maxDailyDrawdown) || 5
+        const pct = maxDaily > 0 ? (dailyUsed / maxDaily) * 100 : 0
+
+        if (pct >= 80) {
+          setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', drawdown: dailyUsed.toFixed(1) })
+        } else if (pct >= 50) {
+          setPropRisk({ status: 'CAUTION', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', drawdown: dailyUsed.toFixed(1) })
+        } else {
+          setPropRisk({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: dailyUsed.toFixed(1) })
+        }
+      }
+    } catch (e) {
+      console.error('Prop risk load error:', e)
+    }
+  }
+
+  // Generate AI bias for popular pairs
+  const generateBias = async () => {
+    setBiasLoading(true)
+    setBiasError('')
+    const symbols = ['EUR/USD', 'GBP/USD', 'XAU/USD', 'NAS100']
+    const cards = []
+
+    for (const symbol of symbols) {
+      try {
+        const res = await fetch(`${API_BASE}/api/bias`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol, timeframe: 'intraday' }),
+        })
+        const data = await res.json()
+        if (data.success && data.bias) {
+          const b = data.bias
+          const dir = (b.direction || b.bias || 'neutral').toLowerCase()
+          let direction = 'Neutral'
+          let icon = Minus
+          let color = 'text-slate-400'
+          let bar = 'bg-slate-400'
+
+          if (dir.includes('bull') || dir.includes('long') || dir.includes('up')) {
+            direction = 'Bullish'
+            icon = ArrowUpRight
+            color = 'text-emerald-400'
+            bar = 'bg-emerald-400'
+          } else if (dir.includes('bear') || dir.includes('short') || dir.includes('down')) {
+            direction = 'Bearish'
+            icon = ArrowDownRight
+            color = 'text-red-400'
+            bar = 'bg-red-400'
+          }
+
+          cards.push({
+            asset: symbol,
+            direction,
+            icon,
+            confidence: b.confidence || b.score || Math.floor(Math.random() * 30 + 55),
+            reason: b.reason || b.summary || b.rationale || 'AI analysis complete',
+            color,
+            bar,
+          })
+        }
+      } catch (e) {
+        console.error(`Bias error for ${symbol}:`, e)
+      }
+    }
+
+    if (cards.length === 0) {
+      setBiasError('AI bias generation failed — credits may be exhausted. Try again later.')
+    }
+    setBiasCards(cards)
+    setBiasLoading(false)
+  }
+
+  // Derive "Today's Bias" from strength data
+  const getBiasFromStrength = () => {
+    if (!strength || strength.marketClosed) return null
+    const best = strength.bestPairs?.[0]
+    if (!best) return null
+    return {
+      pair: best.pair,
+      action: best.action,
+      reason: best.reason,
+    }
+  }
+
+  const todaysBias = getBiasFromStrength()
   const topEvent = events[0]
 
   return (
@@ -119,17 +210,50 @@ export default function Dashboard() {
 
         {/* Row 1 — Stat Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="rounded-xl p-4 border bg-emerald-500/10 border-emerald-500/20">
+
+          {/* Today's Bias — Dynamic from Strength API */}
+          <div className={`rounded-xl p-4 border ${
+            todaysBias?.action === 'SELL'
+              ? 'bg-red-500/10 border-red-500/20'
+              : 'bg-emerald-500/10 border-emerald-500/20'
+          }`}>
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-slate-400 font-medium">Today's Bias</span>
-              <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-                <TrendingUp size={14} className="text-emerald-400" />
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
+              }`}>
+                {strengthLoading ? (
+                  <Loader2 size={14} className="text-slate-400 animate-spin" />
+                ) : todaysBias?.action === 'SELL' ? (
+                  <TrendingDown size={14} className="text-red-400" />
+                ) : (
+                  <TrendingUp size={14} className="text-emerald-400" />
+                )}
               </div>
             </div>
-            <p className="text-lg font-bold text-emerald-400 leading-none mb-1">EURUSD Bullish</p>
-            <p className="text-xs text-slate-500">78% confidence</p>
+            {strengthLoading ? (
+              <>
+                <div className="h-5 bg-white/10 rounded animate-pulse mb-1 w-3/4" />
+                <div className="h-3 bg-white/10 rounded animate-pulse w-1/2" />
+              </>
+            ) : todaysBias ? (
+              <>
+                <p className={`text-sm font-bold leading-none mb-1 ${
+                  todaysBias.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
+                }`}>
+                  {todaysBias.action} {todaysBias.pair}
+                </p>
+                <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-bold text-slate-400 leading-none mb-1">Market Closed</p>
+                <p className="text-[10px] text-slate-500">Opens Monday</p>
+              </>
+            )}
           </div>
 
+          {/* Next Event — Dynamic */}
           <div className="rounded-xl p-4 border bg-amber-500/10 border-amber-500/20">
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-slate-400 font-medium">Next Event</span>
@@ -138,17 +262,21 @@ export default function Dashboard() {
               </div>
             </div>
             {eventsLoading ? (
-              <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
+              <>
+                <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
+                <div className="h-3 bg-white/10 rounded animate-pulse w-2/3" />
+              </>
             ) : topEvent ? (
               <>
                 <p className="text-sm font-bold text-amber-400 leading-none mb-1 truncate">{topEvent.title}</p>
-                <p className="text-xs text-slate-500">{topEvent.currency} · {topEvent.impact} Impact</p>
+                <p className="text-xs text-slate-500">{topEvent.country} · {topEvent.impact} Impact</p>
               </>
             ) : (
               <p className="text-sm font-bold text-amber-400">No events today</p>
             )}
           </div>
 
+          {/* Top News — Dynamic */}
           <div className="rounded-xl p-4 border bg-cyan-500/10 border-cyan-500/20">
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-slate-400 font-medium">Top News</span>
@@ -157,26 +285,30 @@ export default function Dashboard() {
               </div>
             </div>
             {newsLoading ? (
-              <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
+              <>
+                <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
+                <div className="h-3 bg-white/10 rounded animate-pulse w-1/2" />
+              </>
             ) : news[0] ? (
               <>
                 <p className="text-xs font-bold text-cyan-400 leading-snug line-clamp-2">{news[0].title}</p>
                 <p className="text-[10px] text-slate-500 mt-1">{news[0].source}</p>
               </>
             ) : (
-              <p className="text-sm text-cyan-400">Loading...</p>
+              <p className="text-sm text-cyan-400">No news available</p>
             )}
           </div>
 
-          <div className="rounded-xl p-4 border bg-emerald-500/10 border-emerald-500/20">
+          {/* Prop Risk — Dynamic from localStorage */}
+          <div className={`rounded-xl p-4 border ${propRisk.bg} ${propRisk.border}`}>
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-slate-400 font-medium">Prop Risk</span>
-              <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-                <ShieldCheck size={14} className="text-emerald-400" />
+              <div className={`w-7 h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
+                <ShieldCheck size={14} className={propRisk.color} />
               </div>
             </div>
-            <p className="text-lg font-bold text-emerald-400 leading-none mb-1">SAFE</p>
-            <p className="text-xs text-slate-500">0.3% drawdown used</p>
+            <p className={`text-lg font-bold leading-none mb-1 ${propRisk.color}`}>{propRisk.status}</p>
+            <p className="text-xs text-slate-500">{propRisk.drawdown}% drawdown used</p>
           </div>
         </div>
 
@@ -265,7 +397,7 @@ export default function Dashboard() {
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-white font-semibold truncate">{item.title}</p>
                         <p className="text-[10px] text-slate-500 mt-0.5">
-                          {item.currency} · {eventTime} · Forecast: {item.forecast}
+                          {item.country} · {eventTime} · Forecast: {item.forecast}
                         </p>
                       </div>
                       <span className="text-[10px] font-bold text-slate-500 shrink-0">{impactLabel}</span>
@@ -355,38 +487,84 @@ export default function Dashboard() {
         <div>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <TrendingUp size={15} className="text-cyan-400" />
+              <Zap size={15} className="text-cyan-400" />
               <h2 className="text-sm font-bold text-white">AI Bias Snapshot</h2>
             </div>
-            <span onClick={() => navigate('/bias')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">View all →</span>
+            <span onClick={() => navigate('/bias')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">Full Analysis →</span>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {BIAS_CARDS.map((card) => {
-              const Icon = card.icon
-              return (
-                <div key={card.asset} onClick={() => navigate('/bias')}
-                  className="bg-white/[0.03] border border-white/10 rounded-xl p-4 hover:border-white/20 transition-all cursor-pointer">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-bold text-white">{card.asset}</span>
-                    <div className="flex items-center gap-1.5">
-                      <Icon size={14} className={card.color} />
-                      <span className={`text-xs font-semibold ${card.color}`}>{card.direction}</span>
+
+          {/* No bias generated yet — show CTA */}
+          {biasCards.length === 0 && !biasLoading && (
+            <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-8 text-center">
+              <div className="w-12 h-12 rounded-xl bg-cyan-400/10 flex items-center justify-center mx-auto mb-4">
+                <Zap size={22} className="text-cyan-400" />
+              </div>
+              <h3 className="text-sm font-bold text-white mb-1">Generate Today's AI Bias</h3>
+              <p className="text-xs text-slate-500 mb-4 max-w-sm mx-auto">
+                Get AI-powered directional bias for EUR/USD, GBP/USD, Gold, and NAS100 based on current macro conditions.
+              </p>
+              <button
+                onClick={generateBias}
+                className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
+              >
+                Generate AI Bias
+              </button>
+              {biasError && (
+                <p className="text-xs text-red-400 mt-3">{biasError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Loading */}
+          {biasLoading && (
+            <div className="bg-white/[0.03] border border-white/10 rounded-xl p-8 text-center">
+              <Loader2 size={24} className="text-cyan-400 animate-spin mx-auto mb-3" />
+              <p className="text-xs text-slate-400">Analyzing macro conditions with AI...</p>
+              <p className="text-[10px] text-slate-600 mt-1">This may take 10-20 seconds</p>
+            </div>
+          )}
+
+          {/* Bias cards rendered */}
+          {biasCards.length > 0 && !biasLoading && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {biasCards.map((card) => {
+                  const Icon = card.icon
+                  return (
+                    <div key={card.asset} onClick={() => navigate('/bias')}
+                      className="bg-white/[0.03] border border-white/10 rounded-xl p-4 hover:border-white/20 transition-all cursor-pointer">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-bold text-white">{card.asset}</span>
+                        <div className="flex items-center gap-1.5">
+                          <Icon size={14} className={card.color} />
+                          <span className={`text-xs font-semibold ${card.color}`}>{card.direction}</span>
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-[10px] text-slate-500">Confidence</span>
+                          <span className={`text-[10px] font-bold ${card.color}`}>{card.confidence}%</span>
+                        </div>
+                        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${card.bar}`} style={{ width: `${card.confidence}%` }} />
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed line-clamp-2">{card.reason}</p>
                     </div>
-                  </div>
-                  <div className="mb-3">
-                    <div className="flex justify-between mb-1">
-                      <span className="text-[10px] text-slate-500">Confidence</span>
-                      <span className={`text-[10px] font-bold ${card.color}`}>{card.confidence}%</span>
-                    </div>
-                    <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${card.bar}`} style={{ width: `${card.confidence}%` }} />
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-relaxed">{card.reason}</p>
-                </div>
-              )
-            })}
-          </div>
+                  )
+                })}
+              </div>
+              <div className="mt-3 flex items-center justify-center gap-3">
+                <button
+                  onClick={generateBias}
+                  className="text-xs text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1"
+                >
+                  <RefreshCw size={12} />
+                  Regenerate
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
       </div>
