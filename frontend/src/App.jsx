@@ -21,6 +21,8 @@ import PropFirm from './pages/PropFirm'
 import Playbooks from './pages/Playbooks'
 import SettingsPage from './pages/Settings'
 import CurrencyStrength from './pages/CurrencyStrength'
+import TradeJournal from './pages/TradeJournal'
+import NotFound from './pages/NotFound'
 import ProtectedRoute from './components/common/ProtectedRoute'
 
 function RootRedirect() {
@@ -57,13 +59,16 @@ export default function App() {
         <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
         <Route path="/cot" element={<ProtectedRoute><COTReport /></ProtectedRoute>} />
         <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
+        <Route path="/market-movers" element={<ProtectedRoute><MarketMoversRadar /></ProtectedRoute>} />
         <Route path="/trump" element={<ProtectedRoute><MarketMoversRadar /></ProtectedRoute>} />
         <Route path="/prop-firm" element={<ProtectedRoute><PropFirm /></ProtectedRoute>} />
         <Route path="/playbooks" element={<ProtectedRoute><Playbooks /></ProtectedRoute>} />
+        <Route path="/journal" element={<ProtectedRoute><TradeJournal /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         <Route path="/strength" element={<ProtectedRoute><CurrencyStrength /></ProtectedRoute>} />
 
-        <Route path="*" element={<Navigate to="/landing" replace />} />
+        {/* 404 */}
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   )
