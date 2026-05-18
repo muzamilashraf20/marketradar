@@ -630,4 +630,149 @@ MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑
   }
 })
 
+// ============================================
+// 📊 COT REPORT - Real CFTC Data
+// ============================================
+app.get('/api/cot', async (req, res) => {
+  // CFTC publishes the Traders in Financial Futures (TFF) report weekly
+  // We fetch the latest combined futures-only report (short format)
+  const CFTC_URL = 'https://www.cftc.gov/dea/newcot/FinFutWk.txt'
+
+  // Map CFTC contract names to currency codes
+  const CONTRACT_MAP = {
+    'EURO FX': { currency: 'EUR', flag: '🇪🇺' },
+    'BRITISH POUND': { currency: 'GBP', flag: '🇬🇧' },
+    'JAPANESE YEN': { currency: 'JPY', flag: '🇯🇵' },
+    'SWISS FRANC': { currency: 'CHF', flag: '🇨🇭' },
+    'AUSTRALIAN DOLLAR': { currency: 'AUD', flag: '🇦🇺' },
+    'NEW ZEALAND DOLLAR': { currency: 'NZD', flag: '🇳🇿' },
+    'CANADIAN DOLLAR': { currency: 'CAD', flag: '🇨🇦' },
+    'U.S. DOLLAR INDEX': { currency: 'USD', flag: '🇺🇸' },
+    'GOLD': { currency: 'XAU', flag: '🥇' },
+    'SILVER': { currency: 'XAG', flag: '🥈' },
+  }
+
+  try {
+    const response = await fetch(CFTC_URL, {
+      headers: { 'User-Agent': 'BiasForge/1.0' }
+    })
+
+    if (!response.ok) throw new Error(`CFTC fetch failed: ${response.status}`)
+
+    const text = await response.text()
+    const lines = text.split('\n').filter(l => l.trim())
+
+    if (lines.length < 2) throw new Error('Empty CFTC report')
+
+    // Parse header
+    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''))
+
+    // Find column indices we need
+    const colIndex = (name) => headers.findIndex(h => h.toLowerCase().includes(name.toLowerCase()))
+
+    const nameCol = colIndex('Market_and_Exchange_Names') !== -1
+      ? colIndex('Market_and_Exchange_Names')
+      : 0
+    const dateCol = colIndex('Report_Date_as_MM_DD_YYYY') !== -1
+      ? colIndex('Report_Date_as_MM_DD_YYYY')
+      : colIndex('As_of_Date_In_Form_YYMMDD') !== -1
+        ? colIndex('As_of_Date_In_Form_YYMMDD')
+        : 2
+
+    // Asset Manager/Institutional columns (TFF report)
+    const amLongCol = colIndex('Asset_Mgr_Positions_Long')
+    const amShortCol = colIndex('Asset_Mgr_Positions_Short')
+    const amSpreadCol = colIndex('Asset_Mgr_Positions_Spread')
+
+    // Leveraged Funds columns
+    const levLongCol = colIndex('Lev_Money_Positions_Long')
+    const levShortCol = colIndex('Lev_Money_Positions_Short')
+
+    // Dealer columns
+    const dealerLongCol = colIndex('Dealer_Positions_Long')
+    const dealerShortCol = colIndex('Dealer_Positions_Short')
+
+    const results = []
+    const seenCurrencies = new Set()
+
+    // Parse data rows
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(',').map(c => c.trim().replace(/"/g, ''))
+      const marketName = (row[nameCol] || '').toUpperCase()
+
+      // Match to our tracked contracts
+      let matched = null
+      for (const [key, val] of Object.entries(CONTRACT_MAP)) {
+        if (marketName.includes(key)) {
+          matched = val
+          break
+        }
+      }
+
+      if (!matched || seenCurrencies.has(matched.currency)) continue
+      seenCurrencies.add(matched.currency)
+
+      const parse = (idx) => {
+        if (idx === -1) return 0
+        return parseInt(row[idx]) || 0
+      }
+
+      const amLong = parse(amLongCol)
+      const amShort = parse(amShortCol)
+      const levLong = parse(levLongCol)
+      const levShort = parse(levShortCol)
+      const dlrLong = parse(dealerLongCol)
+      const dlrShort = parse(dealerShortCol)
+
+      // Total institutional = Asset Managers + Leveraged Funds
+      const totalLong = amLong + levLong
+      const totalShort = amShort + levShort
+      const netPosition = totalLong - totalShort
+
+      const reportDate = row[dateCol] || ''
+
+      let bias = 'Neutral'
+      if (netPosition > 5000) bias = 'Bullish'
+      else if (netPosition < -5000) bias = 'Bearish'
+
+      results.push({
+        currency: matched.currency,
+        flag: matched.flag,
+        longContracts: totalLong,
+        shortContracts: totalShort,
+        netPosition,
+        bias,
+        reportDate,
+        breakdown: {
+          assetManagers: { long: amLong, short: amShort, net: amLong - amShort },
+          leveragedFunds: { long: levLong, short: levShort, net: levLong - levShort },
+          dealers: { long: dlrLong, short: dlrShort, net: dlrLong - dlrShort },
+        }
+      })
+    }
+
+    // Sort: Bullish first, then by absolute net position
+    results.sort((a, b) => {
+      const biasOrder = { Bullish: 0, Neutral: 1, Bearish: 2 }
+      if (biasOrder[a.bias] !== biasOrder[b.bias]) return biasOrder[a.bias] - biasOrder[b.bias]
+      return Math.abs(b.netPosition) - Math.abs(a.netPosition)
+    })
+
+    return res.json({
+      success: true,
+      data: results,
+      reportDate: results[0]?.reportDate || 'Unknown',
+      fetchedAt: new Date().toISOString(),
+    })
+
+  } catch (err) {
+    console.error('COT fetch error:', err.message)
+    return res.status(502).json({
+      success: false,
+      error: 'Failed to fetch COT data from CFTC',
+      detail: err.message,
+    })
+  }
+})
+
 app.listen(5000, () => console.log('Backend running on port 5000'))
