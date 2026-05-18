@@ -631,74 +631,53 @@ MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑
 })
 
 // ============================================
-// 📊 COT REPORT - Real CFTC Data
+// 📊 COT REPORT - Real CFTC Data (JSON API)
 // ============================================
 app.get('/api/cot', async (req, res) => {
-  // CFTC publishes the Traders in Financial Futures (TFF) report weekly
-  // We fetch the latest combined futures-only report (short format)
-  const CFTC_URL = 'https://www.cftc.gov/dea/newcot/FinFutWk.txt'
-
-  // Map CFTC contract names to currency codes
+  // CFTC Traders in Financial Futures (TFF) — Socrata Open Data API
+  // Dataset ID: gpe5-46if (TFF Futures Only)
   const CONTRACT_MAP = {
     'EURO FX': { currency: 'EUR', flag: '🇪🇺' },
     'BRITISH POUND': { currency: 'GBP', flag: '🇬🇧' },
     'JAPANESE YEN': { currency: 'JPY', flag: '🇯🇵' },
     'SWISS FRANC': { currency: 'CHF', flag: '🇨🇭' },
     'AUSTRALIAN DOLLAR': { currency: 'AUD', flag: '🇦🇺' },
-    'NEW ZEALAND DOLLAR': { currency: 'NZD', flag: '🇳🇿' },
+    'NZ DOLLAR': { currency: 'NZD', flag: '🇳🇿' },
     'CANADIAN DOLLAR': { currency: 'CAD', flag: '🇨🇦' },
-    'U.S. DOLLAR INDEX': { currency: 'USD', flag: '🇺🇸' },
+    'USD INDEX': { currency: 'USD', flag: '🇺🇸' },
     'GOLD': { currency: 'XAU', flag: '🥇' },
     'SILVER': { currency: 'XAG', flag: '🥈' },
   }
 
   try {
-    const response = await fetch(CFTC_URL, {
-      headers: { 'User-Agent': 'BiasForge/1.0' }
+    // Fetch latest TFF report — get most recent 50 rows sorted by date descending
+    const apiUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?$order=report_date_as_yyyy_mm_dd DESC&$limit=50'
+
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'BiasForge/1.0'
+      }
     })
 
-    if (!response.ok) throw new Error(`CFTC fetch failed: ${response.status}`)
+    if (!response.ok) throw new Error(`CFTC API error: ${response.status}`)
 
-    const text = await response.text()
-    const lines = text.split('\n').filter(l => l.trim())
+    const rows = await response.json()
+    if (!rows || rows.length === 0) throw new Error('No data returned from CFTC')
 
-    if (lines.length < 2) throw new Error('Empty CFTC report')
+    // Get the latest report date
+    const latestDate = rows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
 
-    // Parse header
-    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''))
-
-    // Find column indices we need
-    const colIndex = (name) => headers.findIndex(h => h.toLowerCase().includes(name.toLowerCase()))
-
-    const nameCol = colIndex('Market_and_Exchange_Names') !== -1
-      ? colIndex('Market_and_Exchange_Names')
-      : 0
-    const dateCol = colIndex('Report_Date_as_MM_DD_YYYY') !== -1
-      ? colIndex('Report_Date_as_MM_DD_YYYY')
-      : colIndex('As_of_Date_In_Form_YYMMDD') !== -1
-        ? colIndex('As_of_Date_In_Form_YYMMDD')
-        : 2
-
-    // Asset Manager/Institutional columns (TFF report)
-    const amLongCol = colIndex('Asset_Mgr_Positions_Long')
-    const amShortCol = colIndex('Asset_Mgr_Positions_Short')
-    const amSpreadCol = colIndex('Asset_Mgr_Positions_Spread')
-
-    // Leveraged Funds columns
-    const levLongCol = colIndex('Lev_Money_Positions_Long')
-    const levShortCol = colIndex('Lev_Money_Positions_Short')
-
-    // Dealer columns
-    const dealerLongCol = colIndex('Dealer_Positions_Long')
-    const dealerShortCol = colIndex('Dealer_Positions_Short')
+    // Filter only the latest week's data
+    const latestRows = rows.filter(r =>
+      (r.report_date_as_yyyy_mm_dd || '').startsWith(latestDate.slice(0, 10))
+    )
 
     const results = []
     const seenCurrencies = new Set()
 
-    // Parse data rows
-    for (let i = 1; i < lines.length; i++) {
-      const row = lines[i].split(',').map(c => c.trim().replace(/"/g, ''))
-      const marketName = (row[nameCol] || '').toUpperCase()
+    for (const row of latestRows) {
+      const marketName = (row.market_and_exchange_names || '').toUpperCase()
 
       // Match to our tracked contracts
       let matched = null
@@ -712,24 +691,24 @@ app.get('/api/cot', async (req, res) => {
       if (!matched || seenCurrencies.has(matched.currency)) continue
       seenCurrencies.add(matched.currency)
 
-      const parse = (idx) => {
-        if (idx === -1) return 0
-        return parseInt(row[idx]) || 0
-      }
+      const parse = (val) => parseInt(val) || 0
 
-      const amLong = parse(amLongCol)
-      const amShort = parse(amShortCol)
-      const levLong = parse(levLongCol)
-      const levShort = parse(levShortCol)
-      const dlrLong = parse(dealerLongCol)
-      const dlrShort = parse(dealerShortCol)
+      // Asset Manager positions
+      const amLong = parse(row.asset_mgr_positions_long)
+      const amShort = parse(row.asset_mgr_positions_short)
+
+      // Leveraged Funds positions
+      const levLong = parse(row.lev_money_positions_long)
+      const levShort = parse(row.lev_money_positions_short)
+
+      // Dealer positions
+      const dlrLong = parse(row.dealer_positions_long)
+      const dlrShort = parse(row.dealer_positions_short)
 
       // Total institutional = Asset Managers + Leveraged Funds
       const totalLong = amLong + levLong
       const totalShort = amShort + levShort
       const netPosition = totalLong - totalShort
-
-      const reportDate = row[dateCol] || ''
 
       let bias = 'Neutral'
       if (netPosition > 5000) bias = 'Bullish'
@@ -742,7 +721,7 @@ app.get('/api/cot', async (req, res) => {
         shortContracts: totalShort,
         netPosition,
         bias,
-        reportDate,
+        reportDate: latestDate,
         breakdown: {
           assetManagers: { long: amLong, short: amShort, net: amLong - amShort },
           leveragedFunds: { long: levLong, short: levShort, net: levLong - levShort },
@@ -761,7 +740,7 @@ app.get('/api/cot', async (req, res) => {
     return res.json({
       success: true,
       data: results,
-      reportDate: results[0]?.reportDate || 'Unknown',
+      reportDate: latestDate,
       fetchedAt: new Date().toISOString(),
     })
 
