@@ -23,7 +23,28 @@ const supabase = createClient(
 const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
 const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// ============================================
+// 🔄 API CACHE SYSTEM — Save TwelveData credits
+// ============================================
+// Add this AFTER the const declarations (after line: const anthropic = ...)
+// and BEFORE the routes (before line: app.post('/api/register'...))
 
+const API_CACHE = {}
+const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
+
+function getCached(key) {
+  const entry = API_CACHE[key]
+  if (!entry) return null
+  if (Date.now() - entry.timestamp > CACHE_TTL) {
+    delete API_CACHE[key]
+    return null
+  }
+  return entry.data
+}
+
+function setCache(key, data) {
+  API_CACHE[key] = { data, timestamp: Date.now() }
+}
 const PLANS = {
   basic_monthly:  { variantId: '1619191', name: 'Basic Monthly' },
   basic_annual:   { variantId: '1619209', name: 'Basic Annual' },
@@ -116,12 +137,17 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 })
 
 app.get('/api/prices', async (req, res) => {
+  const cached = getCached('prices')
+  if (cached) return res.json(cached)
+
   const symbols = 'EUR/USD,GBP/USD,USD/JPY,USD/CHF,AUD/USD,NZD/USD,USD/CAD,XAU/USD,BTC/USD,ETH/USD'
   try {
     const response = await axios.get(
       `https://api.twelvedata.com/price?symbol=${symbols}&apikey=${process.env.TWELVEDATA_API_KEY}`
     )
-    res.json({ success: true, data: response.data })
+    const result = { success: true, data: response.data }
+    if (!response.data?.code) setCache('prices', result)
+    res.json(result)
   } catch (e) {
     res.status(500).json({ error: 'Price fetch failed' })
   }
@@ -445,7 +471,12 @@ app.get('/api/calendar', async (req, res) => {
   }
 })
 
+// Replace your existing /api/strength route with this:
+
 app.get('/api/strength', async (req, res) => {
+  const cached = getCached('strength')
+  if (cached) return res.json(cached)
+
   const apiKey = process.env.TWELVEDATA_API_KEY
 
   const pairs = [
@@ -465,6 +496,16 @@ app.get('/api/strength', async (req, res) => {
     )
 
     const tsData = response.data
+
+    // Check if API returned error (rate limit)
+    if (tsData.code === 429 || tsData.status === 'error') {
+      return res.status(429).json({
+        success: false,
+        error: 'TwelveData rate limit reached. Data refreshes every 10 minutes.',
+        marketClosed: false,
+      })
+    }
+
     const scores = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
     const counts = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
 
@@ -522,20 +563,24 @@ app.get('/api/strength', async (req, res) => {
       })
     }
 
-    return res.json({
+    const result = {
       success: true,
       currencies: sorted,
       bestPairs,
       marketClosed: allZero,
       updatedAt: new Date().toISOString()
-    })
+    }
+
+    // Cache only if we got real data
+    if (!allZero) setCache('strength', result)
+
+    return res.json(result)
 
   } catch (err) {
     console.error('Strength error:', err.message)
     return res.status(500).json({ success: false, error: 'Failed to calculate strength.' })
   }
 })
-
 app.get('/api/news', async (req, res) => {
   const feeds = [
     { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
