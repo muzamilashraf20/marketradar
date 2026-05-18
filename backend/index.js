@@ -132,7 +132,7 @@ app.post('/api/ai', async (req, res) => {
   if (!prompt) return res.status(400).json({ error: 'Prompt required' })
   try {
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-4-5-20250514',
       max_tokens: 1024,
       system: system || 'You are a financial markets analyst assistant for BiasForge.ai.',
       messages: [{ role: 'user', content: prompt }],
@@ -151,7 +151,7 @@ app.post('/api/bias', async (req, res) => {
   const prompt = `Analyze ${symbol} for ${timeframe || 'intraday'} trading bias as of ${now}.`
   try {
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-4-5-20250514',
       max_tokens: 2048,
       system: 'You are a senior macro trader for BiasForge.ai. Return ONLY valid JSON.',
       messages: [{ role: 'user', content: prompt }],
@@ -350,7 +350,7 @@ NEWS (next 4h): ${upcomingEvents.map(e => `${e.event}(${e.country}) in ${e.minut
 RULE VERDICT: ${verdict}`.trim()
 
         const message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5',
+          model: 'claude-sonnet-4-5-20250514',
           max_tokens: 800,
           system: `You are an elite prop firm risk advisor. Return ONLY valid JSON with: verdict (GREEN/YELLOW/RED), headline (max 60 chars), reasons (array of 3 strings), warnings (array), recommendation (string), confidence (0-100).`,
           messages: [{ role: 'user', content: `Refine this trade verdict:\n${tradeContext}` }],
