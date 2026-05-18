@@ -16,7 +16,7 @@ const NAV_ITEMS = [
   { label: 'Prop Firm Mode',    icon: ShieldCheck,     path: '/prop-firm' },
   { label: 'Event Playbooks',   icon: BookOpen,        path: '/playbooks' },
   { label: 'COT Report',        icon: PieChart,        path: '/cot' },
-  { label: 'Trump Tracker',     icon: Flag,            path: '/trump' },
+  { label: 'MarketMovers Radar',     icon: Flag,            path: '/trump' },
 ]
 
 export default function Sidebar({ onClose }) {

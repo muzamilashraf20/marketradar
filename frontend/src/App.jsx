@@ -5,7 +5,7 @@ import LandingPage from './pages/LandingPage'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import NewsFeed from './pages/NewsFeed'
-import TrumpTracker from './pages/TrumpTracker'
+import MarketMoversRadar from './pages/MarketMoversRadar'
 import BiasMatrix from './pages/BiasMatrix'
 import EconomicCalendar from './pages/EconomicCalendar'
 import Sessions from './pages/Sessions'
@@ -57,7 +57,7 @@ export default function App() {
         <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
         <Route path="/cot" element={<ProtectedRoute><COTReport /></ProtectedRoute>} />
         <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
-        <Route path="/trump" element={<ProtectedRoute><TrumpTracker /></ProtectedRoute>} />
+        <Route path="/trump" element={<ProtectedRoute><MarketMoversRadar /></ProtectedRoute>} />
         <Route path="/prop-firm" element={<ProtectedRoute><PropFirm /></ProtectedRoute>} />
         <Route path="/playbooks" element={<ProtectedRoute><Playbooks /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
