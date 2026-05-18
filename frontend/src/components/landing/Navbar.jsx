@@ -14,7 +14,7 @@ export default function Navbar() {
   const scrollToSection = (id) => {
     const element = document.getElementById(id);
     if (element) {
-      window.scrollTo({ top: element.offsetTop - 80, behavior: "smooth" });
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     setMenuOpen(false);
   };
