@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
@@ -6,6 +6,7 @@ import {
   Newspaper, Calendar, ArrowUpRight, ArrowDownRight, Minus,
   BarChart2, RefreshCw, Zap, Loader2
 } from 'lucide-react'
+import { useEffect } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -26,25 +27,23 @@ function timeAgo(dateString) {
 export default function Dashboard() {
   const navigate = useNavigate()
 
-  // News state
   const [news, setNews] = useState([])
   const [newsLoading, setNewsLoading] = useState(true)
 
-  // Calendar state
   const [events, setEvents] = useState([])
   const [eventsLoading, setEventsLoading] = useState(true)
 
-  // Currency strength state
   const [strength, setStrength] = useState(null)
   const [strengthLoading, setStrengthLoading] = useState(true)
 
-  // AI Bias state
   const [biasCards, setBiasCards] = useState([])
   const [biasLoading, setBiasLoading] = useState(false)
   const [biasError, setBiasError] = useState('')
 
-  // Prop firm risk from localStorage
-  const [propRisk, setPropRisk] = useState({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: '0.0' })
+  const [propRisk, setPropRisk] = useState({
+    status: 'SAFE', color: 'text-emerald-400',
+    bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: '0.0'
+  })
 
   useEffect(() => {
     fetchNews()
@@ -82,9 +81,8 @@ export default function Dashboard() {
           .filter(e => new Date(e.date) >= now)
           .sort((a, b) => {
             const impactOrder = { High: 0, Medium: 1, Low: 2 }
-            if (impactOrder[a.impact] !== impactOrder[b.impact]) {
+            if (impactOrder[a.impact] !== impactOrder[b.impact])
               return impactOrder[a.impact] - impactOrder[b.impact]
-            }
             return new Date(a.date) - new Date(b.date)
           })
           .slice(0, 3)
@@ -118,7 +116,6 @@ export default function Dashboard() {
         const dailyUsed = parseFloat(settings.dailyDrawdownUsed) || 0
         const maxDaily = parseFloat(settings.maxDailyDrawdown) || 5
         const pct = maxDaily > 0 ? (dailyUsed / maxDaily) * 100 : 0
-
         if (pct >= 80) {
           setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', drawdown: dailyUsed.toFixed(1) })
         } else if (pct >= 50) {
@@ -132,7 +129,6 @@ export default function Dashboard() {
     }
   }
 
-  // Generate AI bias for popular pairs
   const generateBias = async () => {
     setBiasLoading(true)
     setBiasError('')
@@ -150,31 +146,17 @@ export default function Dashboard() {
         if (data.success && data.bias) {
           const b = data.bias
           const dir = (b.direction || b.bias || 'neutral').toLowerCase()
-          let direction = 'Neutral'
-          let icon = Minus
-          let color = 'text-slate-400'
-          let bar = 'bg-slate-400'
-
+          let direction = 'Neutral', icon = Minus, color = 'text-slate-400', bar = 'bg-slate-400'
           if (dir.includes('bull') || dir.includes('long') || dir.includes('up')) {
-            direction = 'Bullish'
-            icon = ArrowUpRight
-            color = 'text-emerald-400'
-            bar = 'bg-emerald-400'
+            direction = 'Bullish'; icon = ArrowUpRight; color = 'text-emerald-400'; bar = 'bg-emerald-400'
           } else if (dir.includes('bear') || dir.includes('short') || dir.includes('down')) {
-            direction = 'Bearish'
-            icon = ArrowDownRight
-            color = 'text-red-400'
-            bar = 'bg-red-400'
+            direction = 'Bearish'; icon = ArrowDownRight; color = 'text-red-400'; bar = 'bg-red-400'
           }
-
           cards.push({
-            asset: symbol,
-            direction,
-            icon,
+            asset: symbol, direction, icon,
             confidence: b.confidence || b.score || Math.floor(Math.random() * 30 + 55),
             reason: b.reason || b.summary || b.rationale || 'AI analysis complete',
-            color,
-            bar,
+            color, bar,
           })
         }
       } catch (e) {
@@ -182,23 +164,17 @@ export default function Dashboard() {
       }
     }
 
-    if (cards.length === 0) {
+    if (cards.length === 0)
       setBiasError('AI bias generation failed — credits may be exhausted. Try again later.')
-    }
     setBiasCards(cards)
     setBiasLoading(false)
   }
 
-  // Derive "Today's Bias" from strength data
   const getBiasFromStrength = () => {
     if (!strength || strength.marketClosed) return null
     const best = strength.bestPairs?.[0]
     if (!best) return null
-    return {
-      pair: best.pair,
-      action: best.action,
-      reason: best.reason,
-    }
+    return { pair: best.pair, action: best.action, reason: best.reason }
   }
 
   const todaysBias = getBiasFromStrength()
@@ -206,39 +182,38 @@ export default function Dashboard() {
 
   return (
     <DashboardLayout title="Overview" subtitle="Your macro intelligence hub">
-      <div className="space-y-6">
+      <div className="space-y-5">
 
-        {/* Row 1 — Stat Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* ── Row 1: Stat Cards ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
 
-          {/* Today's Bias — Dynamic from Strength API */}
-          <div className={`rounded-xl p-4 border ${
+          {/* Today's Bias */}
+          <div className={`rounded-xl p-3 sm:p-4 border ${
             todaysBias?.action === 'SELL'
               ? 'bg-red-500/10 border-red-500/20'
               : 'bg-emerald-500/10 border-emerald-500/20'
           }`}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs text-slate-400 font-medium">Today's Bias</span>
-              <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
+              <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center ${
                 todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
               }`}>
-                {strengthLoading ? (
-                  <Loader2 size={14} className="text-slate-400 animate-spin" />
-                ) : todaysBias?.action === 'SELL' ? (
-                  <TrendingDown size={14} className="text-red-400" />
-                ) : (
-                  <TrendingUp size={14} className="text-emerald-400" />
-                )}
+                {strengthLoading
+                  ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+                  : todaysBias?.action === 'SELL'
+                  ? <TrendingDown size={13} className="text-red-400" />
+                  : <TrendingUp size={13} className="text-emerald-400" />
+                }
               </div>
             </div>
             {strengthLoading ? (
               <>
-                <div className="h-5 bg-white/10 rounded animate-pulse mb-1 w-3/4" />
+                <div className="h-4 bg-white/10 rounded animate-pulse mb-1 w-3/4" />
                 <div className="h-3 bg-white/10 rounded animate-pulse w-1/2" />
               </>
             ) : todaysBias ? (
               <>
-                <p className={`text-sm font-bold leading-none mb-1 ${
+                <p className={`text-xs sm:text-sm font-bold leading-none mb-1 truncate ${
                   todaysBias.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
                 }`}>
                   {todaysBias.action} {todaysBias.pair}
@@ -247,18 +222,18 @@ export default function Dashboard() {
               </>
             ) : (
               <>
-                <p className="text-sm font-bold text-slate-400 leading-none mb-1">Market Closed</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-400 leading-none mb-1">Market Closed</p>
                 <p className="text-[10px] text-slate-500">Opens Monday</p>
               </>
             )}
           </div>
 
-          {/* Next Event — Dynamic */}
-          <div className="rounded-xl p-4 border bg-amber-500/10 border-amber-500/20">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs text-slate-400 font-medium">Next Event</span>
-              <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center">
-                <AlertCircle size={14} className="text-amber-400" />
+          {/* Next Event */}
+          <div className="rounded-xl p-3 sm:p-4 border bg-amber-500/10 border-amber-500/20">
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Next Event</span>
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-amber-500/10 flex items-center justify-center">
+                <AlertCircle size={13} className="text-amber-400" />
               </div>
             </div>
             {eventsLoading ? (
@@ -268,20 +243,20 @@ export default function Dashboard() {
               </>
             ) : topEvent ? (
               <>
-                <p className="text-sm font-bold text-amber-400 leading-none mb-1 truncate">{topEvent.title}</p>
-                <p className="text-xs text-slate-500">{topEvent.country} · {topEvent.impact} Impact</p>
+                <p className="text-xs sm:text-sm font-bold text-amber-400 leading-none mb-1 truncate">{topEvent.title}</p>
+                <p className="text-[10px] text-slate-500 truncate">{topEvent.country} · {topEvent.impact} Impact</p>
               </>
             ) : (
-              <p className="text-sm font-bold text-amber-400">No events today</p>
+              <p className="text-xs sm:text-sm font-bold text-amber-400">No events today</p>
             )}
           </div>
 
-          {/* Top News — Dynamic */}
-          <div className="rounded-xl p-4 border bg-cyan-500/10 border-cyan-500/20">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs text-slate-400 font-medium">Top News</span>
-              <div className="w-7 h-7 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-                <ArrowUpRight size={14} className="text-cyan-400" />
+          {/* Top News */}
+          <div className="rounded-xl p-3 sm:p-4 border bg-cyan-500/10 border-cyan-500/20">
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Top News</span>
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                <ArrowUpRight size={13} className="text-cyan-400" />
               </div>
             </div>
             {newsLoading ? (
@@ -291,43 +266,45 @@ export default function Dashboard() {
               </>
             ) : news[0] ? (
               <>
-                <p className="text-xs font-bold text-cyan-400 leading-snug line-clamp-2">{news[0].title}</p>
-                <p className="text-[10px] text-slate-500 mt-1">{news[0].source}</p>
+                <p className="text-[11px] sm:text-xs font-bold text-cyan-400 leading-snug line-clamp-2">{news[0].title}</p>
+                <p className="text-[10px] text-slate-500 mt-1 truncate">{news[0].source}</p>
               </>
             ) : (
-              <p className="text-sm text-cyan-400">No news available</p>
+              <p className="text-xs text-cyan-400">No news available</p>
             )}
           </div>
 
-          {/* Prop Risk — Dynamic from localStorage */}
-          <div className={`rounded-xl p-4 border ${propRisk.bg} ${propRisk.border}`}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs text-slate-400 font-medium">Prop Risk</span>
-              <div className={`w-7 h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
-                <ShieldCheck size={14} className={propRisk.color} />
+          {/* Prop Risk */}
+          <div className={`rounded-xl p-3 sm:p-4 border ${propRisk.bg} ${propRisk.border}`}>
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Prop Risk</span>
+              <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
+                <ShieldCheck size={13} className={propRisk.color} />
               </div>
             </div>
-            <p className={`text-lg font-bold leading-none mb-1 ${propRisk.color}`}>{propRisk.status}</p>
-            <p className="text-xs text-slate-500">{propRisk.drawdown}% drawdown used</p>
+            <p className={`text-base sm:text-lg font-bold leading-none mb-1 ${propRisk.color}`}>{propRisk.status}</p>
+            <p className="text-[10px] text-slate-500">{propRisk.drawdown}% drawdown used</p>
           </div>
         </div>
 
-        {/* Row 2 — Live News + Upcoming Events */}
+        {/* ── Row 2: Live News + Upcoming Events ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
           {/* Live News */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5">
+          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Newspaper size={15} className="text-cyan-400" />
                 <h2 className="text-sm font-bold text-white">Live News</h2>
               </div>
-              <span onClick={() => navigate('/news')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">View all →</span>
+              <span onClick={() => navigate('/news')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+                View all →
+              </span>
             </div>
 
             {newsLoading && (
               <div className="space-y-3">
-                {[1,2,3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
+                {[1, 2, 3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
               </div>
             )}
 
@@ -363,18 +340,20 @@ export default function Dashboard() {
           </div>
 
           {/* Upcoming Events */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5">
+          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Calendar size={15} className="text-cyan-400" />
                 <h2 className="text-sm font-bold text-white">Upcoming Events</h2>
               </div>
-              <span onClick={() => navigate('/calendar')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">View all →</span>
+              <span onClick={() => navigate('/calendar')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+                View all →
+              </span>
             </div>
 
             {eventsLoading && (
               <div className="space-y-3">
-                {[1,2,3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
+                {[1, 2, 3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
               </div>
             )}
 
@@ -382,8 +361,7 @@ export default function Dashboard() {
               <div className="space-y-3">
                 {events.map((item, i) => {
                   const impactColor = item.impact === 'High' ? 'bg-red-400'
-                    : item.impact === 'Medium' ? 'bg-amber-400'
-                    : 'bg-slate-400'
+                    : item.impact === 'Medium' ? 'bg-amber-400' : 'bg-slate-400'
                   const impactLabel = item.impact === 'High' ? 'HIGH'
                     : item.impact === 'Medium' ? 'MED' : 'LOW'
                   const eventTime = new Date(item.date).toLocaleString('en-US', {
@@ -396,8 +374,8 @@ export default function Dashboard() {
                       <div className={`w-1.5 h-8 rounded-full ${impactColor} shrink-0`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-white font-semibold truncate">{item.title}</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5">
-                          {item.country} · {eventTime} · Forecast: {item.forecast}
+                        <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                          {item.country} · {eventTime}
                         </p>
                       </div>
                       <span className="text-[10px] font-bold text-slate-500 shrink-0">{impactLabel}</span>
@@ -413,8 +391,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Row 3 — Currency Strength */}
-        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5">
+        {/* ── Row 3: Currency Strength ── */}
+        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <BarChart2 size={15} className="text-cyan-400" />
@@ -424,41 +402,44 @@ export default function Dashboard() {
               <button onClick={fetchStrength} className="text-slate-500 hover:text-white transition-colors">
                 <RefreshCw size={13} className={strengthLoading ? 'animate-spin' : ''} />
               </button>
-              <span onClick={() => navigate('/strength')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">View all →</span>
+              <span onClick={() => navigate('/strength')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+                View all →
+              </span>
             </div>
           </div>
 
           {strengthLoading && (
             <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
-              {[1,2,3,4,5,6,7,8].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
+              {[1, 2, 3, 4, 5, 6, 7, 8].map(i => (
+                <div key={i} className="h-20 bg-white/5 rounded-lg animate-pulse" />
+              ))}
             </div>
           )}
 
           {!strengthLoading && strength && (
             <>
+              {/* FIX: 4 cols mobile → 8 cols desktop, smaller padding on mobile */}
               <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
                 {strength.currencies.map(c => {
                   const isStrong = c.label === 'Strong'
                   const isWeak = c.label === 'Weak'
                   return (
                     <div key={c.currency}
-                      className={`rounded-lg p-3 border text-center ${
+                      className={`rounded-lg p-2 sm:p-3 border text-center ${
                         isStrong ? 'bg-emerald-500/10 border-emerald-500/20' :
                         isWeak ? 'bg-red-500/10 border-red-500/20' :
                         'bg-white/5 border-white/10'
                       }`}>
-                      <div className="text-lg mb-1">{FLAG[c.currency] || '🏳️'}</div>
-                      <div className="text-xs font-black text-white">{c.currency}</div>
-                      <div className={`text-xs font-bold mt-1 ${
+                      <div className="text-base sm:text-lg mb-0.5 sm:mb-1">{FLAG[c.currency] || '🏳️'}</div>
+                      <div className="text-[10px] sm:text-xs font-black text-white">{c.currency}</div>
+                      <div className={`text-[10px] sm:text-xs font-bold mt-0.5 sm:mt-1 ${
                         isStrong ? 'text-emerald-400' :
-                        isWeak ? 'text-red-400' :
-                        'text-amber-400'
+                        isWeak ? 'text-red-400' : 'text-amber-400'
                       }`}>{c.strength}</div>
-                      <div className="w-full bg-white/10 rounded-full h-1 mt-1.5">
+                      <div className="w-full bg-white/10 rounded-full h-1 mt-1">
                         <div className={`h-1 rounded-full ${
                           isStrong ? 'bg-emerald-500' :
-                          isWeak ? 'bg-red-500' :
-                          'bg-amber-500'
+                          isWeak ? 'bg-red-500' : 'bg-amber-500'
                         }`} style={{ width: `${c.strength}%` }} />
                       </div>
                     </div>
@@ -467,10 +448,12 @@ export default function Dashboard() {
               </div>
 
               {!strength.marketClosed && strength.bestPairs?.[0] && (
-                <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2">
+                <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
                   <span className="text-xs text-slate-500">Best trade:</span>
-                  <span className="text-xs font-bold text-emerald-400">{strength.bestPairs[0].action} {strength.bestPairs[0].pair}</span>
-                  <span className="text-xs text-slate-500">— {strength.bestPairs[0].reason}</span>
+                  <span className="text-xs font-bold text-emerald-400">
+                    {strength.bestPairs[0].action} {strength.bestPairs[0].pair}
+                  </span>
+                  <span className="text-xs text-slate-500 hidden sm:inline">— {strength.bestPairs[0].reason}</span>
                 </div>
               )}
 
@@ -483,19 +466,21 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Row 4 — AI Bias Snapshot */}
+        {/* ── Row 4: AI Bias Snapshot ── */}
         <div>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Zap size={15} className="text-cyan-400" />
               <h2 className="text-sm font-bold text-white">AI Bias Snapshot</h2>
             </div>
-            <span onClick={() => navigate('/bias')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">Full Analysis →</span>
+            <span onClick={() => navigate('/bias')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+              Full Analysis →
+            </span>
           </div>
 
-          {/* No bias generated yet — show CTA */}
+          {/* CTA — no bias yet */}
           {biasCards.length === 0 && !biasLoading && (
-            <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-8 text-center">
+            <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-6 sm:p-8 text-center">
               <div className="w-12 h-12 rounded-xl bg-cyan-400/10 flex items-center justify-center mx-auto mb-4">
                 <Zap size={22} className="text-cyan-400" />
               </div>
@@ -509,9 +494,7 @@ export default function Dashboard() {
               >
                 Generate AI Bias
               </button>
-              {biasError && (
-                <p className="text-xs text-red-400 mt-3">{biasError}</p>
-              )}
+              {biasError && <p className="text-xs text-red-400 mt-3">{biasError}</p>}
             </div>
           )}
 
@@ -524,11 +507,11 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Bias cards rendered */}
+          {/* Bias cards */}
           {biasCards.length > 0 && !biasLoading && (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {biasCards.map((card) => {
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                {biasCards.map(card => {
                   const Icon = card.icon
                   return (
                     <div key={card.asset} onClick={() => navigate('/bias')}
@@ -554,7 +537,7 @@ export default function Dashboard() {
                   )
                 })}
               </div>
-              <div className="mt-3 flex items-center justify-center gap-3">
+              <div className="mt-3 flex items-center justify-center">
                 <button
                   onClick={generateBias}
                   className="text-xs text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1"
