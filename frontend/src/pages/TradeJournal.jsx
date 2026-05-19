@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   Plus, Trash2, TrendingUp, TrendingDown, Filter,
   Calendar, DollarSign, Target, AlertTriangle, X,
-  BarChart3, Award, Flame, Search, ChevronDown, ChevronUp
+  BarChart3, Award, Flame, Search, ChevronDown, ChevronUp,
+  Image, Link, ExternalLink, Camera, Eye
 } from 'lucide-react'
 
 const STORAGE_KEY = 'bf_trade_journal'
@@ -31,10 +32,113 @@ function formatDate(iso) {
   })
 }
 
-function formatTime(iso) {
-  return new Date(iso).toLocaleTimeString('en-US', {
-    hour: '2-digit', minute: '2-digit',
+// Image to base64 converter
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
   })
+}
+
+// Lightbox component
+function Lightbox({ src, onClose }) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <button className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors">
+        <X size={24} />
+      </button>
+      <img
+        src={src}
+        alt="Chart screenshot"
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  )
+}
+
+// Screenshot upload field component
+function ScreenshotField({ label, imageKey, linkKey, form, setForm }) {
+  const fileRef = useRef()
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Image too large. Max 5MB.')
+      return
+    }
+    const base64 = await fileToBase64(file)
+    setForm(prev => ({ ...prev, [imageKey]: base64 }))
+  }
+
+  const removeImage = () => {
+    setForm(prev => ({ ...prev, [imageKey]: '' }))
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] text-slate-500 uppercase tracking-wider block">{label}</label>
+
+      {/* TradingView Link */}
+      <div className="relative">
+        <Link size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+        <input
+          type="url"
+          value={form[linkKey]}
+          onChange={e => setForm(prev => ({ ...prev, [linkKey]: e.target.value }))}
+          placeholder="https://www.tradingview.com/chart/..."
+          className="w-full pl-8 pr-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-700 outline-none focus:border-cyan-500/30 transition-colors"
+        />
+      </div>
+
+      {/* Image Upload */}
+      {form[imageKey] ? (
+        <div className="relative group rounded-lg overflow-hidden border border-white/10">
+          <img
+            src={form[imageKey]}
+            alt={label}
+            className="w-full h-28 object-cover"
+          />
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+            <button
+              onClick={removeImage}
+              className="p-1.5 bg-red-500/80 rounded-lg text-white hover:bg-red-500 transition-colors"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => fileRef.current?.click()}
+          className="w-full h-16 border border-dashed border-white/10 rounded-lg flex items-center justify-center gap-2 text-slate-600 hover:text-slate-400 hover:border-white/20 transition-all text-xs"
+        >
+          <Camera size={14} />
+          Upload Screenshot
+        </button>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFile}
+        className="hidden"
+      />
+    </div>
+  )
 }
 
 export default function TradeJournal() {
@@ -44,10 +148,11 @@ export default function TradeJournal() {
   const [filterResult, setFilterResult] = useState('All')
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedId, setExpandedId] = useState(null)
-  const [sortBy, setSortBy] = useState('date') // date, pnl
+  const [sortBy, setSortBy] = useState('date')
   const [sortDir, setSortDir] = useState('desc')
+  const [lightboxSrc, setLightboxSrc] = useState(null)
 
-  // Form state
+  // Form state — now includes chart fields
   const [form, setForm] = useState({
     pair: 'EUR/USD',
     direction: 'LONG',
@@ -63,6 +168,11 @@ export default function TradeJournal() {
     notes: '',
     emotion: 'Calm',
     rating: 3,
+    // NEW: before/after chart fields
+    beforeImage: '',
+    beforeLink: '',
+    afterImage: '',
+    afterLink: '',
   })
 
   useEffect(() => {
@@ -75,6 +185,7 @@ export default function TradeJournal() {
       lotSize: '', stopLoss: '', takeProfit: '', pnl: '',
       date: new Date().toISOString().split('T')[0], session: 'London',
       setup: '', notes: '', emotion: 'Calm', rating: 3,
+      beforeImage: '', beforeLink: '', afterImage: '', afterLink: '',
     })
   }
 
@@ -108,9 +219,7 @@ export default function TradeJournal() {
         t.notes?.toLowerCase().includes(q)
     })
     .sort((a, b) => {
-      if (sortBy === 'pnl') {
-        return sortDir === 'desc' ? b.pnl - a.pnl : a.pnl - b.pnl
-      }
+      if (sortBy === 'pnl') return sortDir === 'desc' ? b.pnl - a.pnl : a.pnl - b.pnl
       return sortDir === 'desc'
         ? new Date(b.date) - new Date(a.date)
         : new Date(a.date) - new Date(b.date)
@@ -130,15 +239,14 @@ export default function TradeJournal() {
   let currentStreak = 0
   let streakType = ''
   for (const t of trades) {
-    if (currentStreak === 0) {
-      streakType = t.result
-      currentStreak = 1
-    } else if (t.result === streakType) {
-      currentStreak++
-    } else {
-      break
-    }
+    if (currentStreak === 0) { streakType = t.result; currentStreak = 1 }
+    else if (t.result === streakType) { currentStreak++ }
+    else { break }
   }
+
+  // Check if a trade has any chart data
+  const hasChartData = (trade) =>
+    trade.beforeImage || trade.beforeLink || trade.afterImage || trade.afterLink
 
   return (
     <DashboardLayout title="Trade Journal" subtitle="Log trades, track P&L, improve your edge">
@@ -323,6 +431,15 @@ export default function TradeJournal() {
                       <div className="text-[10px] text-slate-600">{formatDate(trade.date)} · {trade.session}</div>
                       {trade.setup && <div className="text-xs text-slate-400 truncate mt-0.5">{trade.setup}</div>}
                     </div>
+
+                    {/* Chart badge — shown if trade has chart data */}
+                    {hasChartData(trade) && (
+                      <div className="hidden sm:flex items-center gap-1 px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-lg">
+                        <Camera size={10} className="text-cyan-400" />
+                        <span className="text-[9px] text-cyan-400 font-bold">CHARTS</span>
+                      </div>
+                    )}
+
                     <div className={`text-sm font-bold font-mono ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                       {trade.pnl >= 0 ? '+' : ''}{trade.pnl.toFixed(2)}
                     </div>
@@ -339,6 +456,8 @@ export default function TradeJournal() {
                       <div className="sm:hidden text-[10px] text-slate-600 mb-2">
                         {formatDate(trade.date)} · {trade.session}
                       </div>
+
+                      {/* Price details */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {trade.entryPrice && (
                           <div className="bg-white/[0.02] border border-white/5 rounded-lg p-2 text-center">
@@ -365,6 +484,116 @@ export default function TradeJournal() {
                           </div>
                         )}
                       </div>
+
+                      {/* ─── BEFORE / AFTER CHARTS SECTION ─── */}
+                      {hasChartData(trade) && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Camera size={12} className="text-cyan-400" />
+                            <span className="text-[10px] text-cyan-400 uppercase tracking-wider font-semibold">Chart Screenshots</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+                            {/* Before Trade */}
+                            {(trade.beforeImage || trade.beforeLink) && (
+                              <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📊 Before Trade</span>
+                                  {trade.beforeLink && (
+                                    <a
+                                      href={trade.beforeLink}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={e => e.stopPropagation()}
+                                      className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                                    >
+                                      <ExternalLink size={9} />
+                                      TradingView
+                                    </a>
+                                  )}
+                                </div>
+                                {trade.beforeImage && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.beforeImage) }}
+                                    className="relative group w-full rounded-lg overflow-hidden border border-white/5"
+                                  >
+                                    <img
+                                      src={trade.beforeImage}
+                                      alt="Before trade chart"
+                                      className="w-full h-32 object-cover"
+                                    />
+                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <Eye size={20} className="text-white" />
+                                    </div>
+                                  </button>
+                                )}
+                                {!trade.beforeImage && trade.beforeLink && (
+                                  <a
+                                    href={trade.beforeLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={e => e.stopPropagation()}
+                                    className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+                                  >
+                                    <Link size={11} />
+                                    Open Chart
+                                  </a>
+                                )}
+                              </div>
+                            )}
+
+                            {/* After Trade */}
+                            {(trade.afterImage || trade.afterLink) && (
+                              <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📈 After Trade</span>
+                                  {trade.afterLink && (
+                                    <a
+                                      href={trade.afterLink}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={e => e.stopPropagation()}
+                                      className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                                    >
+                                      <ExternalLink size={9} />
+                                      TradingView
+                                    </a>
+                                  )}
+                                </div>
+                                {trade.afterImage && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.afterImage) }}
+                                    className="relative group w-full rounded-lg overflow-hidden border border-white/5"
+                                  >
+                                    <img
+                                      src={trade.afterImage}
+                                      alt="After trade chart"
+                                      className="w-full h-32 object-cover"
+                                    />
+                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <Eye size={20} className="text-white" />
+                                    </div>
+                                  </button>
+                                )}
+                                {!trade.afterImage && trade.afterLink && (
+                                  <a
+                                    href={trade.afterLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={e => e.stopPropagation()}
+                                    className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+                                  >
+                                    <Link size={11} />
+                                    Open Chart
+                                  </a>
+                                )}
+                              </div>
+                            )}
+
+                          </div>
+                        </div>
+                      )}
+
                       {trade.notes && (
                         <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
                           <div className="text-[10px] text-slate-600 mb-1">Notes</div>
@@ -554,6 +783,32 @@ export default function TradeJournal() {
                   />
                 </div>
 
+                {/* ─── BEFORE / AFTER CHARTS ─── */}
+                <div className="border border-cyan-500/10 rounded-xl p-4 bg-cyan-500/[0.02] space-y-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Camera size={13} className="text-cyan-400" />
+                    <span className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider">Chart Screenshots</span>
+                    <span className="text-[9px] text-slate-600 ml-1">(Optional)</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <ScreenshotField
+                      label="📊 Before Trade"
+                      imageKey="beforeImage"
+                      linkKey="beforeLink"
+                      form={form}
+                      setForm={setForm}
+                    />
+                    <ScreenshotField
+                      label="📈 After Trade"
+                      imageKey="afterImage"
+                      linkKey="afterLink"
+                      form={form}
+                      setForm={setForm}
+                    />
+                  </div>
+                </div>
+
                 {/* Row 7: Emotion + Rating */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -598,6 +853,12 @@ export default function TradeJournal() {
         )}
 
       </div>
+
+      {/* Lightbox */}
+      {lightboxSrc && (
+        <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+      )}
+
     </DashboardLayout>
   )
 }
