@@ -1,40 +1,21 @@
+import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
-import { Settings, User, Bell, Shield, CreditCard, LogOut } from 'lucide-react'
+import { Settings, User, Bell, Shield, CreditCard, LogOut, Mail, Loader2, CheckCircle, AlertCircle } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 
-const SECTIONS = [
-  {
-    label: 'Profile',
-    icon: User,
-    fields: [
-      { name: 'Full Name', placeholder: 'Your name', type: 'text' },
-      { name: 'Email', placeholder: 'your@email.com', type: 'email' },
-    ],
-  },
-  {
-    label: 'Notifications',
-    icon: Bell,
-    fields: [
-      { name: 'Email Alerts', placeholder: null, type: 'toggle', defaultOn: true },
-      { name: 'Bias Change Alerts', placeholder: null, type: 'toggle', defaultOn: true },
-      { name: 'Event Reminders', placeholder: null, type: 'toggle', defaultOn: false },
-    ],
-  },
-  {
-    label: 'Security',
-    icon: Shield,
-    fields: [
-      { name: 'Current Password', placeholder: '••••••••', type: 'password' },
-      { name: 'New Password', placeholder: '••••••••', type: 'password' },
-    ],
-  },
-]
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
-function ToggleSwitch({ defaultOn }) {
+function ToggleSwitch({ checked, onChange, disabled }) {
   return (
-    <label className="relative inline-flex items-center cursor-pointer">
-      <input type="checkbox" defaultChecked={defaultOn} className="sr-only peer" />
+    <label className={`relative inline-flex items-center ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+        className="sr-only peer"
+      />
       <div className="w-10 h-5 bg-white/10 peer-checked:bg-cyan-500 rounded-full transition-colors duration-200 after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5" />
     </label>
   )
@@ -44,13 +25,108 @@ export default function SettingsPage() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
 
+  const email = user?.email || ''
+  const plan = user?.plan || 'Pro'
+
+  // Email notification state
+  const [emailSub, setEmailSub] = useState({
+    subscribed: false,
+    preferences: { calendar: true, news: true },
+  })
+  const [emailLoading, setEmailLoading] = useState(true)
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailMessage, setEmailMessage] = useState({ type: '', text: '' })
+
+  // Load email subscription status on mount
+  useEffect(() => {
+    if (!email) return
+    fetchEmailStatus()
+  }, [email])
+
+  const fetchEmailStatus = async () => {
+    try {
+      setEmailLoading(true)
+      const res = await fetch(`${API_BASE}/api/email/status?email=${encodeURIComponent(email)}`)
+      const data = await res.json()
+      setEmailSub({
+        subscribed: data.subscribed || false,
+        preferences: data.preferences || { calendar: true, news: true },
+      })
+    } catch (e) {
+      console.error('Email status fetch error:', e)
+    } finally {
+      setEmailLoading(false)
+    }
+  }
+
+  const handleSubscribe = async () => {
+    setEmailSaving(true)
+    setEmailMessage({ type: '', text: '' })
+    try {
+      const res = await fetch(`${API_BASE}/api/email/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, preferences: emailSub.preferences }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setEmailSub(prev => ({ ...prev, subscribed: true }))
+        setEmailMessage({ type: 'success', text: 'Subscribed! Welcome email sent to your inbox.' })
+      } else {
+        setEmailMessage({ type: 'error', text: data.error || 'Subscription failed' })
+      }
+    } catch (e) {
+      setEmailMessage({ type: 'error', text: 'Network error. Try again.' })
+    } finally {
+      setEmailSaving(false)
+      setTimeout(() => setEmailMessage({ type: '', text: '' }), 5000)
+    }
+  }
+
+  const handleUnsubscribe = async () => {
+    setEmailSaving(true)
+    setEmailMessage({ type: '', text: '' })
+    try {
+      const res = await fetch(`${API_BASE}/api/email/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, preferences: emailSub.preferences }),
+      })
+      // Use the unsubscribe by setting active false via preferences route
+      await fetch(`${API_BASE}/api/email/preferences`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, preferences: { calendar: false, news: false } }),
+      })
+      setEmailSub(prev => ({ ...prev, subscribed: false }))
+      setEmailMessage({ type: 'success', text: 'Unsubscribed from all email alerts.' })
+    } catch (e) {
+      setEmailMessage({ type: 'error', text: 'Network error. Try again.' })
+    } finally {
+      setEmailSaving(false)
+      setTimeout(() => setEmailMessage({ type: '', text: '' }), 5000)
+    }
+  }
+
+  const handlePreferenceChange = async (key) => {
+    const updated = { ...emailSub.preferences, [key]: !emailSub.preferences[key] }
+    setEmailSub(prev => ({ ...prev, preferences: updated }))
+
+    try {
+      await fetch(`${API_BASE}/api/email/preferences`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, preferences: updated }),
+      })
+    } catch (e) {
+      console.error('Preference update error:', e)
+    }
+  }
+
   const handleLogout = () => {
     logout()
     navigate('/login')
   }
-
-  const email = user?.email || ''
-  const plan = user?.plan || 'Pro'
 
   return (
     <DashboardLayout>
@@ -83,34 +159,173 @@ export default function SettingsPage() {
           </span>
         </div>
 
-        {/* Setting Sections */}
-        {SECTIONS.map((section) => {
-          const Icon = section.icon
-          return (
-            <div key={section.label} className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
-              <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
-                <Icon size={15} className="text-cyan-400" />
-                <h2 className="text-sm font-semibold text-white">{section.label}</h2>
-              </div>
-              <div className="px-5 py-4 space-y-4">
-                {section.fields.map((field) => (
-                  <div key={field.name} className="flex items-center justify-between gap-4">
-                    <label className="text-sm text-slate-400 shrink-0">{field.name}</label>
-                    {field.type === 'toggle' ? (
-                      <ToggleSwitch defaultOn={field.defaultOn} />
-                    ) : (
-                      <input
-                        type={field.type}
-                        placeholder={field.placeholder}
-                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
+        {/* Profile */}
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
+            <User size={15} className="text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">Profile</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400 shrink-0">Full Name</label>
+              <input
+                type="text"
+                placeholder="Your name"
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+              />
             </div>
-          )
-        })}
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400 shrink-0">Email</label>
+              <input
+                type="email"
+                value={email}
+                readOnly
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-500 w-56 cursor-not-allowed"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ─── EMAIL NOTIFICATIONS ─── */}
+        <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.03] overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-cyan-500/10">
+            <Mail size={15} className="text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">Email Alerts</h2>
+            {emailLoading && <Loader2 size={13} className="text-cyan-400 animate-spin ml-auto" />}
+            {!emailLoading && emailSub.subscribed && (
+              <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                ACTIVE
+              </span>
+            )}
+          </div>
+
+          <div className="px-5 py-4 space-y-4">
+            <p className="text-xs text-slate-500">
+              Get email alerts for high impact economic events (1hr & 30min reminders) and breaking market news (impact 8+).
+            </p>
+
+            {!emailLoading && !emailSub.subscribed && (
+              <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-5 text-center">
+                <Mail size={24} className="text-cyan-400 mx-auto mb-3" />
+                <h3 className="text-sm font-bold text-white mb-1">Enable Email Alerts</h3>
+                <p className="text-xs text-slate-500 mb-4 max-w-sm mx-auto">
+                  Never miss a high impact event. Get alerts for FOMC, NFP, CPI and breaking news directly in your inbox.
+                </p>
+                <button
+                  onClick={handleSubscribe}
+                  disabled={emailSaving}
+                  className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all disabled:opacity-50 flex items-center gap-2 mx-auto"
+                >
+                  {emailSaving ? (
+                    <><Loader2 size={13} className="animate-spin" /> Subscribing...</>
+                  ) : (
+                    <><Bell size={13} /> Subscribe to Alerts</>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {!emailLoading && emailSub.subscribed && (
+              <>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between py-2">
+                    <div>
+                      <p className="text-sm text-white font-medium">📅 Calendar Event Alerts</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">High impact events — 1hr & 30min reminders</p>
+                    </div>
+                    <ToggleSwitch
+                      checked={emailSub.preferences.calendar}
+                      onChange={() => handlePreferenceChange('calendar')}
+                    />
+                  </div>
+
+                  <div className="border-t border-white/5" />
+
+                  <div className="flex items-center justify-between py-2">
+                    <div>
+                      <p className="text-sm text-white font-medium">📰 Breaking News Alerts</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Market-moving news with impact score 8+</p>
+                    </div>
+                    <ToggleSwitch
+                      checked={emailSub.preferences.news}
+                      onChange={() => handlePreferenceChange('news')}
+                    />
+                  </div>
+                </div>
+
+                <div className="border-t border-white/5 pt-3">
+                  <button
+                    onClick={handleUnsubscribe}
+                    disabled={emailSaving}
+                    className="text-xs text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1"
+                  >
+                    {emailSaving ? (
+                      <><Loader2 size={11} className="animate-spin" /> Processing...</>
+                    ) : (
+                      'Unsubscribe from all alerts'
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Status message */}
+            {emailMessage.text && (
+              <div className={`flex items-center gap-2 p-3 rounded-lg text-xs ${
+                emailMessage.type === 'success'
+                  ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                  : 'bg-red-500/10 border border-red-500/20 text-red-400'
+              }`}>
+                {emailMessage.type === 'success' ? <CheckCircle size={13} /> : <AlertCircle size={13} />}
+                {emailMessage.text}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* General Notifications */}
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
+            <Bell size={15} className="text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">In-App Notifications</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400">Bias Change Alerts</label>
+              <ToggleSwitch checked={true} onChange={() => {}} />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400">Event Reminders</label>
+              <ToggleSwitch checked={false} onChange={() => {}} />
+            </div>
+          </div>
+        </div>
+
+        {/* Security */}
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
+            <Shield size={15} className="text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">Security</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400 shrink-0">Current Password</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <label className="text-sm text-slate-400 shrink-0">New Password</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+              />
+            </div>
+          </div>
+        </div>
 
         {/* Billing */}
         <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
