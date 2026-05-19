@@ -23,28 +23,30 @@ const supabase = createClient(
 const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
 const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
 // ============================================
 // 🔄 API CACHE SYSTEM — Save TwelveData credits
 // ============================================
-// Add this AFTER the const declarations (after line: const anthropic = ...)
-// and BEFORE the routes (before line: app.post('/api/register'...))
-
 const API_CACHE = {}
 const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
 
 function getCached(key) {
   const entry = API_CACHE[key]
   if (!entry) return null
-  if (Date.now() - entry.timestamp > CACHE_TTL) {
-    delete API_CACHE[key]
-    return null
-  }
+  if (Date.now() - entry.timestamp > CACHE_TTL) return entry.data // Return stale data, refresh in background
   return entry.data
+}
+
+function isCacheFresh(key) {
+  const entry = API_CACHE[key]
+  if (!entry) return false
+  return Date.now() - entry.timestamp < CACHE_TTL
 }
 
 function setCache(key, data) {
   API_CACHE[key] = { data, timestamp: Date.now() }
 }
+
 const PLANS = {
   basic_monthly:  { variantId: '1619191', name: 'Basic Monthly' },
   basic_annual:   { variantId: '1619209', name: 'Basic Annual' },
@@ -136,19 +138,31 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   res.json({ received: true })
 })
 
+// ============================================
+// 💰 PRICES — Optimized (5 symbols = 5 credits)
+// ============================================
 app.get('/api/prices', async (req, res) => {
-  const cached = getCached('prices')
-  if (cached) return res.json(cached)
+  // Return cached data if fresh
+  if (isCacheFresh('prices')) return res.json(getCached('prices'))
 
-  const symbols = 'EUR/USD,GBP/USD,USD/JPY,USD/CHF,AUD/USD,NZD/USD,USD/CAD,XAU/USD,BTC/USD,ETH/USD'
+  // Return stale cache while fetching (never show empty)
+  const stale = getCached('prices')
+
+  const symbols = 'EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD'
   try {
     const response = await axios.get(
       `https://api.twelvedata.com/price?symbol=${symbols}&apikey=${process.env.TWELVEDATA_API_KEY}`
     )
+    // Check for rate limit error
+    if (response.data?.code === 429 || response.data?.status === 'error') {
+      if (stale) return res.json(stale)
+      return res.json({ success: true, data: response.data })
+    }
     const result = { success: true, data: response.data }
-    if (!response.data?.code) setCache('prices', result)
+    setCache('prices', result)
     res.json(result)
   } catch (e) {
+    if (stale) return res.json(stale)
     res.status(500).json({ error: 'Price fetch failed' })
   }
 })
@@ -196,29 +210,17 @@ app.post('/api/bias', async (req, res) => {
 // ============================================
 app.post('/api/trade-check', async (req, res) => {
   const {
-    symbol,
-    direction,
-    lotSize,
-    stopLossPips,
-    entryPrice,
-    accountSize,
-    dailyDrawdownUsed,
-    totalDrawdownUsed,
-    maxDailyDrawdown,
-    maxTotalDrawdown,
-    riskPerTrade,
-    useAI = false, // 🔥 Toggle this to true when credits return
+    symbol, direction, lotSize, stopLossPips, entryPrice,
+    accountSize, dailyDrawdownUsed, totalDrawdownUsed,
+    maxDailyDrawdown, maxTotalDrawdown, riskPerTrade,
+    useAI = false,
   } = req.body
 
   if (!symbol || !direction || !lotSize || !stopLossPips) {
-    return res.status(400).json({
-      success: false,
-      error: 'Required: symbol, direction, lotSize, stopLossPips'
-    })
+    return res.status(400).json({ success: false, error: 'Required: symbol, direction, lotSize, stopLossPips' })
   }
 
   try {
-    // 1️⃣ Fetch upcoming high-impact events (next 4 hours)
     let upcomingEvents = []
     try {
       const apiKey = process.env.FINNHUB_API_KEY
@@ -227,283 +229,118 @@ app.post('/api/trade-check', async (req, res) => {
         const future = new Date(now.getTime() + 4 * 60 * 60 * 1000)
         const from = now.toISOString().split('T')[0]
         const to = future.toISOString().split('T')[0]
-
-        const calResp = await fetch(
-          `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`
-        )
+        const calResp = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`)
         if (calResp.ok) {
           const calData = await calResp.json()
           const events = calData.economicCalendar || []
           upcomingEvents = events
-            .filter(e => {
-              if (!e.time) return false
-              const eventTime = new Date(e.time)
-              return eventTime > now && eventTime < future
-            })
+            .filter(e => { if (!e.time) return false; const t = new Date(e.time); return t > now && t < future })
             .filter(e => e.impact?.toLowerCase() === 'high')
             .slice(0, 5)
-            .map(e => ({
-              event: e.event,
-              country: e.country,
-              time: e.time,
-              minutesUntil: Math.round((new Date(e.time) - now) / 60000)
-            }))
+            .map(e => ({ event: e.event, country: e.country, time: e.time, minutesUntil: Math.round((new Date(e.time) - now) / 60000) }))
         }
       }
-    } catch (calErr) {
-      console.error('Calendar fetch in trade-check:', calErr.message)
-    }
+    } catch (calErr) { console.error('Calendar fetch in trade-check:', calErr.message) }
 
-    // 2️⃣ Calculate risk metrics
     const dailyDrawdownRemaining = (maxDailyDrawdown || 5) - (dailyDrawdownUsed || 0)
     const totalDrawdownRemaining = (maxTotalDrawdown || 10) - (totalDrawdownUsed || 0)
-
     const pipValue = symbol.toUpperCase().includes('JPY') ? 9.09 : 10
     const estimatedRiskDollars = lotSize * pipValue * stopLossPips
     const estimatedRiskPercent = accountSize ? (estimatedRiskDollars / accountSize) * 100 : 0
 
-    // 3️⃣ Match trade currency with upcoming news
     const tradeCurrencies = symbol.toUpperCase().replace('/', '').match(/.{1,3}/g) || []
-    const currencyMap = {
-      'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
-      'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD'
-    }
-    const conflictingEvents = upcomingEvents.filter(e => {
-      const eventCurrency = currencyMap[e.country?.toUpperCase()]
-      return eventCurrency && tradeCurrencies.includes(eventCurrency)
-    })
+    const currencyMap = { 'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY', 'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD' }
+    const conflictingEvents = upcomingEvents.filter(e => { const ec = currencyMap[e.country?.toUpperCase()]; return ec && tradeCurrencies.includes(ec) })
     const imminentNews = upcomingEvents.find(e => e.minutesUntil <= 60)
     const conflictingImminent = conflictingEvents.find(e => e.minutesUntil <= 60)
 
-    // 4️⃣ RULE-BASED VERDICT ENGINE
-    const reasons = []
-    const warnings = []
-    let verdict = 'GREEN'
-    let headline = 'Trade conditions look clear'
-    let recommendation = 'Proceed with your planned setup. Stick to your stop loss.'
-    let confidence = 85
+    const reasons = [], warnings = []
+    let verdict = 'GREEN', headline = 'Trade conditions look clear', recommendation = 'Proceed with your planned setup. Stick to your stop loss.', confidence = 85
 
-    // RED FLAGS (account-threatening)
-    if (dailyDrawdownUsed >= 90) {
-      verdict = 'RED'
-      headline = 'Account blow-up risk — STOP trading today'
-      reasons.push(`Daily drawdown at ${dailyDrawdownUsed.toFixed(1)}% — you're 1 bad trade from violation`)
-      recommendation = 'Close terminal. Resume tomorrow with fresh mindset.'
-      confidence = 98
-    } else if (estimatedRiskPercent > maxDailyDrawdown) {
-      verdict = 'RED'
-      headline = 'Single trade risk exceeds daily limit'
-      reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}% — more than your ${maxDailyDrawdown}% daily cap`)
-      recommendation = `Reduce lot size to ${(lotSize * (maxDailyDrawdown / estimatedRiskPercent) * 0.5).toFixed(2)} or smaller`
-      confidence = 96
-    } else if (conflictingImminent) {
-      verdict = 'RED'
-      headline = `${conflictingImminent.event} in ${conflictingImminent.minutesUntil} min`
-      reasons.push(`High-impact ${currencyMap[conflictingImminent.country?.toUpperCase()] || conflictingImminent.country} news directly affects ${symbol}`)
-      reasons.push('Spreads will widen, slippage likely, stops can get hunted')
-      recommendation = `Wait ${conflictingImminent.minutesUntil + 15} minutes — let post-news volatility settle`
-      confidence = 94
-    }
-    // YELLOW FLAGS (caution warranted)
-    else if (dailyDrawdownUsed >= 70) {
-      verdict = 'YELLOW'
-      headline = 'Daily drawdown danger zone'
-      reasons.push(`${dailyDrawdownUsed.toFixed(1)}% of daily limit used`)
-      reasons.push(`Only $${((accountSize * dailyDrawdownRemaining) / 100).toFixed(0)} loss capacity left`)
-      recommendation = 'Reduce position size by 50%. Avoid revenge trading.'
-      confidence = 88
-    } else if (estimatedRiskPercent > riskPerTrade * 1.5) {
-      verdict = 'YELLOW'
-      headline = 'Risk above your normal per-trade limit'
-      reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}% — your rule is ${riskPerTrade}%`)
-      const suggestedLot = ((accountSize * riskPerTrade) / 100) / (pipValue * stopLossPips)
-      recommendation = `Reduce to ${suggestedLot.toFixed(2)} lots to stay within your ${riskPerTrade}% rule`
-      confidence = 90
-    } else if (imminentNews) {
-      verdict = 'YELLOW'
-      headline = `News event in ${imminentNews.minutesUntil} min`
-      reasons.push(`${imminentNews.event} (${imminentNews.country}) could spike volatility`)
-      reasons.push('Even non-related news affects correlated pairs')
-      recommendation = `Consider waiting ${imminentNews.minutesUntil + 10} min, or use smaller size`
-      confidence = 82
-    } else if (totalDrawdownUsed >= 70) {
-      verdict = 'YELLOW'
-      headline = 'Total drawdown getting tight'
-      reasons.push(`${totalDrawdownUsed.toFixed(1)}% of total drawdown used`)
-      recommendation = 'Trade smaller. Focus on A+ setups only.'
-      confidence = 85
-    }
-    // GREEN — all clear
-    else {
-      reasons.push(`Risk is ${estimatedRiskPercent.toFixed(2)}% of account ($${estimatedRiskDollars.toFixed(0)}) — within your ${riskPerTrade}% rule`)
-      reasons.push(`Daily drawdown only ${dailyDrawdownUsed.toFixed(1)}% used — ${dailyDrawdownRemaining.toFixed(1)}% buffer remaining`)
-      if (upcomingEvents.length === 0) {
-        reasons.push('No high-impact news in next 4 hours')
-      } else {
-        reasons.push(`${upcomingEvents.length} upcoming news event(s) — none affect ${symbol} directly`)
-      }
-    }
+    if (dailyDrawdownUsed >= 90) { verdict = 'RED'; headline = 'Account blow-up risk — STOP trading today'; reasons.push(`Daily drawdown at ${dailyDrawdownUsed.toFixed(1)}%`); recommendation = 'Close terminal. Resume tomorrow.'; confidence = 98 }
+    else if (estimatedRiskPercent > maxDailyDrawdown) { verdict = 'RED'; headline = 'Single trade risk exceeds daily limit'; reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}%`); recommendation = `Reduce lot size to ${(lotSize * (maxDailyDrawdown / estimatedRiskPercent) * 0.5).toFixed(2)}`; confidence = 96 }
+    else if (conflictingImminent) { verdict = 'RED'; headline = `${conflictingImminent.event} in ${conflictingImminent.minutesUntil} min`; reasons.push(`High-impact news directly affects ${symbol}`); recommendation = `Wait ${conflictingImminent.minutesUntil + 15} minutes`; confidence = 94 }
+    else if (dailyDrawdownUsed >= 70) { verdict = 'YELLOW'; headline = 'Daily drawdown danger zone'; reasons.push(`${dailyDrawdownUsed.toFixed(1)}% of daily limit used`); recommendation = 'Reduce position size by 50%.'; confidence = 88 }
+    else if (estimatedRiskPercent > riskPerTrade * 1.5) { verdict = 'YELLOW'; headline = 'Risk above your normal limit'; reasons.push(`This trade risks ${estimatedRiskPercent.toFixed(2)}%`); recommendation = `Reduce to stay within ${riskPerTrade}% rule`; confidence = 90 }
+    else if (imminentNews) { verdict = 'YELLOW'; headline = `News event in ${imminentNews.minutesUntil} min`; reasons.push(`${imminentNews.event} could spike volatility`); recommendation = `Wait ${imminentNews.minutesUntil + 10} min`; confidence = 82 }
+    else { reasons.push(`Risk is ${estimatedRiskPercent.toFixed(2)}% — within your ${riskPerTrade}% rule`); reasons.push(`Daily drawdown ${dailyDrawdownUsed.toFixed(1)}% used`); reasons.push(upcomingEvents.length === 0 ? 'No high-impact news in next 4 hours' : `${upcomingEvents.length} events — none affect ${symbol}`) }
 
-    // Extra warnings
-    if (totalDrawdownUsed >= 80 && verdict !== 'RED') {
-      warnings.push(`Total drawdown at ${totalDrawdownUsed.toFixed(1)}% — one more bad day blows the challenge`)
-    }
-    if (upcomingEvents.length >= 3) {
-      warnings.push(`${upcomingEvents.length} high-impact events in next 4h — busy session ahead`)
-    }
-    if (conflictingEvents.length > 0 && verdict === 'GREEN') {
-      warnings.push(`${conflictingEvents[0].event} in ${conflictingEvents[0].minutesUntil}min may affect ${symbol}`)
-    }
+    if (totalDrawdownUsed >= 80 && verdict !== 'RED') warnings.push(`Total drawdown at ${totalDrawdownUsed.toFixed(1)}%`)
+    if (upcomingEvents.length >= 3) warnings.push(`${upcomingEvents.length} high-impact events in next 4h`)
 
-    let finalVerdict = {
-      verdict,
-      headline,
-      reasons,
-      warnings,
-      recommendation,
-      confidence,
-      engine: 'rule-based'
-    }
+    let finalVerdict = { verdict, headline, reasons, warnings, recommendation, confidence, engine: 'rule-based' }
 
-    // 5️⃣ OPTIONAL: Enhance with AI if enabled and credits available
     if (useAI) {
       try {
-        const tradeContext = `
-TRADE: ${direction} ${lotSize} lots ${symbol}, SL ${stopLossPips} pips
-RISK: $${estimatedRiskDollars.toFixed(2)} (${estimatedRiskPercent.toFixed(2)}%)
-DRAWDOWN: Daily ${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%, Total ${totalDrawdownUsed?.toFixed(1)}%/${maxTotalDrawdown}%
-NEWS (next 4h): ${upcomingEvents.map(e => `${e.event}(${e.country}) in ${e.minutesUntil}m`).join('; ') || 'none'}
-RULE VERDICT: ${verdict}`.trim()
-
-        const message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5-20250514',
-          max_tokens: 800,
-          system: `You are an elite prop firm risk advisor. Return ONLY valid JSON with: verdict (GREEN/YELLOW/RED), headline (max 60 chars), reasons (array of 3 strings), warnings (array), recommendation (string), confidence (0-100).`,
-          messages: [{ role: 'user', content: `Refine this trade verdict:\n${tradeContext}` }],
-        })
+        const tradeContext = `TRADE: ${direction} ${lotSize} lots ${symbol}, SL ${stopLossPips} pips\nRISK: $${estimatedRiskDollars.toFixed(2)} (${estimatedRiskPercent.toFixed(2)}%)\nDRAWDOWN: Daily ${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%, Total ${totalDrawdownUsed?.toFixed(1)}%/${maxTotalDrawdown}%\nNEWS: ${upcomingEvents.map(e => `${e.event}(${e.country}) in ${e.minutesUntil}m`).join('; ') || 'none'}\nRULE VERDICT: ${verdict}`
+        const message = await anthropic.messages.create({ model: 'claude-sonnet-4-5-20250514', max_tokens: 800, system: 'You are an elite prop firm risk advisor. Return ONLY valid JSON.', messages: [{ role: 'user', content: `Refine this trade verdict:\n${tradeContext}` }] })
         const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
-        const aiVerdict = JSON.parse(raw)
-        finalVerdict = { ...aiVerdict, engine: 'ai-enhanced' }
-      } catch (aiErr) {
-        console.warn('AI enhancement failed, using rule-based:', aiErr.message)
-        // Silently fall back to rule-based — user gets a verdict either way
-      }
+        finalVerdict = { ...JSON.parse(raw), engine: 'ai-enhanced' }
+      } catch (aiErr) { console.warn('AI enhancement failed:', aiErr.message) }
     }
 
-    res.json({
-      success: true,
-      verdict: finalVerdict,
-      meta: {
-        estimatedRiskDollars: estimatedRiskDollars.toFixed(2),
-        estimatedRiskPercent: estimatedRiskPercent.toFixed(2),
-        upcomingEvents,
-        analyzedAt: new Date().toISOString()
-      }
-    })
-
-  } catch (e) {
-    console.error('Trade check error:', e.message)
-    res.status(500).json({
-      success: false,
-      error: 'Trade analysis failed',
-      detail: e.message
-    })
-  }
+    res.json({ success: true, verdict: finalVerdict, meta: { estimatedRiskDollars: estimatedRiskDollars.toFixed(2), estimatedRiskPercent: estimatedRiskPercent.toFixed(2), upcomingEvents, analyzedAt: new Date().toISOString() } })
+  } catch (e) { console.error('Trade check error:', e.message); res.status(500).json({ success: false, error: 'Trade analysis failed' }) }
 })
+
 app.get('/api/calendar', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
-
   const majorCountries = ['US', 'EU', 'GB', 'JP', 'AU', 'CA', 'CH', 'NZ', 'CN']
-
   try {
     const now = new Date()
-    const fromDate = new Date(now)
-    fromDate.setDate(now.getDate() - 3)
-    const toDate = new Date(now)
-    toDate.setDate(now.getDate() + 14)
-
+    const fromDate = new Date(now); fromDate.setDate(now.getDate() - 3)
+    const toDate = new Date(now); toDate.setDate(now.getDate() + 14)
     const from = fromDate.toISOString().split('T')[0]
     const to = toDate.toISOString().split('T')[0]
-
-    const response = await fetch(
-      `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`,
-      { headers: { 'Accept': 'application/json' } }
-    )
-
+    const response = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`, { headers: { 'Accept': 'application/json' } })
     if (!response.ok) throw new Error(`Finnhub error: ${response.status}`)
-
     const data = await response.json()
     const events = data.economicCalendar || []
-
-    const filtered = events.filter(item =>
-      majorCountries.includes(item.country?.toUpperCase())
-    )
-
+    const filtered = events.filter(item => majorCountries.includes(item.country?.toUpperCase()))
     const normalized = filtered.map((item) => ({
       title: item.event || 'Economic Event',
-      country: ({
-        'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY',
-        'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD', 'CN': 'CNY'
-      })[item.country?.toUpperCase()] || item.country?.toUpperCase() || 'N/A',
+      country: ({ 'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY', 'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD', 'CN': 'CNY' })[item.country?.toUpperCase()] || item.country?.toUpperCase() || 'N/A',
       date: item.time ? new Date(item.time).toISOString() : new Date().toISOString(),
-      impact: item.impact?.toLowerCase() === 'high' ? 'High'
-            : item.impact?.toLowerCase() === 'medium' ? 'Medium'
-            : 'Low',
+      impact: item.impact?.toLowerCase() === 'high' ? 'High' : item.impact?.toLowerCase() === 'medium' ? 'Medium' : 'Low',
       forecast: item.estimate != null ? String(item.estimate) : '-',
       previous: item.prev != null ? String(item.prev) : '-',
       actual: item.actual != null ? String(item.actual) : '-',
     }))
-
     normalized.sort((a, b) => {
-      const impactOrder = { High: 0, Medium: 1, Low: 2 }
-      if (impactOrder[a.impact] !== impactOrder[b.impact]) {
-        return impactOrder[a.impact] - impactOrder[b.impact]
-      }
+      const io = { High: 0, Medium: 1, Low: 2 }
+      if (io[a.impact] !== io[b.impact]) return io[a.impact] - io[b.impact]
       return new Date(a.date) - new Date(b.date)
     })
-
     return res.json(normalized)
-
-  } catch (err) {
-    console.error('Finnhub calendar error:', err.message)
-    return res.status(502).json({ error: 'Failed to fetch calendar data.' })
-  }
+  } catch (err) { console.error('Calendar error:', err.message); return res.status(502).json({ error: 'Failed to fetch calendar data.' }) }
 })
 
-// Replace your existing /api/strength route with this:
-
+// ============================================
+// 💪 CURRENCY STRENGTH — Optimized (7 pairs = 7 credits)
+// ============================================
 app.get('/api/strength', async (req, res) => {
-  const cached = getCached('strength')
-  if (cached) return res.json(cached)
+  // Return fresh cache immediately
+  if (isCacheFresh('strength')) return res.json(getCached('strength'))
+
+  // Return stale cache while we try to refresh
+  const stale = getCached('strength')
 
   const apiKey = process.env.TWELVEDATA_API_KEY
-
-  const pairs = [
-    'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF',
-    'AUD/USD', 'NZD/USD', 'USD/CAD',
-    'EUR/GBP', 'EUR/JPY', 'EUR/CHF', 'EUR/AUD', 'EUR/CAD',
-    'GBP/JPY', 'GBP/CHF', 'GBP/AUD', 'GBP/CAD',
-    'AUD/JPY', 'AUD/CHF', 'AUD/CAD', 'AUD/NZD',
-    'NZD/JPY', 'NZD/CHF', 'NZD/CAD',
-    'CAD/JPY', 'CAD/CHF', 'CHF/JPY',
-  ]
+  // Only 7 major pairs = 7 credits (under 8/min free tier limit)
+  const pairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'NZD/USD', 'USD/CAD']
 
   try {
     const symbolStr = pairs.join(',')
     const response = await axios.get(
       `https://api.twelvedata.com/time_series?symbol=${symbolStr}&interval=1day&outputsize=2&apikey=${apiKey}`
     )
-
     const tsData = response.data
 
-    // Check if API returned error (rate limit)
+    // Rate limit hit — return stale data if available
     if (tsData.code === 429 || tsData.status === 'error') {
-      return res.status(429).json({
-        success: false,
-        error: 'TwelveData rate limit reached. Data refreshes every 10 minutes.',
-        marketClosed: false,
-      })
+      if (stale) return res.json(stale)
+      return res.status(429).json({ success: false, error: 'Rate limit hit. Try again in 1 minute.', marketClosed: false })
     }
 
     const scores = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AUD: 0, NZD: 0, CAD: 0, CHF: 0 }
@@ -522,65 +359,44 @@ app.get('/api/strength', async (req, res) => {
     })
 
     const averaged = {}
-    Object.keys(scores).forEach(c => {
-      averaged[c] = counts[c] > 0 ? scores[c] / counts[c] : 0
-    })
+    Object.keys(scores).forEach(c => { averaged[c] = counts[c] > 0 ? scores[c] / counts[c] : 0 })
 
     const values = Object.values(averaged)
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-    const range = max - min || 1
+    const min = Math.min(...values), max = Math.max(...values), range = max - min || 1
 
     const normalized = {}
-    Object.keys(averaged).forEach(c => {
-      normalized[c] = Math.round(((averaged[c] - min) / range) * 100)
-    })
+    Object.keys(averaged).forEach(c => { normalized[c] = Math.round(((averaged[c] - min) / range) * 100) })
 
     const sorted = Object.entries(normalized)
       .sort((a, b) => b[1] - a[1])
       .map(([currency, strength]) => ({
-        currency,
-        strength,
+        currency, strength,
         raw: averaged[currency].toFixed(4),
         label: strength >= 65 ? 'Strong' : strength >= 35 ? 'Neutral' : 'Weak',
       }))
 
     const allZero = sorted.every(c => c.strength === 0)
-    const strongest = sorted[0]
-    const weakest = sorted[sorted.length - 1]
+    const strongest = sorted[0], weakest = sorted[sorted.length - 1]
     const bestPairs = []
 
     if (!allZero && strongest && weakest && strongest.currency !== weakest.currency) {
-      bestPairs.push({
-        pair: `${strongest.currency}/${weakest.currency}`,
-        action: 'BUY',
-        reason: `${strongest.currency} strongest, ${weakest.currency} weakest`
-      })
-      bestPairs.push({
-        pair: `${weakest.currency}/${strongest.currency}`,
-        action: 'SELL',
-        reason: `Sell ${weakest.currency} against ${strongest.currency}`
-      })
+      bestPairs.push({ pair: `${strongest.currency}/${weakest.currency}`, action: 'BUY', reason: `${strongest.currency} strongest, ${weakest.currency} weakest` })
+      bestPairs.push({ pair: `${weakest.currency}/${strongest.currency}`, action: 'SELL', reason: `Sell ${weakest.currency} against ${strongest.currency}` })
     }
 
-    const result = {
-      success: true,
-      currencies: sorted,
-      bestPairs,
-      marketClosed: allZero,
-      updatedAt: new Date().toISOString()
-    }
+    const result = { success: true, currencies: sorted, bestPairs, marketClosed: allZero, updatedAt: new Date().toISOString() }
 
-    // Cache only if we got real data
+    // Cache if real data
     if (!allZero) setCache('strength', result)
 
     return res.json(result)
-
   } catch (err) {
     console.error('Strength error:', err.message)
+    if (stale) return res.json(stale)
     return res.status(500).json({ success: false, error: 'Failed to calculate strength.' })
   }
 })
+
 app.get('/api/news', async (req, res) => {
   const feeds = [
     { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
@@ -589,278 +405,96 @@ app.get('/api/news', async (req, res) => {
     { name: 'Reuters', url: 'https://feeds.reuters.com/reuters/topNews' },
     { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' },
   ]
-
   try {
     const results = await Promise.allSettled(
-      feeds.map(feed =>
-        rssParser.parseURL(feed.url).then(parsed =>
-          parsed.items.slice(0, 12).map(item => ({
-            source: feed.name,
-            title: item.title || '',
-            summary: item.contentSnippet || item.content || '',
-            url: item.link || '',
-            publishedAt: item.pubDate
-              ? new Date(item.pubDate).toISOString()
-              : new Date().toISOString(),
-          }))
-        )
-      )
+      feeds.map(feed => rssParser.parseURL(feed.url).then(parsed =>
+        parsed.items.slice(0, 12).map(item => ({
+          source: feed.name, title: item.title || '', summary: item.contentSnippet || item.content || '',
+          url: item.link || '', publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+        }))
+      ))
     )
-
     let articles = []
-    results.forEach((r, i) => {
-      if (r.status === 'fulfilled') articles.push(...r.value)
-      else console.error(`Feed failed [${feeds[i].name}]:`, r.reason?.message)
-    })
+    results.forEach((r, i) => { if (r.status === 'fulfilled') articles.push(...r.value); else console.error(`Feed failed [${feeds[i].name}]:`, r.reason?.message) })
+    if (articles.length === 0) return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
 
-    if (articles.length === 0) {
-      return res.status(502).json({ success: false, error: 'All RSS feeds failed.' })
-    }
-
-    const titlesForAI = articles
-      .map((a, i) => `${i + 1}. [${a.source}] ${a.title}`)
-      .join('\n')
-
-    let scoredArticles = articles.map(a => ({
-      ...a,
-      impact: 5,
-      category: 'General',
-      bias: 'neutral',
-      marketTags: [],
-      oneliner: '',
-    }))
+    const titlesForAI = articles.map((a, i) => `${i + 1}. [${a.source}] ${a.title}`).join('\n')
+    let scoredArticles = articles.map(a => ({ ...a, impact: 5, category: 'General', bias: 'neutral', marketTags: [], oneliner: '' }))
 
     try {
       const message = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2048,
-        system: `You are a macro trading analyst for BiasForge.ai.
-For each news headline, return impact score, category, bias, market tags, and one-liner.
-Return ONLY valid JSON array. No markdown. No explanation.
-Example format:
-[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓","EUR/USD↑","Gold↑"],"oneliner":"Fed rate cut signals USD weakness"}]
-Impact: 1-10. Bias: bullish/bearish/neutral.
-Categories: Forex, Stocks, Commodities, Crypto, Central Bank, Geopolitical, General.
-MarketTags: max 3, format like USD↓ EUR/USD↑ Gold↑ BTC↑ Oil↓ S&P500↑`,
+        model: 'claude-haiku-4-5-20251001', max_tokens: 2048,
+        system: `You are a macro trading analyst for BiasForge.ai.\nFor each news headline, return impact score, category, bias, market tags, and one-liner.\nReturn ONLY valid JSON array. No markdown.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓","EUR/USD↑","Gold↑"],"oneliner":"Fed rate cut signals USD weakness"}]`,
         messages: [{ role: 'user', content: `Score these headlines:\n${titlesForAI}` }],
       })
-
       const raw = message.content[0].text.trim().replace(/```json|```/g, '').trim()
       const scores = JSON.parse(raw)
+      scores.forEach(score => { const idx = score.index - 1; if (scoredArticles[idx]) { scoredArticles[idx].impact = score.impact || 5; scoredArticles[idx].category = score.category || 'General'; scoredArticles[idx].bias = score.bias || 'neutral'; scoredArticles[idx].marketTags = score.marketTags || []; scoredArticles[idx].oneliner = score.oneliner || '' } })
+    } catch (aiErr) { console.error('AI scoring error:', aiErr.message) }
 
-      scores.forEach(score => {
-        const idx = score.index - 1
-        if (scoredArticles[idx]) {
-          scoredArticles[idx].impact = score.impact || 5
-          scoredArticles[idx].category = score.category || 'General'
-          scoredArticles[idx].bias = score.bias || 'neutral'
-          scoredArticles[idx].marketTags = score.marketTags || []
-          scoredArticles[idx].oneliner = score.oneliner || ''
-        }
-      })
-    } catch (aiErr) {
-      console.error('AI scoring error:', aiErr.message)
-    }
-
-    scoredArticles.sort((a, b) => {
-      if (b.impact !== a.impact) return b.impact - a.impact
-      return new Date(b.publishedAt) - new Date(a.publishedAt)
-    })
-
+    scoredArticles.sort((a, b) => { if (b.impact !== a.impact) return b.impact - a.impact; return new Date(b.publishedAt) - new Date(a.publishedAt) })
     return res.json({ success: true, articles: scoredArticles })
-
-  } catch (e) {
-    console.error('News route error:', e.message)
-    return res.status(500).json({ success: false, error: 'News fetch failed.', detail: e.message })
-  }
+  } catch (e) { console.error('News error:', e.message); return res.status(500).json({ success: false, error: 'News fetch failed.' }) }
 })
 
 // ============================================
 // 📊 COT REPORT - Real CFTC Data (JSON API)
 // ============================================
 app.get('/api/cot', async (req, res) => {
-  // CFTC Traders in Financial Futures (TFF) — Socrata Open Data API
-  // Dataset ID: gpe5-46if (TFF Futures Only)
   const CONTRACT_MAP = {
-    'EURO FX': { currency: 'EUR', flag: '🇪🇺' },
-    'BRITISH POUND': { currency: 'GBP', flag: '🇬🇧' },
-    'JAPANESE YEN': { currency: 'JPY', flag: '🇯🇵' },
-    'SWISS FRANC': { currency: 'CHF', flag: '🇨🇭' },
-    'AUSTRALIAN DOLLAR': { currency: 'AUD', flag: '🇦🇺' },
-    'NZ DOLLAR': { currency: 'NZD', flag: '🇳🇿' },
-    'CANADIAN DOLLAR': { currency: 'CAD', flag: '🇨🇦' },
-    'USD INDEX': { currency: 'USD', flag: '🇺🇸' },
-    'GOLD': { currency: 'XAU', flag: '🥇' },
-    'SILVER': { currency: 'XAG', flag: '🥈' },
+    'EURO FX': { currency: 'EUR', flag: '🇪🇺' }, 'BRITISH POUND': { currency: 'GBP', flag: '🇬🇧' },
+    'JAPANESE YEN': { currency: 'JPY', flag: '🇯🇵' }, 'SWISS FRANC': { currency: 'CHF', flag: '🇨🇭' },
+    'AUSTRALIAN DOLLAR': { currency: 'AUD', flag: '🇦🇺' }, 'NZ DOLLAR': { currency: 'NZD', flag: '🇳🇿' },
+    'CANADIAN DOLLAR': { currency: 'CAD', flag: '🇨🇦' }, 'USD INDEX': { currency: 'USD', flag: '🇺🇸' },
+    'GOLD': { currency: 'XAU', flag: '🥇' }, 'SILVER': { currency: 'XAG', flag: '🥈' },
   }
-
   try {
-    // Fetch latest TFF report — get most recent 50 rows sorted by date descending
     const apiUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?$order=report_date_as_yyyy_mm_dd DESC&$limit=50'
-
-    const response = await fetch(apiUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'BiasForge/1.0'
-      }
-    })
-
+    const response = await fetch(apiUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
     if (!response.ok) throw new Error(`CFTC API error: ${response.status}`)
-
     const rows = await response.json()
-    if (!rows || rows.length === 0) throw new Error('No data returned from CFTC')
-
-    // Get the latest report date
+    if (!rows || rows.length === 0) throw new Error('No data from CFTC')
     const latestDate = rows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
-
-    // Filter only the latest week's data
-    const latestRows = rows.filter(r =>
-      (r.report_date_as_yyyy_mm_dd || '').startsWith(latestDate.slice(0, 10))
-    )
-
-    const results = []
-    const seenCurrencies = new Set()
-
+    const latestRows = rows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(latestDate.slice(0, 10)))
+    const results = [], seenCurrencies = new Set()
     for (const row of latestRows) {
       const marketName = (row.market_and_exchange_names || '').toUpperCase()
-
-      // Match to our tracked contracts
       let matched = null
-      for (const [key, val] of Object.entries(CONTRACT_MAP)) {
-        if (marketName.includes(key)) {
-          matched = val
-          break
-        }
-      }
-
+      for (const [key, val] of Object.entries(CONTRACT_MAP)) { if (marketName.includes(key)) { matched = val; break } }
       if (!matched || seenCurrencies.has(matched.currency)) continue
       seenCurrencies.add(matched.currency)
-
       const parse = (val) => parseInt(val) || 0
-
-      // Asset Manager positions
-      const amLong = parse(row.asset_mgr_positions_long)
-      const amShort = parse(row.asset_mgr_positions_short)
-
-      // Leveraged Funds positions
-      const levLong = parse(row.lev_money_positions_long)
-      const levShort = parse(row.lev_money_positions_short)
-
-      // Dealer positions
-      const dlrLong = parse(row.dealer_positions_long)
-      const dlrShort = parse(row.dealer_positions_short)
-
-      // Total institutional = Asset Managers + Leveraged Funds
-      const totalLong = amLong + levLong
-      const totalShort = amShort + levShort
-      const netPosition = totalLong - totalShort
-
-      let bias = 'Neutral'
-      if (netPosition > 5000) bias = 'Bullish'
-      else if (netPosition < -5000) bias = 'Bearish'
-
-      results.push({
-        currency: matched.currency,
-        flag: matched.flag,
-        longContracts: totalLong,
-        shortContracts: totalShort,
-        netPosition,
-        bias,
-        reportDate: latestDate,
-        breakdown: {
-          assetManagers: { long: amLong, short: amShort, net: amLong - amShort },
-          leveragedFunds: { long: levLong, short: levShort, net: levLong - levShort },
-          dealers: { long: dlrLong, short: dlrShort, net: dlrLong - dlrShort },
-        }
-      })
+      const amLong = parse(row.asset_mgr_positions_long), amShort = parse(row.asset_mgr_positions_short)
+      const levLong = parse(row.lev_money_positions_long), levShort = parse(row.lev_money_positions_short)
+      const dlrLong = parse(row.dealer_positions_long), dlrShort = parse(row.dealer_positions_short)
+      const totalLong = amLong + levLong, totalShort = amShort + levShort, netPosition = totalLong - totalShort
+      let bias = 'Neutral'; if (netPosition > 5000) bias = 'Bullish'; else if (netPosition < -5000) bias = 'Bearish'
+      results.push({ currency: matched.currency, flag: matched.flag, longContracts: totalLong, shortContracts: totalShort, netPosition, bias, reportDate: latestDate, breakdown: { assetManagers: { long: amLong, short: amShort, net: amLong - amShort }, leveragedFunds: { long: levLong, short: levShort, net: levLong - levShort }, dealers: { long: dlrLong, short: dlrShort, net: dlrLong - dlrShort } } })
     }
-
-    // Sort: Bullish first, then by absolute net position
-    results.sort((a, b) => {
-      const biasOrder = { Bullish: 0, Neutral: 1, Bearish: 2 }
-      if (biasOrder[a.bias] !== biasOrder[b.bias]) return biasOrder[a.bias] - biasOrder[b.bias]
-      return Math.abs(b.netPosition) - Math.abs(a.netPosition)
-    })
-
-    return res.json({
-      success: true,
-      data: results,
-      reportDate: latestDate,
-      fetchedAt: new Date().toISOString(),
-    })
-
-  } catch (err) {
-    console.error('COT fetch error:', err.message)
-    return res.status(502).json({
-      success: false,
-      error: 'Failed to fetch COT data from CFTC',
-      detail: err.message,
-    })
-  }
+    results.sort((a, b) => { const bo = { Bullish: 0, Neutral: 1, Bearish: 2 }; if (bo[a.bias] !== bo[b.bias]) return bo[a.bias] - bo[b.bias]; return Math.abs(b.netPosition) - Math.abs(a.netPosition) })
+    return res.json({ success: true, data: results, reportDate: latestDate, fetchedAt: new Date().toISOString() })
+  } catch (err) { console.error('COT error:', err.message); return res.status(502).json({ success: false, error: 'Failed to fetch COT data', detail: err.message }) }
 })
+
 // ============================================
 // 📅 EARNINGS CALENDAR - Finnhub API
 // ============================================
 app.get('/api/earnings', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
-
   try {
     const now = new Date()
-    const fromDate = new Date(now)
-    fromDate.setDate(now.getDate() - 1)
-    const toDate = new Date(now)
-    toDate.setDate(now.getDate() + 14)
-
-    const from = fromDate.toISOString().split('T')[0]
-    const to = toDate.toISOString().split('T')[0]
-
-    const response = await fetch(
-      `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${apiKey}`,
-      { headers: { 'Accept': 'application/json' } }
-    )
-
+    const fromDate = new Date(now); fromDate.setDate(now.getDate() - 1)
+    const toDate = new Date(now); toDate.setDate(now.getDate() + 14)
+    const from = fromDate.toISOString().split('T')[0], to = toDate.toISOString().split('T')[0]
+    const response = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${apiKey}`, { headers: { 'Accept': 'application/json' } })
     if (!response.ok) throw new Error(`Finnhub error: ${response.status}`)
-
     const data = await response.json()
     const earnings = data.earningsCalendar || []
-
-    // Normalize and sort
-    const normalized = earnings.map(item => ({
-      symbol: item.symbol || '—',
-      date: item.date || '',
-      hour: item.hour || 'amc', // bmo = before market open, amc = after market close
-      epsEstimate: item.epsEstimate != null ? item.epsEstimate : null,
-      epsActual: item.epsActual != null ? item.epsActual : null,
-      revenueEstimate: item.revenueEstimate != null ? item.revenueEstimate : null,
-      revenueActual: item.revenueActual != null ? item.revenueActual : null,
-      quarter: item.quarter || null,
-      year: item.year || null,
-    }))
-
-    // Sort by date, then by symbol
-    normalized.sort((a, b) => {
-      if (a.date !== b.date) return new Date(a.date) - new Date(b.date)
-      return a.symbol.localeCompare(b.symbol)
-    })
-
-    return res.json({
-      success: true,
-      earnings: normalized,
-      from,
-      to,
-      total: normalized.length,
-      fetchedAt: new Date().toISOString(),
-    })
-
-  } catch (err) {
-    console.error('Earnings fetch error:', err.message)
-    return res.status(502).json({
-      success: false,
-      error: 'Failed to fetch earnings data',
-      detail: err.message,
-    })
-  }
+    const normalized = earnings.map(item => ({ symbol: item.symbol || '—', date: item.date || '', hour: item.hour || 'amc', epsEstimate: item.epsEstimate ?? null, epsActual: item.epsActual ?? null, revenueEstimate: item.revenueEstimate ?? null, revenueActual: item.revenueActual ?? null, quarter: item.quarter || null, year: item.year || null }))
+    normalized.sort((a, b) => { if (a.date !== b.date) return new Date(a.date) - new Date(b.date); return a.symbol.localeCompare(b.symbol) })
+    return res.json({ success: true, earnings: normalized, from, to, total: normalized.length, fetchedAt: new Date().toISOString() })
+  } catch (err) { console.error('Earnings error:', err.message); return res.status(502).json({ success: false, error: 'Failed to fetch earnings data', detail: err.message }) }
 })
 
 app.listen(5000, () => console.log('Backend running on port 5000'))
