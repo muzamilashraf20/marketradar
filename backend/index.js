@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
+import { Resend } from 'resend'
 
 const app = express()
 const rssParser = new Parser()
@@ -23,6 +24,8 @@ const supabase = createClient(
 const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
 const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+const resend = new Resend(process.env.RESEND_API_KEY)
+const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
 
 // ============================================
 // 🔄 API CACHE SYSTEM — Save TwelveData credits
@@ -33,7 +36,7 @@ const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
 function getCached(key) {
   const entry = API_CACHE[key]
   if (!entry) return null
-  if (Date.now() - entry.timestamp > CACHE_TTL) return entry.data // Return stale data, refresh in background
+  if (Date.now() - entry.timestamp > CACHE_TTL) return entry.data
   return entry.data
 }
 
@@ -54,6 +57,438 @@ const PLANS = {
   pro_annual:     { variantId: '1619223', name: 'PRO Annual' },
 }
 
+// ============================================
+// 📧 EMAIL SUBSCRIBERS — In-memory + Supabase
+// ============================================
+let emailSubscribers = []
+
+// Load subscribers from Supabase on startup
+async function loadSubscribers() {
+  try {
+    const { data, error } = await supabase
+      .from('email_subscribers')
+      .select('*')
+      .eq('active', true)
+    if (!error && data) {
+      emailSubscribers = data
+      console.log(`✅ Loaded ${data.length} email subscribers`)
+    }
+  } catch (e) {
+    console.error('Failed to load subscribers:', e.message)
+  }
+}
+
+// ============================================
+// 📧 EMAIL TEMPLATE — Beautiful BiasForge branded
+// ============================================
+function buildAlertEmail({ type, title, items, greeting }) {
+  const itemsHtml = items.map(item => `
+    <tr>
+      <td style="padding:12px 16px;border-bottom:1px solid #1e293b;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${item.badge ? `<span style="background:${item.badgeColor || '#0891b2'};color:#000;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;">${item.badge}</span>` : ''}
+          <span style="color:#e2e8f0;font-size:14px;font-weight:600;">${item.title}</span>
+        </div>
+        ${item.subtitle ? `<div style="color:#94a3b8;font-size:12px;margin-top:4px;">${item.subtitle}</div>` : ''}
+      </td>
+    </tr>
+  `).join('')
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#030712;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#030712;padding:32px 16px;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:560px;background:#0a1628;border-radius:16px;border:1px solid rgba(255,255,255,0.1);overflow:hidden;">
+        
+        <!-- Header -->
+        <tr>
+          <td style="padding:24px 24px 16px;border-bottom:1px solid rgba(255,255,255,0.1);">
+            <table width="100%"><tr>
+              <td>
+                <span style="font-size:18px;font-weight:900;color:#fff;">Bias</span><span style="font-size:18px;font-weight:900;color:#06b6d4;">Forge</span><span style="font-size:14px;color:#64748b;">.ai</span>
+              </td>
+              <td align="right">
+                <span style="background:${type === 'calendar' ? '#f59e0b20' : '#06b6d420'};color:${type === 'calendar' ? '#f59e0b' : '#06b6d4'};font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;border:1px solid ${type === 'calendar' ? '#f59e0b30' : '#06b6d430'};">
+                  ${type === 'calendar' ? '📅 EVENT ALERT' : '📰 NEWS ALERT'}
+                </span>
+              </td>
+            </tr></table>
+          </td>
+        </tr>
+
+        <!-- Greeting -->
+        <tr>
+          <td style="padding:20px 24px 8px;">
+            <p style="color:#94a3b8;font-size:13px;margin:0;">${greeting || 'Hey trader,'}</p>
+            <h2 style="color:#fff;font-size:18px;font-weight:700;margin:8px 0 0;">${title}</h2>
+          </td>
+        </tr>
+
+        <!-- Items -->
+        <tr>
+          <td style="padding:12px 24px;">
+            <table width="100%" style="background:#020617;border-radius:12px;border:1px solid #1e293b;">
+              ${itemsHtml}
+            </table>
+          </td>
+        </tr>
+
+        <!-- CTA -->
+        <tr>
+          <td style="padding:16px 24px;" align="center">
+            <a href="https://marketradar-taupe.vercel.app/${type === 'calendar' ? 'calendar' : 'news'}" 
+               style="display:inline-block;padding:12px 28px;background:linear-gradient(135deg,#06b6d4,#10b981);color:#000;font-size:13px;font-weight:700;text-decoration:none;border-radius:12px;">
+              View in Dashboard →
+            </a>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding:16px 24px;border-top:1px solid rgba(255,255,255,0.05);">
+            <p style="color:#475569;font-size:11px;margin:0;text-align:center;">
+              You're receiving this because you subscribed to BiasForge.ai alerts.<br>
+              <a href="https://marketradar-taupe.vercel.app/settings" style="color:#06b6d4;text-decoration:none;">Manage preferences</a> · 
+              <a href="https://marketradar-taupe.vercel.app/api/email/unsubscribe?email=UNSUBSCRIBE_PLACEHOLDER" style="color:#475569;text-decoration:none;">Unsubscribe</a>
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`
+}
+
+// ============================================
+// 📧 SEND EMAIL HELPER
+// ============================================
+async function sendAlertEmail(to, subject, html) {
+  try {
+    const { data, error } = await resend.emails.send({
+      from: `BiasForge.ai <${FROM_EMAIL}>`,
+      to: [to],
+      subject,
+      html: html.replace('UNSUBSCRIBE_PLACEHOLDER', encodeURIComponent(to)),
+    })
+    if (error) {
+      console.error(`❌ Email failed to ${to}:`, error)
+      return false
+    }
+    console.log(`✅ Email sent to ${to} — ID: ${data?.id}`)
+    return true
+  } catch (e) {
+    console.error(`❌ Email error to ${to}:`, e.message)
+    return false
+  }
+}
+
+// ============================================
+// 📧 EMAIL ROUTES
+// ============================================
+
+// Subscribe
+app.post('/api/email/subscribe', async (req, res) => {
+  const { email, preferences } = req.body
+  if (!email) return res.status(400).json({ error: 'Email required' })
+
+  try {
+    // Upsert into Supabase
+    const { error } = await supabase
+      .from('email_subscribers')
+      .upsert({
+        email: email.toLowerCase().trim(),
+        active: true,
+        preferences: preferences || { calendar: true, news: true },
+        subscribed_at: new Date().toISOString(),
+      }, { onConflict: 'email' })
+
+    if (error) throw error
+
+    // Update in-memory list
+    const exists = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
+    if (!exists) {
+      emailSubscribers.push({
+        email: email.toLowerCase().trim(),
+        active: true,
+        preferences: preferences || { calendar: true, news: true },
+      })
+    } else {
+      exists.active = true
+      exists.preferences = preferences || exists.preferences
+    }
+
+    // Send welcome email
+    const welcomeHtml = buildAlertEmail({
+      type: 'news',
+      title: 'Welcome to BiasForge Alerts! 🎯',
+      greeting: `Hey trader,`,
+      items: [
+        { title: '📅 High Impact Calendar Events', subtitle: 'Get alerts 1hr and 30min before major events (FOMC, NFP, CPI etc.)' },
+        { title: '📰 Breaking Market News', subtitle: 'Instant alerts when high-impact news breaks (score 8+)' },
+        { title: '⚙️ Manage Anytime', subtitle: 'Update preferences or unsubscribe from your Settings page' },
+      ]
+    })
+    await sendAlertEmail(email, '✅ Welcome to BiasForge.ai Alerts', welcomeHtml)
+
+    res.json({ success: true, message: 'Subscribed! Check your inbox for confirmation.' })
+  } catch (e) {
+    console.error('Subscribe error:', e.message)
+    res.status(500).json({ error: 'Subscription failed' })
+  }
+})
+
+// Unsubscribe
+app.get('/api/email/unsubscribe', async (req, res) => {
+  const { email } = req.query
+  if (!email) return res.status(400).send('Email required')
+
+  try {
+    await supabase
+      .from('email_subscribers')
+      .update({ active: false })
+      .eq('email', decodeURIComponent(email).toLowerCase().trim())
+
+    // Update in-memory
+    const sub = emailSubscribers.find(s => s.email === decodeURIComponent(email).toLowerCase().trim())
+    if (sub) sub.active = false
+
+    res.send(`
+      <html>
+      <body style="background:#030712;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+        <div style="text-align:center;">
+          <h2>✅ Unsubscribed</h2>
+          <p style="color:#94a3b8;">You will no longer receive BiasForge.ai alerts.</p>
+          <a href="https://marketradar-taupe.vercel.app" style="color:#06b6d4;">Back to BiasForge</a>
+        </div>
+      </body>
+      </html>
+    `)
+  } catch (e) {
+    res.status(500).send('Unsubscribe failed')
+  }
+})
+
+// Update preferences
+app.post('/api/email/preferences', async (req, res) => {
+  const { email, preferences } = req.body
+  if (!email) return res.status(400).json({ error: 'Email required' })
+
+  try {
+    await supabase
+      .from('email_subscribers')
+      .update({ preferences })
+      .eq('email', email.toLowerCase().trim())
+
+    const sub = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
+    if (sub) sub.preferences = preferences
+
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: 'Update failed' })
+  }
+})
+
+// Get subscription status
+app.get('/api/email/status', async (req, res) => {
+  const { email } = req.query
+  if (!email) return res.status(400).json({ error: 'Email required' })
+
+  const sub = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
+  res.json({
+    subscribed: sub?.active || false,
+    preferences: sub?.preferences || { calendar: true, news: true },
+  })
+})
+
+// Send test email (for debugging)
+app.post('/api/email/test', async (req, res) => {
+  const { email } = req.body
+  if (!email) return res.status(400).json({ error: 'Email required' })
+
+  const html = buildAlertEmail({
+    type: 'calendar',
+    title: '⚠️ FOMC Rate Decision in 1 Hour',
+    greeting: 'Heads up trader!',
+    items: [
+      { title: 'FOMC Interest Rate Decision', subtitle: 'USD · High Impact · 2:00 PM EST', badge: 'HIGH', badgeColor: '#ef4444' },
+      { title: 'Fed Press Conference', subtitle: 'USD · High Impact · 2:30 PM EST', badge: 'HIGH', badgeColor: '#ef4444' },
+    ]
+  })
+
+  const sent = await sendAlertEmail(email, '🧪 BiasForge Test Alert — FOMC in 1hr', html)
+  res.json({ success: sent })
+})
+
+// ============================================
+// ⏰ ALERT ENGINE — Cron-style checker
+// ============================================
+const sentAlerts = new Map() // Track sent alerts to avoid duplicates
+
+async function checkAndSendCalendarAlerts() {
+  if (emailSubscribers.filter(s => s.active).length === 0) return
+
+  try {
+    const apiKey = process.env.FINNHUB_API_KEY
+    if (!apiKey) return
+
+    const now = new Date()
+    const future = new Date(now.getTime() + 2 * 60 * 60 * 1000) // 2 hours ahead
+    const from = now.toISOString().split('T')[0]
+    const to = future.toISOString().split('T')[0]
+
+    const calResp = await fetch(
+      `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`
+    )
+    if (!calResp.ok) return
+
+    const calData = await calResp.json()
+    const events = calData.economicCalendar || []
+
+    const highImpact = events.filter(e => {
+      if (!e.time || e.impact?.toLowerCase() !== 'high') return false
+      const eventTime = new Date(e.time)
+      const minutesUntil = (eventTime - now) / 60000
+      return minutesUntil > 0 && minutesUntil <= 65 // Within next 65 mins
+    })
+
+    if (highImpact.length === 0) return
+
+    // Check if we need to send 1hr or 30min alerts
+    const currencyMap = { 'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY', 'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD' }
+
+    for (const event of highImpact) {
+      const eventTime = new Date(event.time)
+      const minutesUntil = Math.round((eventTime - now) / 60000)
+      const currency = currencyMap[event.country?.toUpperCase()] || event.country
+
+      // Determine alert type (1hr or 30min)
+      let alertType = null
+      if (minutesUntil >= 55 && minutesUntil <= 65) alertType = '1hr'
+      else if (minutesUntil >= 25 && minutesUntil <= 35) alertType = '30min'
+
+      if (!alertType) continue
+
+      const alertKey = `${event.event}-${event.time}-${alertType}`
+      if (sentAlerts.has(alertKey)) continue
+
+      // Build email
+      const timeStr = eventTime.toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York'
+      })
+
+      const html = buildAlertEmail({
+        type: 'calendar',
+        title: alertType === '1hr'
+          ? `⏰ ${event.event} in ~1 Hour`
+          : `🔥 ${event.event} in ~30 Minutes`,
+        greeting: alertType === '30min' ? '⚡ Last call trader!' : 'Heads up trader!',
+        items: [
+          {
+            title: event.event,
+            subtitle: `${currency} · High Impact · ${timeStr} EST`,
+            badge: 'HIGH',
+            badgeColor: '#ef4444'
+          },
+          {
+            title: alertType === '1hr' ? '📋 Check your Playbook' : '🛡️ Check Prop Firm Risk',
+            subtitle: alertType === '1hr'
+              ? 'Review your strategy before the event. Reduce exposure if needed.'
+              : 'Close risky positions or tighten stops. Volatility incoming.',
+          }
+        ]
+      })
+
+      const subject = alertType === '1hr'
+        ? `⏰ ${currency} High Impact: ${event.event} in 1hr`
+        : `🔥 ${currency} ALERT: ${event.event} in 30min!`
+
+      // Send to all active subscribers with calendar preference
+      const calSubs = emailSubscribers.filter(s =>
+        s.active && (s.preferences?.calendar !== false)
+      )
+
+      for (const sub of calSubs) {
+        await sendAlertEmail(sub.email, subject, html)
+      }
+
+      sentAlerts.set(alertKey, Date.now())
+      console.log(`📧 Sent ${alertType} alert: ${event.event} to ${calSubs.length} subscribers`)
+    }
+
+    // Cleanup old alerts (older than 3 hours)
+    const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000
+    for (const [key, timestamp] of sentAlerts) {
+      if (timestamp < threeHoursAgo) sentAlerts.delete(key)
+    }
+  } catch (e) {
+    console.error('Calendar alert check error:', e.message)
+  }
+}
+
+// Track sent news alerts
+const sentNewsAlerts = new Set()
+
+async function checkAndSendNewsAlerts() {
+  const newsSubs = emailSubscribers.filter(s =>
+    s.active && (s.preferences?.news !== false)
+  )
+  if (newsSubs.length === 0) return
+
+  try {
+    // Use cached news if available
+    const cached = getCached('latest_news')
+    if (!cached) return
+
+    const highImpactNews = cached.filter(a =>
+      a.impact >= 8 && !sentNewsAlerts.has(a.title)
+    )
+
+    if (highImpactNews.length === 0) return
+
+    const items = highImpactNews.slice(0, 3).map(article => ({
+      title: article.title,
+      subtitle: `${article.source} · Impact: ${article.impact}/10 · ${article.category || 'Markets'}`,
+      badge: 'BREAKING',
+      badgeColor: '#ef4444'
+    }))
+
+    const html = buildAlertEmail({
+      type: 'news',
+      title: `🚨 ${highImpactNews.length} High Impact News Alert${highImpactNews.length > 1 ? 's' : ''}`,
+      greeting: 'Breaking market-moving news!',
+      items
+    })
+
+    for (const sub of newsSubs) {
+      await sendAlertEmail(
+        sub.email,
+        `🚨 BiasForge: ${highImpactNews[0].title.slice(0, 50)}...`,
+        html
+      )
+    }
+
+    // Mark as sent
+    highImpactNews.forEach(a => sentNewsAlerts.add(a.title))
+    console.log(`📰 Sent news alert: ${highImpactNews.length} articles to ${newsSubs.length} subscribers`)
+
+    // Cleanup old entries (keep last 100)
+    if (sentNewsAlerts.size > 100) {
+      const arr = Array.from(sentNewsAlerts)
+      arr.slice(0, arr.length - 100).forEach(t => sentNewsAlerts.delete(t))
+    }
+  } catch (e) {
+    console.error('News alert check error:', e.message)
+  }
+}
+
+// ============================================
+// AUTH ROUTES
+// ============================================
 app.post('/api/register', async (req, res) => {
   const { email, password, name } = req.body
   try {
@@ -80,6 +515,9 @@ app.post('/api/login', async (req, res) => {
   }
 })
 
+// ============================================
+// 💳 PAYMENT ROUTES
+// ============================================
 app.post('/api/checkout', async (req, res) => {
   const { planKey } = req.body
   const plan = PLANS[planKey]
@@ -139,21 +577,16 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 })
 
 // ============================================
-// 💰 PRICES — Optimized (5 symbols = 5 credits)
+// 💰 PRICES
 // ============================================
 app.get('/api/prices', async (req, res) => {
-  // Return cached data if fresh
   if (isCacheFresh('prices')) return res.json(getCached('prices'))
-
-  // Return stale cache while fetching (never show empty)
   const stale = getCached('prices')
-
   const symbols = 'EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD'
   try {
     const response = await axios.get(
       `https://api.twelvedata.com/price?symbol=${symbols}&apikey=${process.env.TWELVEDATA_API_KEY}`
     )
-    // Check for rate limit error
     if (response.data?.code === 429 || response.data?.status === 'error') {
       if (stale) return res.json(stale)
       return res.json({ success: true, data: response.data })
@@ -167,6 +600,9 @@ app.get('/api/prices', async (req, res) => {
   }
 })
 
+// ============================================
+// 🤖 AI ROUTES
+// ============================================
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body
   if (!prompt) return res.status(400).json({ error: 'Prompt required' })
@@ -206,7 +642,7 @@ app.post('/api/bias', async (req, res) => {
 })
 
 // ============================================
-// 🚀 PRE-TRADE GUARDIAN - Hybrid (Rules + AI)
+// 🚀 PRE-TRADE GUARDIAN
 // ============================================
 app.post('/api/trade-check', async (req, res) => {
   const {
@@ -283,6 +719,9 @@ app.post('/api/trade-check', async (req, res) => {
   } catch (e) { console.error('Trade check error:', e.message); res.status(500).json({ success: false, error: 'Trade analysis failed' }) }
 })
 
+// ============================================
+// 📅 CALENDAR
+// ============================================
 app.get('/api/calendar', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'FINNHUB_API_KEY not configured.' })
@@ -317,17 +756,12 @@ app.get('/api/calendar', async (req, res) => {
 })
 
 // ============================================
-// 💪 CURRENCY STRENGTH — Optimized (7 pairs = 7 credits)
+// 💪 CURRENCY STRENGTH
 // ============================================
 app.get('/api/strength', async (req, res) => {
-  // Return fresh cache immediately
   if (isCacheFresh('strength')) return res.json(getCached('strength'))
-
-  // Return stale cache while we try to refresh
   const stale = getCached('strength')
-
   const apiKey = process.env.TWELVEDATA_API_KEY
-  // Only 7 major pairs = 7 credits (under 8/min free tier limit)
   const pairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'NZD/USD', 'USD/CAD']
 
   try {
@@ -337,7 +771,6 @@ app.get('/api/strength', async (req, res) => {
     )
     const tsData = response.data
 
-    // Rate limit hit — return stale data if available
     if (tsData.code === 429 || tsData.status === 'error') {
       if (stale) return res.json(stale)
       return res.status(429).json({ success: false, error: 'Rate limit hit. Try again in 1 minute.', marketClosed: false })
@@ -385,10 +818,7 @@ app.get('/api/strength', async (req, res) => {
     }
 
     const result = { success: true, currencies: sorted, bestPairs, marketClosed: allZero, updatedAt: new Date().toISOString() }
-
-    // Cache if real data
     if (!allZero) setCache('strength', result)
-
     return res.json(result)
   } catch (err) {
     console.error('Strength error:', err.message)
@@ -397,6 +827,9 @@ app.get('/api/strength', async (req, res) => {
   }
 })
 
+// ============================================
+// 📰 NEWS (with alert caching)
+// ============================================
 app.get('/api/news', async (req, res) => {
   const feeds = [
     { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
@@ -433,12 +866,16 @@ app.get('/api/news', async (req, res) => {
     } catch (aiErr) { console.error('AI scoring error:', aiErr.message) }
 
     scoredArticles.sort((a, b) => { if (b.impact !== a.impact) return b.impact - a.impact; return new Date(b.publishedAt) - new Date(a.publishedAt) })
+
+    // Cache for news alerts
+    setCache('latest_news', scoredArticles)
+
     return res.json({ success: true, articles: scoredArticles })
   } catch (e) { console.error('News error:', e.message); return res.status(500).json({ success: false, error: 'News fetch failed.' }) }
 })
 
 // ============================================
-// 📊 COT REPORT - Real CFTC Data (JSON API)
+// 📊 COT REPORT
 // ============================================
 app.get('/api/cot', async (req, res) => {
   const CONTRACT_MAP = {
@@ -477,7 +914,7 @@ app.get('/api/cot', async (req, res) => {
 })
 
 // ============================================
-// 📅 EARNINGS CALENDAR - Finnhub API
+// 📅 EARNINGS CALENDAR
 // ============================================
 app.get('/api/earnings', async (req, res) => {
   const apiKey = process.env.FINNHUB_API_KEY
@@ -497,4 +934,20 @@ app.get('/api/earnings', async (req, res) => {
   } catch (err) { console.error('Earnings error:', err.message); return res.status(502).json({ success: false, error: 'Failed to fetch earnings data', detail: err.message }) }
 })
 
-app.listen(5000, () => console.log('Backend running on port 5000'))
+// ============================================
+// 🚀 START SERVER + CRON JOBS
+// ============================================
+app.listen(5000, () => {
+  console.log('✅ Backend running on port 5000')
+
+  // Load subscribers on startup
+  loadSubscribers()
+
+  // Check calendar alerts every 5 minutes
+  setInterval(checkAndSendCalendarAlerts, 5 * 60 * 1000)
+  console.log('⏰ Calendar alert cron started (every 5 min)')
+
+  // Check news alerts every 10 minutes
+  setInterval(checkAndSendNewsAlerts, 10 * 60 * 1000)
+  console.log('📰 News alert cron started (every 10 min)')
+})

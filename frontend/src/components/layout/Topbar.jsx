@@ -31,49 +31,39 @@ const PAGES = [
   { name: 'Settings', path: '/settings', icon: Settings, desc: 'Account settings' },
 ]
 
-/* ───────── Static notifications (replace with real API later) ───────── */
+/* ───────── Static notifications ───────── */
 function generateNotifications() {
   const now = Date.now()
   return [
     {
-      id: 1,
-      type: 'alert',
+      id: 1, type: 'alert',
       title: 'High Impact Event Soon',
       message: 'FOMC Rate Decision in 2 hours — check your playbook',
-      time: now - 5 * 60 * 1000,
-      read: false,
+      time: now - 5 * 60 * 1000, read: false,
     },
     {
-      id: 2,
-      type: 'news',
+      id: 2, type: 'news',
       title: 'Breaking: USD Volatility Spike',
       message: 'DXY moved +0.8% after Treasury auction — news feed updated',
-      time: now - 22 * 60 * 1000,
-      read: false,
+      time: now - 22 * 60 * 1000, read: false,
     },
     {
-      id: 3,
-      type: 'system',
+      id: 3, type: 'system',
       title: 'Prop Firm Risk Check',
       message: 'Your daily drawdown is at 1.8% — approaching caution zone',
-      time: now - 45 * 60 * 1000,
-      read: false,
+      time: now - 45 * 60 * 1000, read: false,
     },
     {
-      id: 4,
-      type: 'info',
+      id: 4, type: 'info',
       title: 'New Playbook Available',
       message: 'BOE Interest Rate playbook has been added to Event Playbooks',
-      time: now - 3 * 60 * 60 * 1000,
-      read: true,
+      time: now - 3 * 60 * 60 * 1000, read: true,
     },
     {
-      id: 5,
-      type: 'news',
+      id: 5, type: 'news',
       title: 'CPI Data Released',
       message: 'US CPI came in at 3.2% vs 3.1% expected — check bias matrix',
-      time: now - 5 * 60 * 60 * 1000,
-      read: true,
+      time: now - 5 * 60 * 60 * 1000, read: true,
     },
   ]
 }
@@ -87,14 +77,12 @@ function timeAgo(ts) {
 }
 
 const NOTIF_ICON = {
-  alert: { icon: AlertTriangle, color: 'text-amber-400', bg: 'bg-amber-400/10' },
-  news: { icon: Newspaper, color: 'text-cyan-400', bg: 'bg-cyan-400/10' },
-  system: { icon: Shield, color: 'text-red-400', bg: 'bg-red-400/10' },
-  info: { icon: Info, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
+  alert:  { icon: AlertTriangle, color: 'text-amber-400',   bg: 'bg-amber-400/10' },
+  news:   { icon: Newspaper,     color: 'text-cyan-400',    bg: 'bg-cyan-400/10' },
+  system: { icon: Shield,        color: 'text-red-400',     bg: 'bg-red-400/10' },
+  info:   { icon: Info,          color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
 }
 
-/* ═══════════════════════════════════════════ */
-/*                  TOPBAR                     */
 /* ═══════════════════════════════════════════ */
 export default function Topbar({ title, subtitle, onMenuClick }) {
   const navigate = useNavigate()
@@ -106,12 +94,10 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef(null)
 
-  /* ── Search state ── */
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef(null)
 
-  /* ── Notification state ── */
   const [notifOpen, setNotifOpen] = useState(false)
   const [notifications, setNotifications] = useState(generateNotifications)
   const notifRef = useRef(null)
@@ -119,8 +105,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
   /* Clock */
   useEffect(() => {
     const update = () => {
-      const now = new Date()
-      setTime(now.toUTCString().slice(17, 25))
+      setTime(new Date().toUTCString().slice(17, 25))
       setSession(getSession())
     }
     update()
@@ -128,7 +113,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
     return () => clearInterval(interval)
   }, [])
 
-  /* Close dropdowns on outside click */
+  /* Outside click */
   useEffect(() => {
     const handleClick = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setDropdownOpen(false)
@@ -138,7 +123,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
 
-  /* Keyboard shortcut: Ctrl/Cmd + K to open search */
+  /* Keyboard shortcuts */
   useEffect(() => {
     const handleKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -148,26 +133,24 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
       if (e.key === 'Escape') {
         setSearchOpen(false)
         setSearchQuery('')
+        setNotifOpen(false)
+        setDropdownOpen(false)
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [])
 
-  /* Auto-focus search input */
+  /* Auto-focus search */
   useEffect(() => {
-    if (searchOpen && searchInputRef.current) {
-      searchInputRef.current.focus()
-    }
+    if (searchOpen && searchInputRef.current) searchInputRef.current.focus()
   }, [searchOpen])
 
-  /* ── Search results ── */
+  /* Search results */
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return PAGES
     const q = searchQuery.toLowerCase()
-    return PAGES.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q)
-    )
+    return PAGES.filter(p => p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q))
   }, [searchQuery])
 
   const handleSearchNavigate = (path) => {
@@ -176,28 +159,13 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
     setSearchQuery('')
   }
 
-  /* ── Notifications ── */
-  const unreadCount = notifications.filter((n) => !n.read).length
+  /* Notifications */
+  const unreadCount = notifications.filter(n => !n.read).length
+  const markAllRead = () => setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+  const markOneRead = (id) => setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
+  const clearAll = () => { setNotifications([]); setNotifOpen(false) }
 
-  const markAllRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
-  }
-
-  const markOneRead = (id) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-    )
-  }
-
-  const clearAll = () => {
-    setNotifications([])
-    setNotifOpen(false)
-  }
-
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
-  }
+  const handleLogout = () => { logout(); navigate('/login') }
 
   const email = user?.email || ''
   const initial = email.charAt(0).toUpperCase() || 'U'
@@ -207,21 +175,21 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
       <header className="sticky top-0 z-10 h-14 bg-[#020617]/90 backdrop-blur-md border-b border-white/10 flex items-center justify-between px-4 md:px-6 shrink-0">
 
         {/* Left — Hamburger + Title */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={onMenuClick}
-            className="md:hidden text-slate-400 hover:text-white transition-colors p-1"
+            className="md:hidden text-slate-400 hover:text-white transition-colors p-1 shrink-0"
           >
             <Menu size={20} />
           </button>
-          <div>
-            {title && <h1 className="text-sm font-bold text-white leading-none">{title}</h1>}
-            {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+          <div className="min-w-0">
+            {title && <h1 className="text-sm font-bold text-white leading-none truncate">{title}</h1>}
+            {subtitle && <p className="text-xs text-slate-500 mt-0.5 hidden sm:block truncate">{subtitle}</p>}
           </div>
         </div>
 
-        {/* Center — Session indicator */}
-        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+        {/* Center — Session indicator (md+) */}
+        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 shrink-0">
           <span className={`w-1.5 h-1.5 rounded-full ${session.dot} animate-pulse`} />
           <span className={`text-xs font-semibold ${session.color}`}>{session.name} Session</span>
           <span className="text-slate-600 text-xs">·</span>
@@ -229,21 +197,18 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
         </div>
 
         {/* Right — Actions */}
-        <div className="flex items-center gap-1 md:gap-2">
+        <div className="flex items-center gap-1 shrink-0">
 
-          {/* Search Button */}
+          {/* Search */}
           <button
             onClick={() => setSearchOpen(true)}
-            className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all group relative"
+            className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all"
             title="Search (Ctrl+K)"
           >
             <Search size={16} />
-            <span className="hidden lg:inline-flex absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] text-slate-600 bg-slate-800 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-              ⌘K
-            </span>
           </button>
 
-          {/* Notification Button */}
+          {/* Notifications */}
           <div className="relative" ref={notifRef}>
             <button
               onClick={() => { setNotifOpen(!notifOpen); setDropdownOpen(false) }}
@@ -257,9 +222,15 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               )}
             </button>
 
-            {/* Notification Panel */}
+            {/* ── Notification Panel ──
+                FIX: right-0 on mobile overflows screen.
+                Use right-0 but cap width to screen width with max-w + left clamp */}
             {notifOpen && (
-              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
+              <div className="absolute right-0 top-full mt-2 z-50
+                w-[calc(100vw-2rem)] sm:w-96
+                max-w-sm sm:max-w-none
+                bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+
                 {/* Header */}
                 <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -270,44 +241,36 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3">
                     {unreadCount > 0 && (
-                      <button
-                        onClick={markAllRead}
-                        className="text-[11px] text-slate-500 hover:text-cyan-400 transition-colors"
-                      >
+                      <button onClick={markAllRead} className="text-[11px] text-slate-500 hover:text-cyan-400 transition-colors">
                         Mark all read
                       </button>
                     )}
                     {notifications.length > 0 && (
-                      <button
-                        onClick={clearAll}
-                        className="text-[11px] text-slate-500 hover:text-red-400 transition-colors"
-                      >
+                      <button onClick={clearAll} className="text-[11px] text-slate-500 hover:text-red-400 transition-colors">
                         Clear all
                       </button>
                     )}
                   </div>
                 </div>
 
-                {/* Notification list */}
-                <div className="max-h-80 overflow-y-auto">
+                {/* List */}
+                <div className="max-h-72 overflow-y-auto">
                   {notifications.length === 0 ? (
                     <div className="px-4 py-8 text-center">
                       <CheckCircle size={24} className="mx-auto text-slate-600 mb-2" />
                       <p className="text-xs text-slate-500">All caught up!</p>
                     </div>
                   ) : (
-                    notifications.map((notif) => {
+                    notifications.map(notif => {
                       const meta = NOTIF_ICON[notif.type] || NOTIF_ICON.info
                       const Icon = meta.icon
                       return (
                         <button
                           key={notif.id}
                           onClick={() => markOneRead(notif.id)}
-                          className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-white/5 transition-all border-b border-white/5 last:border-0 ${
-                            !notif.read ? 'bg-cyan-400/[0.03]' : ''
-                          }`}
+                          className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-white/5 transition-all border-b border-white/5 last:border-0 ${!notif.read ? 'bg-cyan-400/[0.03]' : ''}`}
                         >
                           <div className={`mt-0.5 w-8 h-8 rounded-lg ${meta.bg} flex items-center justify-center shrink-0`}>
                             <Icon size={14} className={meta.color} />
@@ -317,14 +280,11 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
                               <p className={`text-xs font-semibold truncate ${!notif.read ? 'text-white' : 'text-slate-400'}`}>
                                 {notif.title}
                               </p>
-                              {!notif.read && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
-                              )}
+                              {!notif.read && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
                             </div>
                             <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">{notif.message}</p>
                             <p className="text-[10px] text-slate-600 mt-1 flex items-center gap-1">
-                              <Clock size={10} />
-                              {timeAgo(notif.time)}
+                              <Clock size={10} />{timeAgo(notif.time)}
                             </p>
                           </div>
                         </button>
@@ -336,22 +296,19 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
             )}
           </div>
 
-          {/* User Avatar + Dropdown */}
+          {/* User Dropdown */}
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => { setDropdownOpen(!dropdownOpen); setNotifOpen(false) }}
               className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-lg hover:bg-white/5 transition-all"
             >
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold">
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0">
                 {initial}
               </div>
-              <span className="hidden md:block text-xs text-slate-300 max-w-[120px] truncate">
+              <span className="hidden md:block text-xs text-slate-300 max-w-[100px] truncate">
                 {email}
               </span>
-              <ChevronDown
-                size={14}
-                className={`text-slate-500 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`}
-              />
+              <ChevronDown size={14} className={`text-slate-500 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {dropdownOpen && (
@@ -361,13 +318,6 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
                   <p className="text-[10px] text-cyan-400 mt-0.5">Pro Plan</p>
                 </div>
                 <div className="py-1">
-                  <button
-                    onClick={() => { navigate('/profile'); setDropdownOpen(false) }}
-                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all"
-                  >
-                    <User size={14} />
-                    Profile
-                  </button>
                   <button
                     onClick={() => { navigate('/settings'); setDropdownOpen(false) }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all"
@@ -388,21 +338,18 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               </div>
             )}
           </div>
-
         </div>
       </header>
 
-      {/* ═══════ Search Overlay (Command Palette) ═══════ */}
+      {/* ═══════ Search Overlay ═══════ */}
       {searchOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]">
-          {/* Backdrop */}
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4">
           <div
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={() => { setSearchOpen(false); setSearchQuery('') }}
           />
+          <div className="relative w-full max-w-lg bg-[#0a1628] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
 
-          {/* Search modal */}
-          <div className="relative w-full max-w-lg mx-4 bg-[#0a1628] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
             {/* Input */}
             <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10">
               <Search size={18} className="text-slate-500 shrink-0" />
@@ -410,57 +357,46 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
                 ref={searchInputRef}
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search pages... (e.g. calendar, news, prop firm)"
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search pages..."
                 className="flex-1 bg-transparent text-sm text-white placeholder-slate-600 outline-none"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && searchResults.length > 0) {
-                    handleSearchNavigate(searchResults[0].path)
-                  }
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && searchResults.length > 0) handleSearchNavigate(searchResults[0].path)
                 }}
               />
-              <kbd className="hidden sm:inline-flex text-[10px] text-slate-600 bg-white/5 border border-white/10 rounded px-1.5 py-0.5">
-                ESC
-              </kbd>
               <button
                 onClick={() => { setSearchOpen(false); setSearchQuery('') }}
-                className="text-slate-500 hover:text-white transition-colors sm:hidden"
+                className="text-slate-500 hover:text-white transition-colors"
               >
                 <X size={18} />
               </button>
             </div>
 
             {/* Results */}
-            <div className="max-h-72 overflow-y-auto py-2">
+            <div className="max-h-[55vh] overflow-y-auto py-2">
               {searchResults.length === 0 ? (
                 <div className="px-4 py-6 text-center">
                   <p className="text-xs text-slate-500">No pages found for "{searchQuery}"</p>
                 </div>
               ) : (
-                searchResults.map((page) => {
+                searchResults.map(page => {
                   const Icon = page.icon
                   const isActive = location.pathname === page.path
                   return (
                     <button
                       key={page.path}
                       onClick={() => handleSearchNavigate(page.path)}
-                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-white/5 transition-all ${
-                        isActive ? 'bg-cyan-400/5 border-l-2 border-cyan-400' : ''
-                      }`}
+                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-white/5 transition-all ${isActive ? 'bg-cyan-400/5 border-l-2 border-cyan-400' : ''}`}
                     >
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                        isActive ? 'bg-cyan-400/10 text-cyan-400' : 'bg-white/5 text-slate-500'
-                      }`}>
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isActive ? 'bg-cyan-400/10 text-cyan-400' : 'bg-white/5 text-slate-500'}`}>
                         <Icon size={16} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium ${isActive ? 'text-cyan-400' : 'text-white'}`}>
-                          {page.name}
-                        </p>
+                        <p className={`text-sm font-medium ${isActive ? 'text-cyan-400' : 'text-white'}`}>{page.name}</p>
                         <p className="text-[11px] text-slate-500 truncate">{page.desc}</p>
                       </div>
                       {isActive && (
-                        <span className="text-[10px] text-cyan-400/60 bg-cyan-400/10 px-2 py-0.5 rounded-full">
+                        <span className="text-[10px] text-cyan-400/60 bg-cyan-400/10 px-2 py-0.5 rounded-full shrink-0">
                           current
                         </span>
                       )}
@@ -470,7 +406,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               )}
             </div>
 
-            {/* Footer hint */}
+            {/* Footer */}
             <div className="px-4 py-2 border-t border-white/10 flex items-center gap-4">
               <span className="text-[10px] text-slate-600 flex items-center gap-1">
                 <kbd className="bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[9px]">↵</kbd> open
