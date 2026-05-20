@@ -2,7 +2,6 @@ import Earnings from './pages/EarningsCalendar'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 
-
 import LandingPage from './pages/LandingPage'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -26,6 +25,7 @@ import CurrencyStrength from './pages/CurrencyStrength'
 import TradeJournal from './pages/TradeJournal'
 import NotFound from './pages/NotFound'
 import ProtectedRoute from './components/common/ProtectedRoute'
+import ProGate from './components/common/ProGate'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -54,21 +54,23 @@ export default function App() {
         <Route path="/blog" element={<Blog />} />
         <Route path="/changelog" element={<Changelog />} />
 
-        {/* Protected Routes */}
+        {/* Protected Routes — FREE users can access */}
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/bias" element={<ProtectedRoute><BiasMatrix /></ProtectedRoute>} />
         <Route path="/sessions" element={<ProtectedRoute><Sessions /></ProtectedRoute>} />
         <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
-        <Route path="/cot" element={<ProtectedRoute><COTReport /></ProtectedRoute>} />
         <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
-        <Route path="/market-movers" element={<ProtectedRoute><MarketMoversRadar /></ProtectedRoute>} />
-        <Route path="/trump" element={<ProtectedRoute><MarketMoversRadar /></ProtectedRoute>} />
-        <Route path="/prop-firm" element={<ProtectedRoute><PropFirm /></ProtectedRoute>} />
-        <Route path="/playbooks" element={<ProtectedRoute><Playbooks /></ProtectedRoute>} />
-        <Route path="/journal" element={<ProtectedRoute><TradeJournal /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-        <Route path="/strength" element={<ProtectedRoute><CurrencyStrength /></ProtectedRoute>} />
-        <Route path="/earnings" element={<ProtectedRoute><Earnings /></ProtectedRoute>} />
+
+        {/* Protected Routes — PRO only */}
+        <Route path="/strength" element={<ProtectedRoute><ProGate title="Currency Strength" subtitle="Real-time currency strength meter"><CurrencyStrength /></ProGate></ProtectedRoute>} />
+        <Route path="/prop-firm" element={<ProtectedRoute><ProGate title="Prop Firm Mode" subtitle="Drawdown tracker & risk calculator"><PropFirm /></ProGate></ProtectedRoute>} />
+        <Route path="/playbooks" element={<ProtectedRoute><ProGate title="Event Playbooks" subtitle="FOMC, NFP, CPI, ECB, BOE templates"><Playbooks /></ProGate></ProtectedRoute>} />
+        <Route path="/cot" element={<ProtectedRoute><ProGate title="COT Report" subtitle="Institutional positioning data"><COTReport /></ProGate></ProtectedRoute>} />
+        <Route path="/earnings" element={<ProtectedRoute><ProGate title="Earnings Calendar" subtitle="Upcoming earnings reports"><Earnings /></ProGate></ProtectedRoute>} />
+        <Route path="/market-movers" element={<ProtectedRoute><ProGate title="MarketMovers Radar" subtitle="Track market-moving events"><MarketMoversRadar /></ProGate></ProtectedRoute>} />
+        <Route path="/trump" element={<ProtectedRoute><ProGate title="MarketMovers Radar" subtitle="Track market-moving events"><MarketMoversRadar /></ProGate></ProtectedRoute>} />
+        <Route path="/journal" element={<ProtectedRoute><ProGate title="Trade Journal" subtitle="Log trades & track P&L"><TradeJournal /></ProGate></ProtectedRoute>} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />

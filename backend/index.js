@@ -475,6 +475,52 @@ app.delete('/api/trades/:id', async (req, res) => {
   }
 })
 // ============================================
+// 👤 USER PLAN
+// ============================================
+app.get('/api/user/plan', async (req, res) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
+
+  try {
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+
+    // Check if plan exists
+    let { data: plan } = await supabase
+      .from('user_plans')
+      .select('*')
+      .eq('user_id', user.id)
+      .single()
+
+    // If no plan exists, create free plan
+    if (!plan) {
+      const { data: newPlan } = await supabase
+        .from('user_plans')
+        .insert({
+          user_id: user.id,
+          email: user.email,
+          tier: 'free',
+          trial_start: new Date().toISOString(),
+        })
+        .select()
+        .single()
+      plan = newPlan
+    }
+
+    res.json({
+      success: true,
+      plan: {
+        tier: plan?.tier || 'free',
+        trialStart: plan?.trial_start,
+        updatedAt: plan?.updated_at,
+      }
+    })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to get plan' })
+  }
+})
+// ============================================
 // 📅 CALENDAR
 // ============================================
 app.get('/api/calendar', async (req, res) => {
