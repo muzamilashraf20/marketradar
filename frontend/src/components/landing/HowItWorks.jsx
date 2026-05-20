@@ -26,7 +26,7 @@ const icons = [
 
 export default function HowItWorks() {
   return (
-    <section className="bg-[#030712] py-24 px-6">
+    <section id="how-it-works" className="bg-[#030712] py-24 px-6">
       <div className="max-w-6xl mx-auto">
 
         <div className="text-center mb-16">
