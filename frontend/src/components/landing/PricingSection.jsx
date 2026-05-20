@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import { Check, X, Lock, RefreshCw, CreditCard, Shield } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Check, X, Lock, RefreshCw, CreditCard, Shield, Loader2 } from 'lucide-react'
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
 const starterFeatures = [
   { text: '1 asset daily bias (EURUSD)', included: true },
@@ -34,7 +37,7 @@ const eliteFeatures = [
 ]
 
 const trustItems = [
-  { icon: <Lock size={14} />, text: 'Secure payments via Stripe' },
+  { icon: <Lock size={14} />, text: 'Secure payments via LemonSqueezy' },
   { icon: <CreditCard size={14} />, text: 'Cancel anytime' },
   { icon: <RefreshCw size={14} />, text: '30-day money back guarantee' },
   { icon: <Shield size={14} />, text: 'GDPR Compliant' },
@@ -55,6 +58,28 @@ function FeatureItem({ text, included }) {
 
 export default function PricingSection() {
   const [annual, setAnnual] = useState(false)
+  const [loadingPlan, setLoadingPlan] = useState(null)
+  const navigate = useNavigate()
+
+  const handleCheckout = async (planKey) => {
+    setLoadingPlan(planKey)
+    try {
+      const res = await fetch(`${API_URL}/api/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planKey }),
+      })
+      const data = await res.json()
+      if (data.success && data.url) {
+        window.location.href = data.url
+      } else {
+        alert('Checkout failed. Please try again.')
+      }
+    } catch (e) {
+      alert('Could not connect to server. Please try again.')
+    }
+    setLoadingPlan(null)
+  }
 
   return (
     <section id="pricing" className="bg-[#030712] py-24 px-6">
@@ -107,9 +132,12 @@ export default function PricingSection() {
             <ul className="flex flex-col gap-3 flex-1">
               {starterFeatures.map(f => <FeatureItem key={f.text} {...f} />)}
             </ul>
-            <a href="#" className="block text-center px-6 py-3 rounded-xl border border-white/20 text-white text-sm font-semibold hover:bg-white/5 transition-all duration-200">
+            <button
+              onClick={() => navigate('/login')}
+              className="block text-center px-6 py-3 rounded-xl border border-white/20 text-white text-sm font-semibold hover:bg-white/5 transition-all duration-200"
+            >
               Start Free
-            </a>
+            </button>
           </div>
 
           {/* Pro */}
@@ -129,9 +157,22 @@ export default function PricingSection() {
             <ul className="flex flex-col gap-3 flex-1">
               {proFeatures.map(f => <FeatureItem key={f.text} {...f} />)}
             </ul>
-            <a href="#" className="block text-center px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20">
-              Start 7-Day Free Trial
-            </a>
+            <button
+              onClick={() => handleCheckout(annual ? 'pro_annual' : 'pro_monthly')}
+              disabled={loadingPlan !== null}
+              className="block text-center px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loadingPlan === 'pro_monthly' || loadingPlan === 'pro_annual' ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading...
+                </>
+              ) : annual ? (
+                'Get Annual Plan'
+              ) : (
+                'Start 7-Day Free Trial'
+              )}
+            </button>
           </div>
 
           {/* Elite Annual */}
@@ -151,9 +192,20 @@ export default function PricingSection() {
             <ul className="flex flex-col gap-3 flex-1">
               {eliteFeatures.map(f => <FeatureItem key={f.text} {...f} />)}
             </ul>
-            <a href="#" className="block text-center px-6 py-3 rounded-xl border border-emerald-500/40 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/10 transition-all duration-200">
-              Get Annual Plan
-            </a>
+            <button
+              onClick={() => handleCheckout('pro_annual')}
+              disabled={loadingPlan !== null}
+              className="block text-center px-6 py-3 rounded-xl border border-emerald-500/40 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/10 transition-all duration-200 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loadingPlan === 'pro_annual' ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                'Get Annual Plan'
+              )}
+            </button>
           </div>
 
         </div>
