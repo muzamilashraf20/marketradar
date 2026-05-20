@@ -385,7 +385,96 @@ app.post('/api/trade-check', async (req, res) => {
     res.json({ success:true, verdict:final, meta:{ estimatedRiskDollars:estRisk$.toFixed(2), estimatedRiskPercent:estRiskPct.toFixed(2), upcomingEvents, analyzedAt:new Date().toISOString() } })
   } catch(e){ res.status(500).json({ success:false, error:'Analysis failed' }) }
 })
+// ============================================
+// 📓 TRADE JOURNAL
+// ============================================
+app.get('/api/trades', async (req, res) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
+  
+  try {
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
 
+    const { data, error } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('date', { ascending: false })
+
+    if (error) throw error
+    res.json({ success: true, trades: data })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch trades' })
+  }
+})
+
+app.post('/api/trades', async (req, res) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
+
+  try {
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+
+    const t = req.body
+    const { data, error } = await supabase
+      .from('trades')
+      .insert({
+        user_id: user.id,
+        pair: t.pair,
+        direction: t.direction,
+        entry_price: t.entryPrice || null,
+        exit_price: t.exitPrice || null,
+        lot_size: t.lotSize || null,
+        stop_loss: t.stopLoss || null,
+        take_profit: t.takeProfit || null,
+        pnl: parseFloat(t.pnl) || 0,
+        result: t.result,
+        date: t.date,
+        session: t.session || null,
+        setup: t.setup || null,
+        notes: t.notes || null,
+        emotion: t.emotion || null,
+        rating: t.rating || 3,
+        before_image: t.beforeImage || null,
+        before_link: t.beforeLink || null,
+        after_image: t.afterImage || null,
+        after_link: t.afterLink || null,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+    res.json({ success: true, trade: data })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to save trade' })
+  }
+})
+
+app.delete('/api/trades/:id', async (req, res) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
+
+  try {
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+
+    const { error } = await supabase
+      .from('trades')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+
+    if (error) throw error
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to delete trade' })
+  }
+})
 // ============================================
 // 📅 CALENDAR
 // ============================================

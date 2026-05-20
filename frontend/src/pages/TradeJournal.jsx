@@ -1,30 +1,20 @@
 import { useState, useEffect, useRef } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
+import { useAuth } from '../context/AuthContext'
 import {
   Plus, Trash2, TrendingUp, TrendingDown, Filter,
   Calendar, DollarSign, Target, AlertTriangle, X,
   BarChart3, Award, Flame, Search, ChevronDown, ChevronUp,
-  Image, Link, ExternalLink, Camera, Eye
+  Image, Link, ExternalLink, Camera, Eye, Loader2, CloudOff, Cloud
 } from 'lucide-react'
 
-const STORAGE_KEY = 'bf_trade_journal'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
 const PAIRS = [
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'NZD/USD', 'USD/CAD',
   'EUR/GBP', 'EUR/JPY', 'GBP/JPY', 'AUD/JPY', 'CAD/JPY',
   'XAU/USD', 'XAG/USD', 'NAS100', 'US30', 'S&P500', 'BTC/USD', 'ETH/USD',
 ]
-
-function loadTrades() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch { return [] }
-}
-
-function saveTrades(trades) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(trades))
-}
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', {
@@ -38,6 +28,27 @@ function fileToBase64(file) {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result)
     reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+// Compress image before storing
+async function compressImage(file, maxWidth = 800, quality = 0.6) {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new window.Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const ratio = Math.min(maxWidth / img.width, maxWidth / img.height, 1)
+        canvas.width = img.width * ratio
+        canvas.height = img.height * ratio
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        resolve(canvas.toDataURL('image/jpeg', quality))
+      }
+      img.src = e.target.result
+    }
     reader.readAsDataURL(file)
   })
 }
@@ -79,8 +90,9 @@ function ScreenshotField({ label, imageKey, linkKey, form, setForm }) {
       alert('Image too large. Max 5MB.')
       return
     }
-    const base64 = await fileToBase64(file)
-    setForm(prev => ({ ...prev, [imageKey]: base64 }))
+    // Compress image to reduce size
+    const compressed = await compressImage(file)
+    setForm(prev => ({ ...prev, [imageKey]: compressed }))
   }
 
   const removeImage = () => {
@@ -142,7 +154,8 @@ function ScreenshotField({ label, imageKey, linkKey, form, setForm }) {
 }
 
 export default function TradeJournal() {
-  const [trades, setTrades] = useState(loadTrades)
+  const { user } = useAuth()
+  const [trades, setTrades] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [filterPair, setFilterPair] = useState('All')
   const [filterResult, setFilterResult] = useState('All')
@@ -151,8 +164,11 @@ export default function TradeJournal() {
   const [sortBy, setSortBy] = useState('date')
   const [sortDir, setSortDir] = useState('desc')
   const [lightboxSrc, setLightboxSrc] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
-  // Form state — now includes chart fields
+  // Form state
   const [form, setForm] = useState({
     pair: 'EUR/USD',
     direction: 'LONG',
@@ -168,16 +184,56 @@ export default function TradeJournal() {
     notes: '',
     emotion: 'Calm',
     rating: 3,
-    // NEW: before/after chart fields
     beforeImage: '',
     beforeLink: '',
     afterImage: '',
     afterLink: '',
   })
 
+  // Fetch trades from API
+  const fetchTrades = async () => {
+    if (!user?.token) { setLoading(false); return }
+    try {
+      const res = await fetch(`${API_URL}/api/trades`, {
+        headers: { 'Authorization': `Bearer ${user.token}` }
+      })
+      const data = await res.json()
+      if (data.success) {
+        // Map snake_case DB fields to camelCase for frontend
+        const mapped = data.trades.map(t => ({
+          id: t.id,
+          pair: t.pair,
+          direction: t.direction,
+          entryPrice: t.entry_price || '',
+          exitPrice: t.exit_price || '',
+          lotSize: t.lot_size || '',
+          stopLoss: t.stop_loss || '',
+          takeProfit: t.take_profit || '',
+          pnl: t.pnl,
+          result: t.result,
+          date: t.date,
+          session: t.session || '',
+          setup: t.setup || '',
+          notes: t.notes || '',
+          emotion: t.emotion || 'Calm',
+          rating: t.rating || 3,
+          beforeImage: t.before_image || '',
+          beforeLink: t.before_link || '',
+          afterImage: t.after_image || '',
+          afterLink: t.after_link || '',
+          createdAt: t.created_at,
+        }))
+        setTrades(mapped)
+      }
+    } catch (e) {
+      setError('Failed to load trades')
+    }
+    setLoading(false)
+  }
+
   useEffect(() => {
-    saveTrades(trades)
-  }, [trades])
+    fetchTrades()
+  }, [user])
 
   const resetForm = () => {
     setForm({
@@ -189,22 +245,55 @@ export default function TradeJournal() {
     })
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (!user?.token) { setError('Please log in to save trades'); return }
+    setSaving(true)
+    setError('')
+
     const pnlValue = parseFloat(form.pnl) || 0
-    const trade = {
-      id: Date.now(),
+    const tradeData = {
       ...form,
       pnl: pnlValue,
       result: pnlValue > 0 ? 'WIN' : pnlValue < 0 ? 'LOSS' : 'BE',
-      createdAt: new Date().toISOString(),
     }
-    setTrades(prev => [trade, ...prev])
-    resetForm()
-    setShowForm(false)
+
+    try {
+      const res = await fetch(`${API_URL}/api/trades`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`,
+        },
+        body: JSON.stringify(tradeData),
+      })
+      const data = await res.json()
+      if (data.success) {
+        await fetchTrades()
+        resetForm()
+        setShowForm(false)
+      } else {
+        setError(data.error || 'Failed to save trade')
+      }
+    } catch (e) {
+      setError('Could not connect to server')
+    }
+    setSaving(false)
   }
 
-  const deleteTrade = (id) => {
-    setTrades(prev => prev.filter(t => t.id !== id))
+  const deleteTrade = async (id) => {
+    if (!user?.token) return
+    try {
+      const res = await fetch(`${API_URL}/api/trades/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${user.token}` },
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTrades(prev => prev.filter(t => t.id !== id))
+      }
+    } catch (e) {
+      setError('Failed to delete trade')
+    }
   }
 
   // Filtered & sorted trades
@@ -248,9 +337,34 @@ export default function TradeJournal() {
   const hasChartData = (trade) =>
     trade.beforeImage || trade.beforeLink || trade.afterImage || trade.afterLink
 
+  if (loading) {
+    return (
+      <DashboardLayout title="Trade Journal" subtitle="Log trades, track P&L, improve your edge">
+        <div className="flex items-center justify-center py-20">
+          <Loader2 size={24} className="text-cyan-400 animate-spin" />
+          <span className="text-slate-400 text-sm ml-3">Loading trades...</span>
+        </div>
+      </DashboardLayout>
+    )
+  }
+
   return (
     <DashboardLayout title="Trade Journal" subtitle="Log trades, track P&L, improve your edge">
       <div className="space-y-5">
+
+        {/* Cloud sync indicator */}
+        <div className="flex items-center gap-2 text-[10px] text-emerald-400/60">
+          <Cloud size={12} />
+          <span>Synced to cloud — your trades are saved across all devices</span>
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center justify-between">
+            <span>{error}</span>
+            <button onClick={() => setError('')} className="text-red-400/60 hover:text-red-400"><X size={14} /></button>
+          </div>
+        )}
 
         {/* Stats Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -432,7 +546,6 @@ export default function TradeJournal() {
                       {trade.setup && <div className="text-xs text-slate-400 truncate mt-0.5">{trade.setup}</div>}
                     </div>
 
-                    {/* Chart badge — shown if trade has chart data */}
                     {hasChartData(trade) && (
                       <div className="hidden sm:flex items-center gap-1 px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-lg">
                         <Camera size={10} className="text-cyan-400" />
@@ -457,7 +570,6 @@ export default function TradeJournal() {
                         {formatDate(trade.date)} · {trade.session}
                       </div>
 
-                      {/* Price details */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {trade.entryPrice && (
                           <div className="bg-white/[0.02] border border-white/5 rounded-lg p-2 text-center">
@@ -485,7 +597,6 @@ export default function TradeJournal() {
                         )}
                       </div>
 
-                      {/* ─── BEFORE / AFTER CHARTS SECTION ─── */}
                       {hasChartData(trade) && (
                         <div className="space-y-2">
                           <div className="flex items-center gap-2">
@@ -493,103 +604,56 @@ export default function TradeJournal() {
                             <span className="text-[10px] text-cyan-400 uppercase tracking-wider font-semibold">Chart Screenshots</span>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-
-                            {/* Before Trade */}
                             {(trade.beforeImage || trade.beforeLink) && (
                               <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3 space-y-2">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📊 Before Trade</span>
                                   {trade.beforeLink && (
-                                    <a
-                                      href={trade.beforeLink}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={e => e.stopPropagation()}
-                                      className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
-                                    >
-                                      <ExternalLink size={9} />
-                                      TradingView
+                                    <a href={trade.beforeLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors">
+                                      <ExternalLink size={9} /> TradingView
                                     </a>
                                   )}
                                 </div>
                                 {trade.beforeImage && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.beforeImage) }}
-                                    className="relative group w-full rounded-lg overflow-hidden border border-white/5"
-                                  >
-                                    <img
-                                      src={trade.beforeImage}
-                                      alt="Before trade chart"
-                                      className="w-full h-32 object-cover"
-                                    />
+                                  <button onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.beforeImage) }} className="relative group w-full rounded-lg overflow-hidden border border-white/5">
+                                    <img src={trade.beforeImage} alt="Before trade chart" className="w-full h-32 object-cover" />
                                     <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                       <Eye size={20} className="text-white" />
                                     </div>
                                   </button>
                                 )}
                                 {!trade.beforeImage && trade.beforeLink && (
-                                  <a
-                                    href={trade.beforeLink}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={e => e.stopPropagation()}
-                                    className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors"
-                                  >
-                                    <Link size={11} />
-                                    Open Chart
+                                  <a href={trade.beforeLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors">
+                                    <Link size={11} /> Open Chart
                                   </a>
                                 )}
                               </div>
                             )}
-
-                            {/* After Trade */}
                             {(trade.afterImage || trade.afterLink) && (
                               <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3 space-y-2">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📈 After Trade</span>
                                   {trade.afterLink && (
-                                    <a
-                                      href={trade.afterLink}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={e => e.stopPropagation()}
-                                      className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
-                                    >
-                                      <ExternalLink size={9} />
-                                      TradingView
+                                    <a href={trade.afterLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex items-center gap-1 text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors">
+                                      <ExternalLink size={9} /> TradingView
                                     </a>
                                   )}
                                 </div>
                                 {trade.afterImage && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.afterImage) }}
-                                    className="relative group w-full rounded-lg overflow-hidden border border-white/5"
-                                  >
-                                    <img
-                                      src={trade.afterImage}
-                                      alt="After trade chart"
-                                      className="w-full h-32 object-cover"
-                                    />
+                                  <button onClick={(e) => { e.stopPropagation(); setLightboxSrc(trade.afterImage) }} className="relative group w-full rounded-lg overflow-hidden border border-white/5">
+                                    <img src={trade.afterImage} alt="After trade chart" className="w-full h-32 object-cover" />
                                     <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                       <Eye size={20} className="text-white" />
                                     </div>
                                   </button>
                                 )}
                                 {!trade.afterImage && trade.afterLink && (
-                                  <a
-                                    href={trade.afterLink}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={e => e.stopPropagation()}
-                                    className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors"
-                                  >
-                                    <Link size={11} />
-                                    Open Chart
+                                  <a href={trade.afterLink} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex items-center gap-2 p-2 bg-cyan-500/5 border border-cyan-500/10 rounded-lg text-xs text-cyan-400 hover:bg-cyan-500/10 transition-colors">
+                                    <Link size={11} /> Open Chart
                                   </a>
                                 )}
                               </div>
                             )}
-
                           </div>
                         </div>
                       )}
@@ -628,7 +692,6 @@ export default function TradeJournal() {
           <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] px-4">
             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowForm(false)} />
             <div className="relative w-full max-w-lg bg-[#0a1628] border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] overflow-y-auto">
-              {/* Header */}
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 sticky top-0 bg-[#0a1628] z-10">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Plus size={16} className="text-cyan-400" />
@@ -783,7 +846,7 @@ export default function TradeJournal() {
                   />
                 </div>
 
-                {/* ─── BEFORE / AFTER CHARTS ─── */}
+                {/* BEFORE / AFTER CHARTS */}
                 <div className="border border-cyan-500/10 rounded-xl p-4 bg-cyan-500/[0.02] space-y-4">
                   <div className="flex items-center gap-2 mb-1">
                     <Camera size={13} className="text-cyan-400" />
@@ -839,13 +902,27 @@ export default function TradeJournal() {
                   </div>
                 </div>
 
+                {/* Error in modal */}
+                {error && (
+                  <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+                    {error}
+                  </div>
+                )}
+
                 {/* Submit */}
                 <button
                   onClick={handleSubmit}
-                  disabled={!form.pnl}
-                  className="w-full py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold rounded-xl hover:opacity-90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                  disabled={!form.pnl || saving}
+                  className="w-full py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold rounded-xl hover:opacity-90 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Save Trade
+                  {saving ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    'Save Trade'
+                  )}
                 </button>
               </div>
             </div>
