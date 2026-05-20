@@ -35,11 +35,10 @@ function isCacheFresh(key) { const e = API_CACHE[key]; return e ? Date.now() - e
 function setCache(key, data) { API_CACHE[key] = { data, timestamp: Date.now() } }
 
 const PLANS = {
-  basic_monthly: { variantId: '1619191', name: 'Basic Monthly' },
-  basic_annual: { variantId: '1619209', name: 'Basic Annual' },
-  pro_monthly: { variantId: '1619215', name: 'PRO Monthly' },
-  pro_annual: { variantId: '1619223', name: 'PRO Annual' },
+  pro_monthly: { variantId: '1682107', name: 'BiasForge Pro Monthly' },
+  pro_annual: { variantId: '1682117', name: 'BiasForge Pro Annual' },
 }
+
 
 // ============================================
 // 📧 EMAIL + 📱 TELEGRAM SUBSCRIBERS
