@@ -87,8 +87,7 @@ const NOTIF_ICON = {
 export default function Topbar({ title, subtitle, onMenuClick }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, logout } = useAuth()
-
+  const { user, isPro, logout } = useAuth()
   const [time, setTime] = useState('')
   const [session, setSession] = useState(getSession())
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -315,7 +314,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               <div className="absolute right-0 top-full mt-2 w-48 bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-white/10">
                   <p className="text-xs text-white font-semibold truncate">{email}</p>
-                  <p className={`text-[10px] mt-0.5 ${user?.plan === 'pro' ? 'text-cyan-400' : 'text-amber-400'}`}>{user?.plan === 'pro' ? 'Pro' : 'Free'} Plan</p>
+                  <p className={`text-[10px] mt-0.5 ${isPro ? 'text-cyan-400' : 'text-amber-400'}`}>{isPro ? 'Pro' : 'Free'} Plan</p>
                 </div>
                 <div className="py-1">
                   <button
