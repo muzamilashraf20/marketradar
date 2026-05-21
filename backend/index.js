@@ -324,10 +324,51 @@ app.post('/api/checkout', async (req, res) => {
     res.json({ success: true, url: response.data.data.attributes.url })
   } catch (e) { res.status(500).json({ error: 'Checkout failed' }) }
 })
-app.get('/api/plans', (req, res) => res.json({ plans: PLANS }))
 app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const event = req.headers['x-event-name']; const payload = JSON.parse(req.body)
-  if (event === 'subscription_created' || event === 'order_created') { const email = payload.data?.attributes?.user_email; const variantId = String(payload.data?.attributes?.variant_id); const planEntry = Object.entries(PLANS).find(([, v]) => v.variantId === variantId); const tier = planEntry?.[0]?.startsWith('pro') ? 'pro' : 'basic'; if (email) await supabase.from('user_plans').upsert({ email, tier, updated_at: new Date() }) }
+  try {
+    const event = req.headers['x-event-name']
+    const payload = JSON.parse(req.body)
+    const email = payload.data?.attributes?.user_email?.toLowerCase()?.trim()
+    const variantId = String(payload.data?.attributes?.variant_id || '')
+
+    console.log(`💳 Webhook: ${event} — ${email} — variant ${variantId}`)
+
+    if ((event === 'subscription_created' || event === 'order_created') && email) {
+      const tier = 'pro'
+
+      // Try to find user by email and update their plan
+      const { data: authUsers } = await supabase.auth.admin.listUsers()
+      const matchedUser = authUsers?.users?.find(u => u.email?.toLowerCase() === email)
+
+      if (matchedUser) {
+        await supabase.from('user_plans').upsert({
+          user_id: matchedUser.id,
+          email,
+          tier,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+        console.log(`✅ Plan upgraded to PRO: ${email} (${matchedUser.id})`)
+      } else {
+        // User not found by auth, upsert by email
+        await supabase.from('user_plans').upsert({
+          email,
+          tier,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'email' })
+        console.log(`✅ Plan upgraded to PRO by email: ${email}`)
+      }
+    }
+
+    if (event === 'subscription_cancelled' && email) {
+      await supabase.from('user_plans').update({
+        tier: 'free',
+        updated_at: new Date().toISOString(),
+      }).eq('email', email)
+      console.log(`⚠️ Plan downgraded to FREE: ${email}`)
+    }
+  } catch (e) {
+    console.error('Webhook error:', e.message)
+  }
   res.json({ received: true })
 })
 
