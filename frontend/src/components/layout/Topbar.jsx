@@ -7,13 +7,41 @@ import {
   TrendingUp, Zap, Globe, Clock, AlertTriangle, Info, CheckCircle
 } from 'lucide-react'
 
-/* ───────── Session helper ───────── */
+/* ───────── Session helper ─────────
+   Forex market hours (UTC):
+   - Closes: Friday 22:00 UTC
+   - Opens:  Sunday 22:00 UTC (Sydney session)
+   Sessions during weekdays:
+   - Sydney:   22:00 - 07:00 UTC
+   - Tokyo:    00:00 - 09:00 UTC
+   - London:   07:00 - 16:00 UTC
+   - New York: 13:00 - 22:00 UTC
+*/
 function getSession() {
-  const hour = new Date().getUTCHours()
-  if (hour >= 0 && hour < 7) return { name: 'Tokyo', color: 'text-purple-400', dot: 'bg-purple-400' }
-  if (hour >= 7 && hour < 13) return { name: 'London', color: 'text-blue-400', dot: 'bg-blue-400' }
-  if (hour >= 13 && hour < 22) return { name: 'New York', color: 'text-amber-400', dot: 'bg-amber-400' }
-  return { name: 'Sydney', color: 'text-slate-400', dot: 'bg-slate-400' }
+  const now = new Date()
+  const day = now.getUTCDay()   // 0 = Sunday, 6 = Saturday
+  const hour = now.getUTCHours()
+
+  // Saturday all day → market closed
+  if (day === 6) {
+    return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
+  }
+
+  // Friday after 22:00 UTC → market closed
+  if (day === 5 && hour >= 22) {
+    return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
+  }
+
+  // Sunday before 22:00 UTC → market closed (Sydney opens at 22:00 UTC Sunday)
+  if (day === 0 && hour < 22) {
+    return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
+  }
+
+  // Market is open — determine active session
+  if (hour >= 0 && hour < 7) return { name: 'Tokyo', color: 'text-purple-400', dot: 'bg-purple-400', closed: false }
+  if (hour >= 7 && hour < 13) return { name: 'London', color: 'text-blue-400', dot: 'bg-blue-400', closed: false }
+  if (hour >= 13 && hour < 22) return { name: 'New York', color: 'text-amber-400', dot: 'bg-amber-400', closed: false }
+  return { name: 'Sydney', color: 'text-emerald-400', dot: 'bg-emerald-400', closed: false }
 }
 
 /* ───────── Searchable pages list ───────── */
@@ -98,7 +126,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
   const searchInputRef = useRef(null)
 
   const [notifOpen, setNotifOpen] = useState(false)
- const [notifications, setNotifications] = useState([])
+  const [notifications, setNotifications] = useState([])
   const notifRef = useRef(null)
 
   /* Clock */
@@ -188,9 +216,15 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
         </div>
 
         {/* Center — Session indicator (md+) */}
-        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 shrink-0">
-          <span className={`w-1.5 h-1.5 rounded-full ${session.dot} animate-pulse`} />
-          <span className={`text-xs font-semibold ${session.color}`}>{session.name} Session</span>
+        <div className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border shrink-0 ${
+          session.closed
+            ? 'bg-slate-500/5 border-slate-500/20'
+            : 'bg-white/5 border-white/10'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${session.dot} ${session.closed ? '' : 'animate-pulse'}`} />
+          <span className={`text-xs font-semibold ${session.color}`}>
+            {session.closed ? session.name : `${session.name} Session`}
+          </span>
           <span className="text-slate-600 text-xs">·</span>
           <span className="text-slate-400 text-xs font-mono">{time} UTC</span>
         </div>
@@ -221,9 +255,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               )}
             </button>
 
-            {/* ── Notification Panel ──
-                FIX: right-0 on mobile overflows screen.
-                Use right-0 but cap width to screen width with max-w + left clamp */}
+            {/* ── Notification Panel ── */}
             {notifOpen && (
               <div className="absolute right-0 top-full mt-2 z-50
                 w-[calc(100vw-2rem)] sm:w-96
