@@ -579,7 +579,43 @@ app.get('/api/calendar', async (req, res) => {
 // ============================================
 // 💪 CURRENCY STRENGTH
 // ============================================
+
+// Helper: Check if Forex market is currently closed
+// Forex closes: Friday 22:00 UTC
+// Forex opens:  Sunday 22:00 UTC
+function isForexClosed() {
+  const now = new Date()
+  const day = now.getUTCDay()   // 0 = Sunday, 6 = Saturday
+  const hour = now.getUTCHours()
+
+  if (day === 6) return true                          // Saturday all day
+  if (day === 5 && hour >= 22) return true            // Friday after 22:00 UTC
+  if (day === 0 && hour < 22) return true             // Sunday before 22:00 UTC
+  return false
+}
+
 app.get('/api/strength', async (req, res) => {
+  // ✅ NEW: Weekend check FIRST — return closed state immediately
+  if (isForexClosed()) {
+    return res.json({
+      success: true,
+      currencies: [
+        { currency: 'USD', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'EUR', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'GBP', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'JPY', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'AUD', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'NZD', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'CAD', strength: 0, raw: '0.0000', label: 'Neutral' },
+        { currency: 'CHF', strength: 0, raw: '0.0000', label: 'Neutral' },
+      ],
+      bestPairs: [],
+      marketClosed: true,
+      reason: 'Forex market closed (Weekend) — Opens Sunday 22:00 UTC',
+      updatedAt: new Date().toISOString(),
+    })
+  }
+
   if (isCacheFresh('strength')) return res.json(getCached('strength'))
   const stale = getCached('strength'), pairs=['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
   try {
