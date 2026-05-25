@@ -726,8 +726,9 @@ app.get('/api/cot', async (req, res) => {
     }
 
     // ── Fetch 2: Disaggregated (commodities + crypto) ──
-    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-t4ft.json?' +
-                   '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
+   const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
+               '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
+               '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27,%27BITCOIN%27,%27ETHER%27)'
     const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
 
     if (comRes.ok) {
