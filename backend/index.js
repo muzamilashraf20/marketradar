@@ -693,7 +693,7 @@ app.get('/api/cot', async (req, res) => {
         const latest = finRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(reportDate.slice(0, 10)))
 
         for (const row of latest) {
-          const mn = (row.contract_market_name || '').toUpperCase().trim()
+          const mn = (row.commodity_name || '').toUpperCase().trim()
           let m = null
           for (const [k, v] of Object.entries(FINANCIAL_MAP)) {
             if (mn === k) { m = v; break }
@@ -749,8 +749,8 @@ app.get('/api/cot', async (req, res) => {
 
           const p = v => parseInt(v) || 0
           // Disaggregated uses: managed money (≈ leveraged funds), swap dealers (≈ dealers), producer/merchant
-          const mml = p(row.m_money_positions_long), mms = p(row.m_money_positions_short)
-          const sdl = p(row.swap_positions_long), sds = p(row.swap_positions_short)
+         const mml = p(row.m_money_positions_long_all), mms = p(row.m_money_positions_short_all)
+const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all)
           const pml = p(row.prod_merc_positions_long), pms = p(row.prod_merc_positions_short)
           const orl = p(row.other_rept_positions_long), ors = p(row.other_rept_positions_short)
 
