@@ -650,11 +650,11 @@ app.get('/api/news', async (req, res) => {
 })
 
 // ============================================
-// 📊 COT REPORT
+// 📊 COT REPORT (Currencies + Commodities + Crypto)
 // ============================================
 app.get('/api/cot', async (req, res) => {
-  // Exact market name → currency mapping (EXACT match against contract_market_name)
-  const CM = {
+  // ── Dataset 1: TFF (gpe5-46if) — Currencies + USD Index ──
+  const FINANCIAL_MAP = {
     'EURO FX':              { currency: 'EUR', flag: '🇪🇺' },
     'BRITISH POUND':        { currency: 'GBP', flag: '🇬🇧' },
     'JAPANESE YEN':         { currency: 'JPY', flag: '🇯🇵' },
@@ -663,81 +663,121 @@ app.get('/api/cot', async (req, res) => {
     'NZ DOLLAR':            { currency: 'NZD', flag: '🇳🇿' },
     'CANADIAN DOLLAR':      { currency: 'CAD', flag: '🇨🇦' },
     'USD INDEX':            { currency: 'USD', flag: '🇺🇸' },
+  }
+
+  // ── Dataset 2: Disaggregated (72hh-t4ft) — Gold, Silver, BTC, ETH ──
+  const COMMODITY_MAP = {
     'GOLD':                 { currency: 'XAU', flag: '🥇' },
     'SILVER':               { currency: 'XAG', flag: '🥈' },
+    'BITCOIN':              { currency: 'BTC', flag: '₿' },
+    'MICRO BITCOIN':        { currency: 'BTC', flag: '₿' },  // fallback
+    'ETHER':                { currency: 'ETH', flag: '⟠' },
+    'MICRO ETHER':          { currency: 'ETH', flag: '⟠' },  // fallback
   }
 
   try {
-    // ✅ Properly URL-encode $order parameter (space must be %20)
-    // ✅ Increase limit to get more recent rows
-    const url = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
-                '%24order=report_date_as_yyyy_mm_dd%20DESC&' +
-                '%24limit=500'
-
-    const r = await fetch(url, {
-      headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' }
-    })
-    if (!r.ok) throw new Error('CFTC error')
-
-    const rows = await r.json()
-    if (!rows?.length) throw new Error('No data')
-
-    // Find latest report date from rows
-    const ld = rows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
-
-    // Filter only rows from latest date
-    const lr = rows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(ld.slice(0, 10)))
-
     const results = []
     const seen = new Set()
 
-    for (const row of lr) {
-      // ✅ Use contract_market_name (cleaner) instead of market_and_exchange_names
-      const mn = (row.contract_market_name || '').toUpperCase().trim()
+    // ── Fetch 1: Financial instruments (currencies) ──
+    const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
+                   '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
+    const finRes = await fetch(finUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
 
-      // ✅ EXACT match (not includes) to avoid "EURODOLLARS" matching "EURO FX"
-      let m = null
-      for (const [k, v] of Object.entries(CM)) {
-        if (mn === k) { m = v; break }
+    let reportDate = ''
+
+    if (finRes.ok) {
+      const finRows = await finRes.json()
+      if (finRows?.length) {
+        reportDate = finRows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
+        const latest = finRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(reportDate.slice(0, 10)))
+
+        for (const row of latest) {
+          const mn = (row.contract_market_name || '').toUpperCase().trim()
+          let m = null
+          for (const [k, v] of Object.entries(FINANCIAL_MAP)) {
+            if (mn === k) { m = v; break }
+          }
+          if (!m || seen.has(m.currency)) continue
+          seen.add(m.currency)
+
+          const p = v => parseInt(v) || 0
+          const al = p(row.asset_mgr_positions_long), as = p(row.asset_mgr_positions_short)
+          const ll = p(row.lev_money_positions_long), ls = p(row.lev_money_positions_short)
+          const dl = p(row.dealer_positions_long_all), ds = p(row.dealer_positions_short_all)
+          const tl = al + ll, ts = as + ls, np = tl - ts
+
+          let bias = 'Neutral'
+          if (np > 5000) bias = 'Bullish'
+          else if (np < -5000) bias = 'Bearish'
+
+          results.push({
+            currency: m.currency, flag: m.flag,
+            longContracts: tl, shortContracts: ts, netPosition: np,
+            bias, reportDate,
+            breakdown: {
+              assetManagers: { long: al, short: as, net: al - as },
+              leveragedFunds: { long: ll, short: ls, net: ll - ls },
+              dealers: { long: dl, short: ds, net: dl - ds },
+            },
+          })
+        }
       }
-      if (!m || seen.has(m.currency)) continue
-      seen.add(m.currency)
-
-      const p = v => parseInt(v) || 0
-
-      const al = p(row.asset_mgr_positions_long)
-      const as = p(row.asset_mgr_positions_short)
-      const ll = p(row.lev_money_positions_long)
-      const ls = p(row.lev_money_positions_short)
-      const dl = p(row.dealer_positions_long_all)
-      const ds = p(row.dealer_positions_short_all)
-
-      // Total smart money = Asset Managers + Leveraged Funds
-      const tl = al + ll
-      const ts = as + ls
-      const np = tl - ts
-
-      let bias = 'Neutral'
-      if (np > 5000) bias = 'Bullish'
-      else if (np < -5000) bias = 'Bearish'
-
-      results.push({
-        currency: m.currency,
-        flag: m.flag,
-        longContracts: tl,
-        shortContracts: ts,
-        netPosition: np,
-        bias,
-        reportDate: ld,
-        breakdown: {
-          assetManagers: { long: al, short: as, net: al - as },
-          leveragedFunds: { long: ll, short: ls, net: ll - ls },
-          dealers: { long: dl, short: ds, net: dl - ds },
-        },
-      })
     }
 
-    // Sort by bias (Bullish → Neutral → Bearish), then by absolute net position
+    // ── Fetch 2: Disaggregated (commodities + crypto) ──
+    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-t4ft.json?' +
+                   '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
+    const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
+
+    if (comRes.ok) {
+      const comRows = await comRes.json()
+      if (comRows?.length) {
+        const comDate = comRows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
+        if (!reportDate) reportDate = comDate
+        const comLatest = comRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(comDate.slice(0, 10)))
+
+        for (const row of comLatest) {
+          const mn = (row.contract_market_name || '').toUpperCase().trim()
+
+          let m = null
+          for (const [k, v] of Object.entries(COMMODITY_MAP)) {
+            if (mn.includes(k)) { m = v; break }
+          }
+          if (!m || seen.has(m.currency)) continue
+          seen.add(m.currency)
+
+          const p = v => parseInt(v) || 0
+          // Disaggregated uses: managed money (≈ leveraged funds), swap dealers (≈ dealers), producer/merchant
+          const mml = p(row.m_money_positions_long), mms = p(row.m_money_positions_short)
+          const sdl = p(row.swap_positions_long), sds = p(row.swap_positions_short)
+          const pml = p(row.prod_merc_positions_long), pms = p(row.prod_merc_positions_short)
+          const orl = p(row.other_rept_positions_long), ors = p(row.other_rept_positions_short)
+
+          // Smart money = Managed Money + Other Reportables
+          const tl = mml + orl, ts = mms + ors, np = tl - ts
+
+          let bias = 'Neutral'
+          // Use different thresholds for crypto (smaller market)
+          const threshold = (m.currency === 'BTC' || m.currency === 'ETH') ? 500 : 5000
+          if (np > threshold) bias = 'Bullish'
+          else if (np < -threshold) bias = 'Bearish'
+
+          results.push({
+            currency: m.currency, flag: m.flag,
+            longContracts: tl, shortContracts: ts, netPosition: np,
+            bias, reportDate: comDate,
+            breakdown: {
+              assetManagers: { long: mml, short: mms, net: mml - mms },   // Managed Money
+              leveragedFunds: { long: orl, short: ors, net: orl - ors },  // Other Reportables
+              dealers: { long: sdl, short: sds, net: sdl - sds },         // Swap Dealers
+            },
+          })
+        }
+      }
+    }
+
+    // Sort: Bullish → Neutral → Bearish, then by abs net position
     results.sort((a, b) => {
       const o = { Bullish: 0, Neutral: 1, Bearish: 2 }
       return o[a.bias] !== o[b.bias]
@@ -748,7 +788,7 @@ app.get('/api/cot', async (req, res) => {
     res.json({
       success: true,
       data: results,
-      reportDate: ld,
+      reportDate,
       fetchedAt: new Date().toISOString(),
     })
   } catch (e) {
@@ -756,7 +796,6 @@ app.get('/api/cot', async (req, res) => {
     res.status(502).json({ success: false, error: 'COT fetch failed' })
   }
 })
-
 // ============================================
 // 📅 EARNINGS
 // ============================================
