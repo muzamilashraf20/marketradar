@@ -693,7 +693,7 @@ app.get('/api/cot', async (req, res) => {
         const latest = finRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(reportDate.slice(0, 10)))
 
         for (const row of latest) {
-          const mn = (row.commodity_name || '').toUpperCase().trim()
+          const mn = (row.contract_market_name || '').toUpperCase().trim()
           let m = null
           for (const [k, v] of Object.entries(FINANCIAL_MAP)) {
             if (mn === k) { m = v; break }
