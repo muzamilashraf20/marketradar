@@ -665,7 +665,7 @@ app.get('/api/cot', async (req, res) => {
     'USD INDEX':            { currency: 'USD', flag: '🇺🇸' },
   }
 
-  // ── Dataset 2: Disaggregated (72hh-t4ft) — Gold, Silver, BTC, ETH ──
+  // ── Dataset 2: Disaggregated (72hh-3qpy) — Gold, Silver, BTC, ETH ──
   const COMMODITY_MAP = {
     'GOLD':                 { currency: 'XAU', flag: '🥇' },
     'SILVER':               { currency: 'XAG', flag: '🥈' },
