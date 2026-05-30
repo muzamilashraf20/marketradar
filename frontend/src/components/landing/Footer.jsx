@@ -38,7 +38,6 @@ export default function Footer() {
               </div>
               <span className="text-lg font-black tracking-tight text-slate-100">
                 Bias<span className="text-cyan-400">Forge</span>
-                <span className="text-slate-500 text-sm font-medium">.ai</span>
               </span>
             </a>
             <p className="text-sm text-slate-400 max-w-xs leading-relaxed">
