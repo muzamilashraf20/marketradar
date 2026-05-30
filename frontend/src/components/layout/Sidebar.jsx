@@ -57,7 +57,6 @@ export default function Sidebar({ onClose }) {
           <div>
             <div className="text-sm font-black tracking-tight text-white leading-none">
               Bias<span className="text-cyan-400">Forge</span>
-              <span className="text-slate-500 text-xs font-medium">.ai</span>
             </div>
             <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full mt-0.5 inline-block ${
               isPro 
