@@ -26,7 +26,7 @@ export default function Blog() {
           <h2 className="text-2xl font-bold text-white mb-3">Coming Soon</h2>
           <p className="text-slate-400 text-sm max-w-md mx-auto leading-relaxed">
             We are working on in-depth articles about market bias, funded trader strategies,
-            and how to use BiasForge.ai to its fullest potential.
+            and how to use BiasForge to its fullest potential.
           </p>
         </div>
 

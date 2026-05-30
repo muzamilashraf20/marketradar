@@ -1,7 +1,7 @@
 import SimplePageLayout from '../components/common/SimplePageLayout'
 
 const steps = [
-  { step: '01', title: 'Contact Support', desc: 'Email us at support@biasforge.ai within 30 days of your purchase with your account email and reason for refund.' },
+  { step: '01', title: 'Contact Support', desc: 'Email us at support@biasforge.co within 30 days of your purchase with your account email and reason for refund.' },
   { step: '02', title: 'Review', desc: 'Our team will review your request within 2 business days and verify your eligibility based on our refund policy.' },
   { step: '03', title: 'Refund Issued', desc: 'If approved, your refund will be processed within 5–10 business days back to your original payment method.' },
 ]
@@ -27,7 +27,7 @@ export default function Refund() {
           <h2 className="text-xl font-bold text-white mb-2">30-Day Money-Back Guarantee</h2>
           <p className="text-slate-400 text-sm max-w-lg mx-auto">
             Not satisfied? Get a full refund within 30 days — no questions asked.
-            We stand behind the quality of BiasForge.ai.
+            We stand behind the quality of BiasForge.
           </p>
         </div>
 
@@ -62,8 +62,8 @@ export default function Refund() {
 
         <div className="p-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-slate-400 text-sm">
           To request a refund, email{' '}
-          <a href="mailto:support@biasforge.ai" className="text-cyan-400 hover:underline">
-            support@biasforge.ai
+          <a href="mailto:support@biasforge.co" className="text-cyan-400 hover:underline">
+            support@biasforge.co
           </a>
         </div>
 

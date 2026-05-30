@@ -17,7 +17,7 @@ function NewsAnalyzeModal({ article, onClose }) {
       setLoading(true);
       setError('');
 
-      const prompt = `You are a professional macro trading analyst for BiasForge.ai.
+      const prompt = `You are a professional macro trading analyst for BiasForge.
 
 Analyze this market news headline and provide a complete trading brief:
 

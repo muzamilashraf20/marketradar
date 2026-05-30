@@ -8,7 +8,7 @@ const releases = [
     tag: 'Latest',
     tagColor: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20',
     changes: [
-      'Launched BiasForge.ai publicly',
+      'Launched BiasForge publicly',
       'Added Trump Tracker with real-time political impact analysis',
       'Economic Calendar with high/medium/low impact filters',
       'COT Report viewer with smart money positioning',
@@ -49,7 +49,7 @@ export default function Changelog() {
   return (
     <SimplePageLayout
       title="Changelog"
-      subtitle="Track every update, improvement, and new feature added to BiasForge.ai."
+      subtitle="Track every update, improvement, and new feature added to BiasForge."
     >
       <div className="space-y-10">
 

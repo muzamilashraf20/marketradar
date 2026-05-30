@@ -20,7 +20,7 @@ function AnalyzeModal({ event, onClose }) {
       setLoading(true);
       setError('');
 
-      const prompt = `You are a professional macro trading analyst for BiasForge.ai.
+      const prompt = `You are a professional macro trading analyst for BiasForge.
 
 Analyze this economic event and provide a complete pre-release trading brief:
 
@@ -249,7 +249,7 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
 
             <div className="bg-white/5 border border-white/10 rounded-xl p-4">
               <p className="text-xs text-slate-500">
-                ⚠️ <strong className="text-slate-400">Disclaimer:</strong> This analysis is NOT financial advice. Trading news events carries significant risk of loss, including loss of your entire capital. Past performance does not guarantee future results. Always use proper risk management. BiasForge.ai is an educational tool only.
+                ⚠️ <strong className="text-slate-400">Disclaimer:</strong> This analysis is NOT financial advice. Trading news events carries significant risk of loss, including loss of your entire capital. Past performance does not guarantee future results. Always use proper risk management. BiasForge is an educational tool only.
               </p>
             </div>
 

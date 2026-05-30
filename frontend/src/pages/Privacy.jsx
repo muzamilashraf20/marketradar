@@ -29,7 +29,7 @@ const sections = [
   {
     title: '6. Your Rights',
     content:
-      'You have the right to access, correct, or delete your personal data at any time. To make a request, contact us at privacy@biasforge.ai. We will respond within 30 days.',
+      'You have the right to access, correct, or delete your personal data at any time. To make a request, contact us at privacy@biasforge.co. We will respond within 30 days.',
   },
   {
     title: '7. Data Retention',
@@ -39,7 +39,7 @@ const sections = [
   {
     title: '8. Changes to This Policy',
     content:
-      'We may update this Privacy Policy periodically. We will notify you via email of any significant changes. Continued use of BiasForge.ai constitutes acceptance.',
+      'We may update this Privacy Policy periodically. We will notify you via email of any significant changes. Continued use of BiasForge constitutes acceptance.',
   },
 ]
 
@@ -59,8 +59,8 @@ export default function Privacy() {
 
         <div className="mt-12 p-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-slate-400 text-sm">
           Privacy concerns? Contact us at{' '}
-          <a href="mailto:privacy@biasforge.ai" className="text-cyan-400 hover:underline">
-            privacy@biasforge.ai
+          <a href="mailto:privacy@biasforge.co" className="text-cyan-400 hover:underline">
+            privacy@biasforge.co
           </a>
         </div>
       </div>
