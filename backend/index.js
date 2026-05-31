@@ -390,7 +390,7 @@ app.post('/api/ai', async (req, res) => {
 })
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe } = req.body; if (!symbol) return res.status(400).json({ error: 'Symbol required' })
-  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 2048, system: 'You are a senior macro trader for BiasForge. Return ONLY valid JSON.', messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.` }] }); res.json({ success: true, bias: JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim()) }) } catch (e) { res.status(500).json({ success: false, error: 'AI analysis failed.' }) }
+  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: 'You are a senior macro trader for BiasForge. Return ONLY valid JSON.', messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.` }] }); res.json({ success: true, bias: JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim()) }) } catch (e) { res.status(500).json({ success: false, error: 'AI analysis failed.' }) }
 })
 
 // ============================================
