@@ -106,7 +106,7 @@ export default function Login() {
           </div>
           <span className="text-xl font-black tracking-tight text-white">
             Bias<span className="text-cyan-400">Forge</span>
-            <span className="text-slate-500 text-sm font-medium">.ai</span>
+         
           </span>
         </div>
 
