@@ -391,10 +391,14 @@ app.post('/api/ai', async (req, res) => {
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
+  const cacheKey = `bias_${symbol}_${timeframe || 'intraday'}`
+  if (isCacheFresh(cacheKey)) return res.json({ success: true, bias: getCached(cacheKey), cached: true })
   const template = `{"symbol":"${symbol}","direction":"Bullish|Bearish|Neutral","confidence":75,"timeframe":"${timeframe||'intraday'}","reasoning":"2-3 sentence analysis","keyDrivers":["driver1","driver2","driver3"],"scenarios":[{"condition":"If X","outcome":"Y","probability":"High"},{"condition":"If A","outcome":"B","probability":"Medium"}],"levels":{"entry":"price range","target1":"price","target2":"price","invalidation":"price"},"propFirmRisk":{"recommendedRisk":"0.5%","maxLots":"0.25","remainingDailyBudget":"$800","status":"SAFE","warning":null}}`
   try {
     const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: `Senior macro trader. Return ONLY valid JSON matching this EXACT structure: ${template}`, messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}. Fill real values.` }] })
-    res.json({ success: true, bias: JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim()) })
+    const bias = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
+    setCache(cacheKey, bias)
+    res.json({ success: true, bias })
   } catch (e) { console.error('Bias error:', e?.message); res.status(500).json({ success: false, error: e?.message || 'AI analysis failed.' }) }
 })
 
