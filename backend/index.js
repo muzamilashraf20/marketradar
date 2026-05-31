@@ -397,7 +397,7 @@ app.post('/api/bias', async (req, res) => {
 // 🚀 PRE-TRADE GUARDIAN
 // ============================================
 app.post('/api/trade-check', async (req, res) => {
-  const { symbol, direction, lotSize, stopLossPips, accountSize, dailyDrawdownUsed, totalDrawdownUsed, maxDailyDrawdown, maxTotalDrawdown, riskPerTrade, useAI = false } = req.body
+  const { symbol, direction, lotSize, stopLossPips, accountSize, dailyDrawdownUsed, totalDrawdownUsed, maxDailyDrawdown, maxTotalDrawdown, riskPerTrade, useAI = true } = req.body
   if (!symbol || !direction || !lotSize || !stopLossPips) return res.status(400).json({ success: false, error: 'Required fields missing' })
   try {
     let upcomingEvents = []
