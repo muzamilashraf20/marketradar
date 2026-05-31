@@ -33,7 +33,7 @@ function getSession() {
   }
 
   // Sunday before 22:00 UTC → market closed (Sydney opens at 22:00 UTC Sunday)
-  if (day === 0 && hour < 22) {
+  if (day === 0 && hour < 21) {
     return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
   }
 
