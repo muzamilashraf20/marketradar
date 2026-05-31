@@ -386,7 +386,7 @@ app.get('/api/prices', async (req, res) => {
 // ============================================
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
-  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 1024, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
+  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe } = req.body; if (!symbol) return res.status(400).json({ error: 'Symbol required' })
