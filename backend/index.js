@@ -386,11 +386,11 @@ app.get('/api/prices', async (req, res) => {
 // ============================================
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
-  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-5-20250514', max_tokens: 1024, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { res.status(500).json({ error: 'AI failed' }) }
+  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 1024, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { res.status(500).json({ error: 'AI failed' }) }
 })
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe } = req.body; if (!symbol) return res.status(400).json({ error: 'Symbol required' })
-  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-5-20250514', max_tokens: 2048, system: 'You are a senior macro trader for BiasForge. Return ONLY valid JSON.', messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.` }] }); res.json({ success: true, bias: JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim()) }) } catch (e) { res.status(500).json({ success: false, error: 'AI analysis failed.' }) }
+  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 2048, system: 'You are a senior macro trader for BiasForge. Return ONLY valid JSON.', messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.` }] }); res.json({ success: true, bias: JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim()) }) } catch (e) { res.status(500).json({ success: false, error: 'AI analysis failed.' }) }
 })
 
 // ============================================
@@ -421,7 +421,7 @@ app.post('/api/trade-check', async (req, res) => {
     if (totalDrawdownUsed>=80&&verdict!=='RED') warnings.push(`Total DD at ${totalDrawdownUsed.toFixed(1)}%`)
 
     let final = { verdict, headline, reasons, warnings, recommendation:rec, confidence:conf, engine:'rule-based' }
-    if (useAI) { try { const ctx=`TRADE:${direction} ${lotSize}lots ${symbol} SL${stopLossPips}\nRISK:$${estRisk$.toFixed(2)}(${estRiskPct.toFixed(2)}%)\nDD:${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%\nNEWS:${upcomingEvents.map(e=>`${e.event}(${e.country})${e.minutesUntil}m`).join(';')||'none'}`; const m=await anthropic.messages.create({model:'claude-sonnet-4-5-20250514',max_tokens:800,system:'Elite prop firm risk advisor. ONLY JSON.',messages:[{role:'user',content:`Refine:\n${ctx}`}]}); final={...JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim()),engine:'ai-enhanced'} } catch(e){} }
+    if (useAI) { try { const ctx=`TRADE:${direction} ${lotSize}lots ${symbol} SL${stopLossPips}\nRISK:$${estRisk$.toFixed(2)}(${estRiskPct.toFixed(2)}%)\nDD:${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%\nNEWS:${upcomingEvents.map(e=>`${e.event}(${e.country})${e.minutesUntil}m`).join(';')||'none'}`; const m=await anthropic.messages.create({model:'claude-sonnet-4-6',max_tokens:800,system:'Elite prop firm risk advisor. ONLY JSON.',messages:[{role:'user',content:`Refine:\n${ctx}`}]}); final={...JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim()),engine:'ai-enhanced'} } catch(e){} }
     res.json({ success:true, verdict:final, meta:{ estimatedRiskDollars:estRisk$.toFixed(2), estimatedRiskPercent:estRiskPct.toFixed(2), upcomingEvents, analyzedAt:new Date().toISOString() } })
   } catch(e){ res.status(500).json({ success:false, error:'Analysis failed' }) }
 })
