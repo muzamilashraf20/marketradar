@@ -146,7 +146,16 @@ async function pollTelegram() {
 
       } else if (cmd === '/help') {
         await sendTG(chatId, '🤖 <b>BiasForge Bot</b>\n\n/start — Subscribe\n/stop — Unsubscribe\n/status — Check sub\n/calendar — Toggle calendar\n/news — Toggle news\n/help — This message\n\n🔗 <a href="https://www.biasforge.co">Dashboard</a>')
-
+} else if (cmd === '/bias') {
+        const cached = getCached('strength')
+        if (cached && cached.bestPairs && cached.bestPairs[0]) {
+          const bp = cached.bestPairs[0]
+          const currencies = cached.currencies || []
+          const top3 = currencies.slice(0, 3).map(c => `${c.currency}: ${c.strength}`).join(' | ')
+          await sendTG(chatId, `🧠 <b>BiasForge — Today's Bias</b>\n\n📊 <b>${bp.action} ${bp.pair}</b>\n💡 ${bp.reason}\n\n💪 Strength: ${top3}\n\n⏰ Updated: ${new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} EST\n\n🔗 <a href="https://www.biasforge.co/bias">Full AI Analysis</a>`)
+        } else {
+          await sendTG(chatId, '📊 Market data loading... try again in a minute.')
+        }
       } else {
         await sendTG(chatId, '👋 Send /start to subscribe or /help for commands.')
       }
@@ -834,6 +843,27 @@ app.get('/api/earnings', async (req, res) => {
 // ============================================
 // 🚀 START
 // ============================================
+// 🧠 Session bias alert — every hour, sends at session opens
+  setInterval(async () => {
+    try {
+      const now = new Date()
+      const hour = now.getUTCHours()
+      const day = now.getUTCDay()
+      if (day === 6 || (day === 0 && hour < 21)) return // weekend
+      const sessionOpens = { 21: 'Sydney', 0: 'Tokyo', 8: 'London', 13: 'New York' }
+      const session = sessionOpens[hour]
+      if (!session) return
+      const cached = getCached('strength')
+      if (!cached || !cached.bestPairs || !cached.bestPairs[0]) return
+      const bp = cached.bestPairs[0]
+      const msg = `🔔 <b>${session} Session Open!</b>\n\n📊 <b>Today's Bias: ${bp.action} ${bp.pair}</b>\n💡 ${bp.reason}\n\n🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
+      for (const sub of telegramSubscribers.filter(s => s.active)) {
+        await sendTG(sub.chat_id, msg)
+      }
+      console.log(`🧠 Session bias alert sent: ${session} — ${bp.action} ${bp.pair}`)
+    } catch (e) { console.error('Session alert error:', e.message) }
+  }, 60 * 60 * 1000)
+  console.log('🧠 Session bias alerts (hourly)')
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
