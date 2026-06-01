@@ -639,8 +639,24 @@ app.get('/api/strength', async (req, res) => {
     const vals=Object.values(avg),mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1
     const norm={};Object.keys(avg).forEach(c=>norm[c]=Math.round(((avg[c]-mn)/rng)*100))
     const sorted=Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
-    const allZ=sorted.every(c=>c.strength===0),bp=[]
-    if(!allZ&&sorted[0]&&sorted[sorted.length-1]){bp.push({pair:`${sorted[0].currency}/${sorted[sorted.length-1].currency}`,action:'BUY',reason:`${sorted[0].currency} strongest`});bp.push({pair:`${sorted[sorted.length-1].currency}/${sorted[0].currency}`,action:'SELL',reason:`${sorted[sorted.length-1].currency} weakest`})}
+   const allZ=sorted.every(c=>c.strength===0),bp=[]
+    const oandaPairs=[['EUR','USD'],['GBP','USD'],['USD','JPY'],['AUD','USD'],['USD','CAD'],['USD','CHF'],['NZD','USD'],['EUR','GBP'],['EUR','JPY'],['GBP','JPY'],['AUD','JPY']]
+    if(!allZ&&sorted.length>=2){
+      const str={};sorted.forEach(c=>str[c.currency]=c.strength)
+      let best=null,bestDiff=0
+      oandaPairs.forEach(([b,q])=>{
+        if(str[b]!==undefined&&str[q]!==undefined){
+          const diff=(str[b]||0)-(str[q]||0)
+          if(Math.abs(diff)>bestDiff){
+            bestDiff=Math.abs(diff)
+            best=diff>0
+              ?{pair:`${b}${q}`,action:'BUY',reason:`${b} stronger than ${q}`}
+              :{pair:`${b}${q}`,action:'SELL',reason:`${q} stronger than ${b}`}
+          }
+        }
+      })
+      if(best)bp.push(best)
+    }
     const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ)setCache('strength',result);res.json(result)
   } catch(e){if(stale)return res.json(stale);res.status(500).json({success:false,error:'Strength failed'})}
 })
