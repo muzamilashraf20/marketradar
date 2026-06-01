@@ -107,8 +107,18 @@ export default function BiasMatrix() {
   const [selectedAsset, setSelectedAsset] = useState('EURUSD')
   const [selectedTf, setSelectedTf] = useState('intraday')
   const [loading, setLoading] = useState(false)
-  const [bias, setBias] = useState(null)
+  const [bias, setBias] = useState(() => {
+    try { const saved = localStorage.getItem('bf_bias'); return saved ? JSON.parse(saved) : null } catch { return null }
+  })
   const [error, setError] = useState('')
+  useEffect(() => {
+    try { const saved = localStorage.getItem('bf_bias')
+      if (saved) { const parsed = JSON.parse(saved)
+        if (parsed.symbol === selectedAsset && parsed.timeframe === selectedTf) setBias(parsed)
+        else setBias(null)
+      }
+    } catch { setBias(null) }
+  }, [selectedAsset, selectedTf])
 
   const generateBias = async () => {
     setLoading(true)
@@ -130,6 +140,7 @@ export default function BiasMatrix() {
       const data = await res.json()
       if (data.success) {
         setBias(data.bias)
+        localStorage.setItem('bf_bias', JSON.stringify(data.bias))
       } else {
         setError(data.error || 'AI analysis failed')
         setBias(MOCK_BIAS) // fallback to mock
