@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -23,20 +24,85 @@ export function AuthProvider({ children }) {
     }
   }
 
-  useEffect(() => {
-    const stored = localStorage.getItem('bf_user')
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored)
-        setUser(parsed)
-        if (parsed.token) fetchPlan(parsed.token)
-      } catch {
-        localStorage.removeItem('bf_user')
-      }
+  // Build user payload from Supabase session
+  const buildUserFromSession = (session) => {
+    if (!session?.user) return null
+    const u = session.user
+    return {
+      id: u.id,
+      email: u.email,
+      name: u.user_metadata?.full_name || u.user_metadata?.name || u.email?.split('@')[0] || 'User',
+      avatar: u.user_metadata?.avatar_url || null,
+      provider: u.app_metadata?.provider || 'email',
+      token: session.access_token,
     }
-    setLoading(false)
+  }
+
+  useEffect(() => {
+    let subscription
+
+    const initAuth = async () => {
+      try {
+        // 1. Check existing Supabase session (handles OAuth redirect too)
+        const { data: { session } } = await supabase.auth.getSession()
+
+        if (session) {
+          const payload = buildUserFromSession(session)
+          setUser(payload)
+          localStorage.setItem('bf_user', JSON.stringify(payload))
+          if (payload.token) fetchPlan(payload.token)
+        } else {
+          // 2. Fallback: check localStorage (for existing email/password users)
+          const stored = localStorage.getItem('bf_user')
+          if (stored) {
+            try {
+              const parsed = JSON.parse(stored)
+              setUser(parsed)
+              if (parsed.token) fetchPlan(parsed.token)
+            } catch {
+              localStorage.removeItem('bf_user')
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Auth init error:', err)
+      }
+
+      setLoading(false)
+
+      // 3. Listen for auth changes (OAuth redirects, sign out, token refresh)
+      const { data } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+          const payload = buildUserFromSession(session)
+          setUser(payload)
+          localStorage.setItem('bf_user', JSON.stringify(payload))
+          if (payload.token) fetchPlan(payload.token)
+        }
+
+        if (event === 'SIGNED_OUT') {
+          setUser(null)
+          setPlan(null)
+          localStorage.removeItem('bf_user')
+        }
+
+        if (event === 'TOKEN_REFRESHED' && session) {
+          const payload = buildUserFromSession(session)
+          setUser(payload)
+          localStorage.setItem('bf_user', JSON.stringify(payload))
+        }
+      })
+
+      subscription = data.subscription
+    }
+
+    initAuth()
+
+    return () => {
+      subscription?.unsubscribe()
+    }
   }, [])
 
+  // Email/password login (existing backend flow)
   const login = (userData, session) => {
     const payload = { ...userData, token: session?.access_token }
     localStorage.setItem('bf_user', JSON.stringify(payload))
@@ -44,16 +110,29 @@ export function AuthProvider({ children }) {
     if (payload.token) fetchPlan(payload.token)
   }
 
-  const logout = () => {
+  // Google OAuth login
+  const loginWithGoogle = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/dashboard`,
+      },
+    })
+    if (error) throw error
+  }
+
+  const logout = async () => {
     localStorage.removeItem('bf_user')
     setUser(null)
     setPlan(null)
+    // Sign out from Supabase too (clears OAuth session)
+    await supabase.auth.signOut().catch(() => {})
   }
 
   const isPro = plan?.tier === 'pro'
 
   return (
-    <AuthContext.Provider value={{ user, plan, isPro, login, logout, loading, fetchPlan }}>
+    <AuthContext.Provider value={{ user, plan, isPro, login, loginWithGoogle, logout, loading, fetchPlan }}>
       {children}
     </AuthContext.Provider>
   )
