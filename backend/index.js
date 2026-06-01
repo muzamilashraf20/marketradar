@@ -393,9 +393,12 @@ app.post('/api/bias', async (req, res) => {
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   const cacheKey = `bias_${symbol}_${timeframe || 'intraday'}`
   if (isCacheFresh(cacheKey)) return res.json({ success: true, bias: getCached(cacheKey), cached: true })
+    const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', NAS100: 'IXIC', BTC: 'BTC/USD' }
+  let currentPrice = 'unknown'
+  try { const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`); currentPrice = pr.data?.price || 'unknown' } catch(e) {}
   const template = `{"symbol":"${symbol}","direction":"Bullish|Bearish|Neutral","confidence":75,"timeframe":"${timeframe||'intraday'}","reasoning":"2-3 sentence analysis","keyDrivers":["driver1","driver2","driver3"],"scenarios":[{"condition":"If X","outcome":"Y","probability":"High"},{"condition":"If A","outcome":"B","probability":"Medium"}],"levels":{"entry":"price range","target1":"price","target2":"price","invalidation":"price"},"propFirmRisk":{"recommendedRisk":"0.5%","maxLots":"0.25","remainingDailyBudget":"$800","status":"SAFE","warning":null}}`
   try {
-    const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: `Senior macro trader. Return ONLY valid JSON matching this EXACT structure: ${template}`, messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}. Fill real values.` }] })
+    const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: `Senior macro trader. Return ONLY valid JSON matching this EXACT structure: ${template}`, messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.CURRENT LIVE PRICE: ${currentPrice}. Generate key levels relative to this current price. Fill real values.` }] })
     const bias = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
     setCache(cacheKey, bias)
     res.json({ success: true, bias })
