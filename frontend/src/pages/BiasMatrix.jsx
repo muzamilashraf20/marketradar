@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, Minus, ShieldCheck,
@@ -107,17 +107,22 @@ export default function BiasMatrix() {
   const [selectedAsset, setSelectedAsset] = useState('EURUSD')
   const [selectedTf, setSelectedTf] = useState('intraday')
   const [loading, setLoading] = useState(false)
-  const [bias, setBias] = useState(() => {
-    try { const saved = localStorage.getItem('bf_bias'); return saved ? JSON.parse(saved) : null } catch { return null }
-  })
+  const [bias, setBias] = useState(null)
   const [error, setError] = useState('')
+
+  // Load saved bias when asset or timeframe changes
   useEffect(() => {
-    try { const saved = localStorage.getItem('bf_bias')
-      if (saved) { const parsed = JSON.parse(saved)
-        if (parsed.symbol === selectedAsset && parsed.timeframe === selectedTf) setBias(parsed)
-        else setBias(null)
+    try {
+      const key = 'bf_bias_' + selectedAsset + '_' + selectedTf
+      const saved = localStorage.getItem(key)
+      if (saved) {
+        setBias(JSON.parse(saved))
+      } else {
+        setBias(null)
       }
-    } catch { setBias(null) }
+    } catch {
+      setBias(null)
+    }
   }, [selectedAsset, selectedTf])
 
   const generateBias = async () => {
@@ -140,14 +145,15 @@ export default function BiasMatrix() {
       const data = await res.json()
       if (data.success) {
         setBias(data.bias)
-        localStorage.setItem('bf_bias', JSON.stringify(data.bias))
+        const key = 'bf_bias_' + selectedAsset + '_' + selectedTf
+        localStorage.setItem(key, JSON.stringify(data.bias))
       } else {
         setError(data.error || 'AI analysis failed')
-        setBias(MOCK_BIAS) // fallback to mock
+        setBias(MOCK_BIAS)
       }
     } catch {
       setError('Cannot connect to server — showing demo data')
-      setBias(MOCK_BIAS) // fallback to mock
+      setBias(MOCK_BIAS)
     }
     setLoading(false)
   }
@@ -275,7 +281,7 @@ export default function BiasMatrix() {
               </h3>
               <p className="text-sm text-slate-300 leading-relaxed mb-4">{bias.reasoning}</p>
               <div className="space-y-2">
-                {bias.keyDrivers.map((driver, i) => (
+                {bias.keyDrivers?.map((driver, i) => (
                   <div key={i} className="flex items-center gap-2.5 text-sm text-slate-400">
                     <ChevronRight size={14} className="text-cyan-400 shrink-0" />
                     {driver}
@@ -294,7 +300,7 @@ export default function BiasMatrix() {
                   Scenarios
                 </h3>
                 <div className="space-y-3">
-                  {bias.scenarios.map((s, i) => (
+                  {bias.scenarios?.map((s, i) => (
                     <div key={i} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
                       <div className="flex items-center justify-between mb-1.5">
                         <p className="text-xs font-semibold text-slate-300">{s.condition}</p>
@@ -314,10 +320,10 @@ export default function BiasMatrix() {
                 </h3>
                 <div className="space-y-2.5">
                   {[
-                    { label: 'Entry Zone', value: bias.levels.entry, color: 'text-cyan-400' },
-                    { label: 'Target 1', value: bias.levels.target1, color: 'text-emerald-400' },
-                    { label: 'Target 2', value: bias.levels.target2, color: 'text-emerald-300' },
-                    { label: 'Invalidation', value: bias.levels.invalidation, color: 'text-red-400' },
+                    { label: 'Entry Zone', value: bias.levels?.entry, color: 'text-cyan-400' },
+                    { label: 'Target 1', value: bias.levels?.target1, color: 'text-emerald-400' },
+                    { label: 'Target 2', value: bias.levels?.target2, color: 'text-emerald-300' },
+                    { label: 'Invalidation', value: bias.levels?.invalidation, color: 'text-red-400' },
                   ].map(level => (
                     <div key={level.label} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
                       <span className="text-xs text-slate-500">{level.label}</span>
@@ -336,14 +342,14 @@ export default function BiasMatrix() {
                   <ShieldCheck size={14} className="text-emerald-400" />
                   Prop Firm Risk Assessment
                 </h3>
-                <RiskBadge status={bias.propFirmRisk.status} />
+                <RiskBadge status={bias.propFirmRisk?.status || 'SAFE'} />
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {[
-                  { label: 'Recommended Risk', value: bias.propFirmRisk.recommendedRisk },
-                  { label: 'Max Lots', value: bias.propFirmRisk.maxLots },
-                  { label: 'Daily Budget Left', value: bias.propFirmRisk.remainingDailyBudget },
-                  { label: 'Status', value: bias.propFirmRisk.status },
+                  { label: 'Recommended Risk', value: bias.propFirmRisk?.recommendedRisk },
+                  { label: 'Max Lots', value: bias.propFirmRisk?.maxLots },
+                  { label: 'Daily Budget Left', value: bias.propFirmRisk?.remainingDailyBudget },
+                  { label: 'Status', value: bias.propFirmRisk?.status },
                 ].map(item => (
                   <div key={item.label} className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
                     <p className="text-[10px] text-slate-500 mb-1">{item.label}</p>
@@ -351,7 +357,7 @@ export default function BiasMatrix() {
                   </div>
                 ))}
               </div>
-              {bias.propFirmRisk.warning && (
+              {bias.propFirmRisk?.warning && (
                 <div className="mt-3 flex items-center gap-2 text-amber-400 text-xs">
                   <AlertTriangle size={12} />
                   {bias.propFirmRisk.warning}
@@ -361,7 +367,7 @@ export default function BiasMatrix() {
 
             {/* Generated at */}
             <p className="text-xs text-slate-600 text-center">
-              Generated at {new Date(bias.generatedAt).toLocaleString()} · BiasForge AI
+              Generated at {bias.generatedAt ? new Date(bias.generatedAt).toLocaleString() : 'N/A'} · BiasForge AI
             </p>
 
           </div>
