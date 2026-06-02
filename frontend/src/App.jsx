@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext'
 
 import LandingPage from './pages/LandingPage'
 import Login from './pages/Login'
+import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
 import NewsFeed from './pages/NewsFeed'
 import MarketMoversRadar from './pages/MarketMoversRadar'
@@ -46,6 +47,7 @@ export default function App() {
         {/* Public Routes */}
         <Route path="/landing" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
