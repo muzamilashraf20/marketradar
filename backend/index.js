@@ -15,6 +15,7 @@ origin: ['http://localhost:5173', 'http://localhost:5174', 'https://www.biasforg
   credentials: true
 }))
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
 const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
