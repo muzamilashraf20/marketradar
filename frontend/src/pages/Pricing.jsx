@@ -64,25 +64,9 @@ export default function Pricing() {
   const [isAnnual, setIsAnnual] = useState(false)
   const [loading, setLoading] = useState(null)
 
-  const handleCheckout = async (planKey) => {
+  const handleCheckout = (planKey) => {
     if (!planKey || planKey === 'free') return
-    setLoading(planKey)
-    try {
-      const response = await fetch(`${API_URL}/api/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey }),
-      })
-      const data = await response.json()
-      if (data.url) {
-        window.location.href = data.url
-      } else {
-        alert('Checkout error. Please try again or contact support.')
-      }
-    } catch (e) {
-      alert('Connection error. Please check your internet and try again.')
-    }
-    setLoading(null)
+    window.open('https://muzamilashraf.gumroad.com/l/ntjpje', '_blank')
   }
 
   return (

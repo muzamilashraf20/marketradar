@@ -61,24 +61,8 @@ export default function PricingSection() {
   const [loadingPlan, setLoadingPlan] = useState(null)
   const navigate = useNavigate()
 
-  const handleCheckout = async (planKey) => {
-    setLoadingPlan(planKey)
-    try {
-      const res = await fetch(`${API_URL}/api/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey }),
-      })
-      const data = await res.json()
-      if (data.success && data.url) {
-        window.location.href = data.url
-      } else {
-        alert('Checkout failed. Please try again.')
-      }
-    } catch (e) {
-      alert('Could not connect to server. Please try again.')
-    }
-    setLoadingPlan(null)
+  const handleCheckout = (planKey) => {
+    window.open('https://muzamilashraf.gumroad.com/l/ntjpje', '_blank')
   }
 
   return (
