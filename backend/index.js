@@ -579,81 +579,40 @@ app.post('/api/trade-check', async (req, res) => {
     else if (imminent) { verdict='YELLOW'; headline=`News in ${imminent.minutesUntil}min`; reasons.push(imminent.event); rec=`Wait ${imminent.minutesUntil+10}min`; conf=82 }
     else { reasons.push(`Risk ${estRiskPct.toFixed(2)}% within ${riskPerTrade}% rule`); reasons.push(upcomingEvents.length===0?'No high-impact news next 4h':`${upcomingEvents.length} events, none affect ${symbol}`) }
     if (totalDrawdownUsed>=80&&verdict!=='RED') warnings.push(`Total DD at ${totalDrawdownUsed.toFixed(1)}%`)
+
+    let final = { verdict, headline, reasons, warnings, recommendation:rec, confidence:conf, engine:'rule-based' }
+    if (useAI) { try { const ctx=`TRADE:${direction} ${lotSize}lots ${symbol} SL${stopLossPips}\nRISK:$${estRisk$.toFixed(2)}(${estRiskPct.toFixed(2)}%)\nDD:${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%\nNEWS:${upcomingEvents.map(e=>`${e.event}(${e.country})${e.minutesUntil}m`).join(';')||'none'}`; const m=await anthropic.messages.create({model:'claude-sonnet-4-6',max_tokens:2048,system:'Elite prop firm risk advisor. ONLY JSON.',messages:[{role:'user',content:`Refine:\n${ctx}`}]}); final={...JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim()),engine:'ai-enhanced'} } catch(e){} }
+    res.json({ success:true, verdict:final, meta:{ estimatedRiskDollars:estRisk$.toFixed(2), estimatedRiskPercent:estRiskPct.toFixed(2), upcomingEvents, analyzedAt:new Date().toISOString() } })
+  } catch(e){ res.status(500).json({ success:false, error:'Analysis failed' }) }
+})
 // ============================================
 // 💳 GUMROAD WEBHOOK — Auto Pro Upgrade
 // ============================================
 app.post('/api/gumroad/webhook', async (req, res) => {
   try {
     const { email, product_id, product_name, sale_id, recurrence, price, refunded, subscription_id, resource_name } = req.body
-
     console.log('Gumroad webhook:', { email, product_name, sale_id, recurrence, refunded, resource_name })
-
     if (!email) return res.status(400).json({ error: 'No email provided' })
-
     const buyerEmail = email.toLowerCase().trim()
-
-    // Handle refund/cancellation
     if (refunded === 'true' || resource_name === 'cancellation' || resource_name === 'subscription_ended') {
-      // Downgrade to free
-      await supabase
-        .from('user_plans')
-        .update({ tier: 'free', updated_at: new Date().toISOString() })
-        .eq('email', buyerEmail)
-
-      console.log(`Downgraded ${buyerEmail} to free (refund/cancel)`)
+      await supabase.from('user_plans').update({ tier: 'free', updated_at: new Date().toISOString() }).eq('email', buyerEmail)
+      console.log(`Downgraded ${buyerEmail} to free`)
       return res.json({ success: true, action: 'downgraded' })
     }
-
-    // Upgrade to pro
-    // First check if user exists in user_plans
-    const { data: existing } = await supabase
-      .from('user_plans')
-      .select('*')
-      .eq('email', buyerEmail)
-      .single()
-
+    const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
     if (existing) {
-      // Update existing plan
-      await supabase
-        .from('user_plans')
-        .update({
-          tier: 'pro',
-          gumroad_subscription_id: subscription_id || sale_id,
-          gumroad_product: product_name,
-          gumroad_recurrence: recurrence,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('email', buyerEmail)
+      await supabase.from('user_plans').update({ tier: 'pro', updated_at: new Date().toISOString() }).eq('email', buyerEmail)
     } else {
-      // Find user by email in auth
       const { data: { users } } = await supabase.auth.admin.listUsers()
       const authUser = users?.find(u => u.email?.toLowerCase() === buyerEmail)
-
-      await supabase
-        .from('user_plans')
-        .upsert({
-          user_id: authUser?.id || null,
-          email: buyerEmail,
-          tier: 'pro',
-          gumroad_subscription_id: subscription_id || sale_id,
-          gumroad_product: product_name,
-          gumroad_recurrence: recurrence,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'email' })
+      await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, tier: 'pro', updated_at: new Date().toISOString() }, { onConflict: 'email' })
     }
-
     console.log(`Upgraded ${buyerEmail} to PRO`)
     res.json({ success: true, action: 'upgraded' })
-
   } catch (e) {
     console.error('Gumroad webhook error:', e.message)
     res.status(500).json({ error: 'Webhook processing failed' })
   }
-})
-    let final = { verdict, headline, reasons, warnings, recommendation:rec, confidence:conf, engine:'rule-based' }
-    if (useAI) { try { const ctx=`TRADE:${direction} ${lotSize}lots ${symbol} SL${stopLossPips}\nRISK:$${estRisk$.toFixed(2)}(${estRiskPct.toFixed(2)}%)\nDD:${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%\nNEWS:${upcomingEvents.map(e=>`${e.event}(${e.country})${e.minutesUntil}m`).join(';')||'none'}`; const m=await anthropic.messages.create({model:'claude-sonnet-4-6',max_tokens:2048,system:'Elite prop firm risk advisor. ONLY JSON.',messages:[{role:'user',content:`Refine:\n${ctx}`}]}); final={...JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim()),engine:'ai-enhanced'} } catch(e){} }
-    res.json({ success:true, verdict:final, meta:{ estimatedRiskDollars:estRisk$.toFixed(2), estimatedRiskPercent:estRiskPct.toFixed(2), upcomingEvents, analyzedAt:new Date().toISOString() } })
-  } catch(e){ res.status(500).json({ success:false, error:'Analysis failed' }) }
 })
 // ============================================
 // 📓 TRADE JOURNAL
