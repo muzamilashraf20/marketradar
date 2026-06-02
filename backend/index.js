@@ -402,16 +402,154 @@ app.post('/api/bias', async (req, res) => {
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   const cacheKey = `bias_${symbol}_${timeframe || 'intraday'}`
   if (isCacheFresh(cacheKey)) return res.json({ success: true, bias: getCached(cacheKey), cached: true })
-    const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', NAS100: 'IXIC', BTC: 'BTC/USD' }
+
+  const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
+
+  // 1. Fetch current price
   let currentPrice = 'unknown'
-  try { const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`); currentPrice = pr.data?.price || 'unknown' } catch(e) {}
-  const template = `{"symbol":"${symbol}","direction":"Bullish|Bearish|Neutral","confidence":75,"timeframe":"${timeframe||'intraday'}","reasoning":"2-3 sentence analysis","keyDrivers":["driver1","driver2","driver3"],"scenarios":[{"condition":"If X","outcome":"Y","probability":"High"},{"condition":"If A","outcome":"B","probability":"Medium"}],"levels":{"entry":"price range","target1":"price","target2":"price","invalidation":"price"},"propFirmRisk":{"recommendedRisk":"0.5%","maxLots":"0.25","remainingDailyBudget":"$800","status":"SAFE","warning":null}}`
   try {
-    const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: `Senior macro trader. Return ONLY valid JSON matching this EXACT structure: ${template}`, messages: [{ role: 'user', content: `Analyze ${symbol} for ${timeframe || 'intraday'} bias as of ${new Date().toISOString()}.CURRENT LIVE PRICE: ${currentPrice}. Generate key levels relative to this current price. Fill real values.` }] })
-    const bias = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
+    const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
+    currentPrice = pr.data?.price || 'unknown'
+  } catch (e) {}
+
+  // 2. Get currency strength from cache
+  let strengthData = ''
+  try {
+    const cached = getCached('strength')
+    if (cached?.currencies) {
+      strengthData = cached.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
+    }
+  } catch (e) {}
+
+  // 3. Get upcoming calendar events
+  let calendarData = 'No upcoming events'
+  try {
+    const apiKey = process.env.FINNHUB_API_KEY
+    if (apiKey) {
+      const now = new Date()
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+      const from = now.toISOString().split('T')[0]
+      const to = tomorrow.toISOString().split('T')[0]
+      const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`)
+      if (r.ok) {
+        const d = await r.json()
+        const events = (d.economicCalendar || [])
+          .filter(e => e.impact === 3 || e.impact?.toLowerCase?.() === 'high')
+          .slice(0, 8)
+          .map(e => `${e.event} (${e.country}) at ${e.time || 'TBD'} - Impact: HIGH`)
+        if (events.length > 0) calendarData = events.join(' | ')
+      }
+    }
+  } catch (e) {}
+
+  // 4. Get recent high-impact news from cache
+  let newsData = 'No recent high-impact news'
+  try {
+    const cachedNews = getCached('news')
+    if (cachedNews?.articles) {
+      const highImpact = cachedNews.articles
+        .filter(a => (a.impactScore || 0) >= 7)
+        .slice(0, 5)
+        .map(a => a.title)
+      if (highImpact.length > 0) newsData = highImpact.join(' | ')
+    }
+  } catch (e) {}
+
+  // 5. Extract currencies involved in the pair
+  const baseCur = symbol.substring(0, 3)
+  const quoteCur = symbol.substring(3, 6)
+
+  const template = `{
+  "symbol": "${symbol}",
+  "direction": "Bullish|Bearish|Neutral",
+  "confidence": 0,
+  "confidenceReasoning": "1 sentence explaining why confidence is at this level",
+  "timeframe": "${timeframe || 'intraday'}",
+  "reasoning": "3-4 sentence detailed macro analysis combining all data sources",
+  "keyDrivers": ["driver1", "driver2", "driver3", "driver4"],
+  "scenarios": [
+    {"condition": "Primary scenario", "outcome": "Expected move", "probability": "High|Medium|Low"},
+    {"condition": "Alternative scenario", "outcome": "What happens", "probability": "High|Medium|Low"}
+  ],
+  "levels": {
+    "currentPrice": "${currentPrice}",
+    "entry": "specific price or range",
+    "target1": "specific price",
+    "target2": "specific price",
+    "stopLoss": "specific price",
+    "invalidation": "specific price where this entire bias is WRONG"
+  },
+  "invalidationNote": "1 sentence: what happens if invalidation level is hit",
+  "propFirmRisk": {
+    "recommendedRisk": "0.5-1%",
+    "maxLots": "calculated based on 50k account",
+    "remainingDailyBudget": "estimated",
+    "status": "SAFE|CAUTION|DANGER",
+    "warning": null
+  },
+  "tradeGrade": "A+|A|B|C|D",
+  "generatedAt": "${new Date().toISOString()}"
+}`
+
+  const systemPrompt = `You are an elite institutional macro trader and analyst at a top hedge fund. You provide precise, actionable trading bias analysis.
+
+CRITICAL RULES:
+1. CONFIDENCE SCORING: Be precise and varied. Use the FULL range 40-95%. 
+   - 85-95% = Strong conviction (multiple data sources align, clear trend, no conflicting events)
+   - 70-84% = Moderate conviction (most data aligns but some uncertainty)
+   - 55-69% = Weak conviction (mixed signals, upcoming risk events)
+   - 40-54% = Very low conviction (conflicting data, recommend sitting out)
+   Never default to 75%. Calibrate based on actual data quality.
+
+2. INVALIDATION LEVEL: This is the MOST important field. It must be a specific price where the bias is completely wrong. For ${timeframe || 'intraday'}:
+   - Intraday: within 30-80 pips of entry for forex, proportional for gold/indices
+   - Swing: within 100-200 pips of entry for forex
+
+3. TRADE GRADE: A+ = perfect alignment all sources. A = strong. B = decent. C = marginal. D = don't trade.
+
+4. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text.
+
+5. Return ONLY valid JSON. No markdown, no explanation outside JSON.`
+
+  const userPrompt = `Analyze ${symbol} (${baseCur}/${quoteCur}) for ${timeframe || 'intraday'} bias.
+
+CURRENT LIVE PRICE: ${currentPrice}
+TIMESTAMP: ${new Date().toISOString()}
+
+CURRENCY STRENGTH DATA:
+${strengthData || 'Not available'}
+
+UPCOMING HIGH-IMPACT EVENTS (next 24h):
+${calendarData}
+
+RECENT HIGH-IMPACT NEWS:
+${newsData}
+
+Combine ALL data sources above for your analysis. Return JSON matching this structure:
+${template}`
+
+  try {
+    const m = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }]
+    })
+    const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
+    const bias = JSON.parse(raw)
+    bias.generatedAt = new Date().toISOString()
+    bias.dataSources = {
+      price: currentPrice !== 'unknown',
+      strength: !!strengthData,
+      calendar: calendarData !== 'No upcoming events',
+      news: newsData !== 'No recent high-impact news'
+    }
     setCache(cacheKey, bias)
     res.json({ success: true, bias })
-  } catch (e) { console.error('Bias error:', e?.message); res.status(500).json({ success: false, error: e?.message || 'AI analysis failed.' }) }
+  } catch (e) {
+    console.error('Bias error:', e?.message)
+    res.status(500).json({ success: false, error: e?.message || 'AI analysis failed.' })
+  }
 })
 
 // ============================================
