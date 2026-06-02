@@ -3,42 +3,16 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, Minus, ShieldCheck,
   ShieldAlert, ShieldX, RefreshCw, ChevronRight,
-  Target, AlertTriangle, BookOpen
+  Target, AlertTriangle, BookOpen, XOctagon,
+  Activity, BarChart3, Newspaper, Calendar, Zap
 } from 'lucide-react'
 
-const ASSETS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'NAS100', 'BTC']
+const ASSETS = [
+  'EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'GBPJPY',
+  'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURJPY',
+  'EURGBP', 'NAS100', 'BTC'
+]
 const TIMEFRAMES = ['intraday', 'swing']
-
-const MOCK_BIAS = {
-  symbol: 'EURUSD',
-  direction: 'Bullish',
-  confidence: 78,
-  timeframe: 'intraday',
-  reasoning: 'ECB maintained hawkish tone in recent minutes while US CPI came in softer than expected at 3.2%. DXY weakness is supporting EUR strength with risk-on flows dominating.',
-  keyDrivers: [
-    'ECB hawkish stance — no rate cuts signaled',
-    'US CPI missed expectations (3.2% vs 3.4%)',
-    'Risk-on flows supporting EUR demand',
-  ],
-  scenarios: [
-    { condition: 'If price holds above 1.0850', outcome: 'Bullish continuation toward 1.0920-1.0950', probability: 'High' },
-    { condition: 'If US Retail Sales surprises positive', outcome: 'Reversal risk toward 1.0800 support', probability: 'Medium' },
-  ],
-  levels: {
-    entry: '1.0855 - 1.0870',
-    target1: '1.0920',
-    target2: '1.0950',
-    invalidation: '1.0820',
-  },
-  propFirmRisk: {
-    recommendedRisk: '0.5%',
-    maxLots: '0.25',
-    remainingDailyBudget: '$800',
-    status: 'SAFE',
-    warning: null,
-  },
-  generatedAt: new Date().toISOString(),
-}
 
 function DirectionBadge({ direction }) {
   if (direction === 'Bullish') return (
@@ -57,6 +31,22 @@ function DirectionBadge({ direction }) {
     <div className="flex items-center gap-2 text-slate-400">
       <Minus size={20} />
       <span className="text-2xl font-black">NEUTRAL</span>
+    </div>
+  )
+}
+
+function TradeGrade({ grade }) {
+  const styles = {
+    'A+': 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400',
+    'A': 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400',
+    'B': 'bg-cyan-500/10 border-cyan-500/25 text-cyan-400',
+    'C': 'bg-amber-500/10 border-amber-500/25 text-amber-400',
+    'D': 'bg-red-500/10 border-red-500/25 text-red-400',
+  }
+  return (
+    <div className={`px-4 py-2 rounded-xl border text-center ${styles[grade] || styles['C']}`}>
+      <p className="text-[10px] uppercase tracking-wider opacity-70 mb-0.5">Trade Grade</p>
+      <p className="text-2xl font-black">{grade || 'N/A'}</p>
     </div>
   )
 }
@@ -92,6 +82,16 @@ function ProbabilityBadge({ probability }) {
   )
 }
 
+function DataSourceDot({ active, label, icon: Icon }) {
+  return (
+    <div className={`flex items-center gap-1.5 text-xs ${active ? 'text-emerald-400' : 'text-slate-600'}`}>
+      <div className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400' : 'bg-slate-700'}`} />
+      <Icon size={11} />
+      <span>{label}</span>
+    </div>
+  )
+}
+
 function SkeletonCard() {
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 animate-pulse">
@@ -110,7 +110,6 @@ export default function BiasMatrix() {
   const [bias, setBias] = useState(null)
   const [error, setError] = useState('')
 
-  // Load saved bias when asset or timeframe changes
   useEffect(() => {
     try {
       const key = 'bf_bias_' + selectedAsset + '_' + selectedTf
@@ -138,7 +137,6 @@ export default function BiasMatrix() {
           body: JSON.stringify({
             symbol: selectedAsset,
             timeframe: selectedTf,
-            propFirm: { accountSize: 50000, maxDailyDrawdown: 1000, currentDailyPnl: 0 },
           }),
         }
       )
@@ -149,11 +147,9 @@ export default function BiasMatrix() {
         localStorage.setItem(key, JSON.stringify(data.bias))
       } else {
         setError(data.error || 'AI analysis failed')
-        setBias(MOCK_BIAS)
       }
     } catch {
-      setError('Cannot connect to server — showing demo data')
-      setBias(MOCK_BIAS)
+      setError('Cannot connect to server. Please try again.')
     }
     setLoading(false)
   }
@@ -161,6 +157,11 @@ export default function BiasMatrix() {
   const directionColor = bias?.direction === 'Bullish'
     ? 'text-emerald-400' : bias?.direction === 'Bearish'
     ? 'text-red-400' : 'text-slate-400'
+
+  const confColor = (bias?.confidence || 0) >= 75
+    ? 'text-emerald-400' : (bias?.confidence || 0) >= 60
+    ? 'text-cyan-400' : (bias?.confidence || 0) >= 50
+    ? 'text-amber-400' : 'text-red-400'
 
   return (
     <DashboardLayout title="AI Bias Engine" subtitle="AI-powered macro trading bias">
@@ -173,7 +174,6 @@ export default function BiasMatrix() {
             Generate AI Bias
           </h2>
 
-          {/* Asset selector */}
           <div className="mb-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Select Asset</p>
             <div className="flex flex-wrap gap-2">
@@ -181,7 +181,7 @@ export default function BiasMatrix() {
                 <button
                   key={asset}
                   onClick={() => setSelectedAsset(asset)}
-                  className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                     selectedAsset === asset
                       ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400'
                       : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
@@ -193,7 +193,6 @@ export default function BiasMatrix() {
             </div>
           </div>
 
-          {/* Timeframe */}
           <div className="mb-5">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Timeframe</p>
             <div className="flex gap-2">
@@ -213,7 +212,6 @@ export default function BiasMatrix() {
             </div>
           </div>
 
-          {/* Generate button */}
           <button
             onClick={generateBias}
             disabled={loading}
@@ -224,13 +222,13 @@ export default function BiasMatrix() {
           </button>
 
           {error && (
-            <p className="mt-3 text-xs text-amber-400 flex items-center gap-1.5">
+            <p className="mt-3 text-xs text-red-400 flex items-center gap-1.5">
               <AlertTriangle size={12} /> {error}
             </p>
           )}
         </div>
 
-        {/* Loading skeletons */}
+        {/* Loading */}
         {loading && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {[1,2,3,4].map(i => <SkeletonCard key={i} />)}
@@ -241,7 +239,7 @@ export default function BiasMatrix() {
         {bias && !loading && (
           <div className="space-y-4">
 
-            {/* Direction Card */}
+            {/* Direction + Confidence + Grade */}
             <div className={`bg-white/[0.03] border rounded-2xl p-6 ${
               bias.direction === 'Bullish' ? 'border-emerald-500/20' :
               bias.direction === 'Bearish' ? 'border-red-500/20' : 'border-white/10'
@@ -253,25 +251,49 @@ export default function BiasMatrix() {
                   </p>
                   <DirectionBadge direction={bias.direction} />
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-slate-500 mb-1">Confidence</p>
-                  <p className={`text-4xl font-black ${directionColor}`}>
-                    {bias.confidence}%
-                  </p>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-xs text-slate-500 mb-1">Confidence</p>
+                    <p className={`text-4xl font-black ${confColor}`}>
+                      {bias.confidence}%
+                    </p>
+                  </div>
+                  <TradeGrade grade={bias.tradeGrade} />
                 </div>
               </div>
 
               {/* Confidence bar */}
-              <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-2">
                 <div
                   className={`h-full rounded-full transition-all duration-1000 ${
-                    bias.direction === 'Bullish' ? 'bg-emerald-400' :
-                    bias.direction === 'Bearish' ? 'bg-red-400' : 'bg-slate-400'
+                    (bias.confidence || 0) >= 75 ? 'bg-emerald-400' :
+                    (bias.confidence || 0) >= 60 ? 'bg-cyan-400' :
+                    (bias.confidence || 0) >= 50 ? 'bg-amber-400' : 'bg-red-400'
                   }`}
                   style={{ width: `${bias.confidence}%` }}
                 />
               </div>
+              {bias.confidenceReasoning && (
+                <p className="text-xs text-slate-500 italic">{bias.confidenceReasoning}</p>
+              )}
             </div>
+
+            {/* ⚠️ INVALIDATION WARNING BAR */}
+            {bias.levels?.invalidation && (
+              <div className="bg-red-500/8 border border-red-500/20 rounded-2xl p-4 flex items-start gap-3">
+                <XOctagon size={20} className="text-red-400 shrink-0 mt-0.5" />
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <p className="text-sm font-bold text-red-400">
+                      Bias Invalidates at <span className="font-mono text-base">{bias.levels.invalidation}</span>
+                    </p>
+                  </div>
+                  <p className="text-xs text-red-400/70">
+                    {bias.invalidationNote || `If price breaks ${bias.levels.invalidation}, this bias is no longer valid. Exit or reassess.`}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Reasoning + Key Drivers */}
             <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
@@ -292,8 +314,6 @@ export default function BiasMatrix() {
 
             {/* Scenarios + Levels */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-              {/* Scenarios */}
               <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
                 <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
                   <AlertTriangle size={14} className="text-amber-400" />
@@ -312,7 +332,6 @@ export default function BiasMatrix() {
                 </div>
               </div>
 
-              {/* Levels */}
               <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
                 <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
                   <Target size={14} className="text-cyan-400" />
@@ -320,19 +339,20 @@ export default function BiasMatrix() {
                 </h3>
                 <div className="space-y-2.5">
                   {[
+                    { label: 'Current Price', value: bias.levels?.currentPrice, color: 'text-white' },
                     { label: 'Entry Zone', value: bias.levels?.entry, color: 'text-cyan-400' },
+                    { label: 'Stop Loss', value: bias.levels?.stopLoss, color: 'text-orange-400' },
                     { label: 'Target 1', value: bias.levels?.target1, color: 'text-emerald-400' },
                     { label: 'Target 2', value: bias.levels?.target2, color: 'text-emerald-300' },
-                    { label: 'Invalidation', value: bias.levels?.invalidation, color: 'text-red-400' },
-                  ].map(level => (
-                    <div key={level.label} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
+                    { label: '🚫 Invalidation', value: bias.levels?.invalidation, color: 'text-red-400' },
+                  ].filter(l => l.value).map(level => (
+                    <div key={level.label} className={`flex items-center justify-between py-2 border-b border-white/5 last:border-0 ${level.label.includes('Invalidation') ? 'bg-red-500/5 -mx-2 px-2 rounded-lg' : ''}`}>
                       <span className="text-xs text-slate-500">{level.label}</span>
                       <span className={`text-sm font-bold font-mono ${level.color}`}>{level.value}</span>
                     </div>
                   ))}
                 </div>
               </div>
-
             </div>
 
             {/* Prop Firm Risk */}
@@ -365,10 +385,20 @@ export default function BiasMatrix() {
               )}
             </div>
 
-            {/* Generated at */}
-            <p className="text-xs text-slate-600 text-center">
-              Generated at {bias.generatedAt ? new Date(bias.generatedAt).toLocaleString() : 'N/A'} · BiasForge AI
-            </p>
+            {/* Data Sources + Timestamp */}
+            <div className="flex items-center justify-between px-2">
+              {bias.dataSources && (
+                <div className="flex items-center gap-4">
+                  <DataSourceDot active={bias.dataSources.price} label="Price" icon={Activity} />
+                  <DataSourceDot active={bias.dataSources.strength} label="Strength" icon={BarChart3} />
+                  <DataSourceDot active={bias.dataSources.calendar} label="Calendar" icon={Calendar} />
+                  <DataSourceDot active={bias.dataSources.news} label="News" icon={Newspaper} />
+                </div>
+              )}
+              <p className="text-xs text-slate-600">
+                {bias.generatedAt ? new Date(bias.generatedAt).toLocaleString() : ''} · BiasForge AI
+              </p>
+            </div>
 
           </div>
         )}
@@ -376,7 +406,7 @@ export default function BiasMatrix() {
         {/* Empty state */}
         {!bias && !loading && (
           <div className="text-center py-16 bg-white/[0.02] border border-white/10 rounded-2xl">
-            <TrendingUp size={32} className="text-slate-600 mx-auto mb-3" />
+            <Zap size={32} className="text-slate-600 mx-auto mb-3" />
             <p className="text-slate-400 font-semibold mb-1">No bias generated yet</p>
             <p className="text-slate-600 text-sm">Select an asset and click "Generate AI Bias"</p>
           </div>
