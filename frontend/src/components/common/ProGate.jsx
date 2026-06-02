@@ -56,7 +56,7 @@ export default function ProGate({ title, subtitle, children }) {
           {/* CTA buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
-              onClick={() => window.open('https://muzamilashraf.gumroad.com/l/ntjpje', '_blank')}
+              onClick={() => window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')}
               className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold rounded-xl hover:opacity-90 transition-all flex items-center gap-2 shadow-lg shadow-cyan-500/20"
             >
               Start 7-Day Free Trial

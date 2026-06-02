@@ -66,7 +66,7 @@ export default function Pricing() {
 
   const handleCheckout = (planKey) => {
     if (!planKey || planKey === 'free') return
-    window.open('https://muzamilashraf.gumroad.com/l/ntjpje', '_blank')
+    window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')
   }
 
   return (
