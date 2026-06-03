@@ -7,6 +7,7 @@ import {
   BarChart2, RefreshCw, Zap, Loader2
 } from 'lucide-react'
 import { useEffect } from 'react'
+import { SkeletonCard, SkeletonRow } from '../components/common/Skeleton'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -302,9 +303,9 @@ export default function Dashboard() {
               </span>
             </div>
 
-            {newsLoading && (
-              <div className="space-y-3">
-                {[1, 2, 3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
+           {newsLoading && (
+              <div className="space-y-1">
+                {[1,2,3].map(i => <SkeletonRow key={i} />)}
               </div>
             )}
 
@@ -352,8 +353,8 @@ export default function Dashboard() {
             </div>
 
             {eventsLoading && (
-              <div className="space-y-3">
-                {[1, 2, 3].map(i => <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />)}
+              <div className="space-y-1">
+                {[1,2,3].map(i => <SkeletonRow key={i} />)}
               </div>
             )}
 
@@ -499,11 +500,9 @@ export default function Dashboard() {
           )}
 
           {/* Loading */}
-          {biasLoading && (
-            <div className="bg-white/[0.03] border border-white/10 rounded-xl p-8 text-center">
-              <Loader2 size={24} className="text-cyan-400 animate-spin mx-auto mb-3" />
-              <p className="text-xs text-slate-400">Analyzing macro conditions with AI...</p>
-              <p className="text-[10px] text-slate-600 mt-1">This may take 10-20 seconds</p>
+         {biasLoading && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[1,2,3,4].map(i => <SkeletonCard key={i} />)}
             </div>
           )}
 
