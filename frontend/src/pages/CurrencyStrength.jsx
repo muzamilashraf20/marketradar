@@ -181,6 +181,65 @@ export default function CurrencyStrength() {
                 </div>
               </div>
             )}
+            {/* 🔀 Divergence Alerts */}
+            {data.currencies && (() => {
+              const currencies = data.currencies
+              const strong = currencies.filter(c => c.strength >= 65)
+              const weak = currencies.filter(c => c.strength <= 35)
+              const alerts = []
+
+              strong.forEach(s => {
+                weak.forEach(w => {
+                  const pair1 = `${s.currency}${w.currency}`
+                  const pair2 = `${w.currency}${s.currency}`
+                  const knownPairs = ['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','NZDUSD','USDCAD','GBPJPY','EURJPY','EURGBP','AUDJPY','CADJPY']
+                  if (knownPairs.includes(pair1)) {
+                    alerts.push({ pair: pair1, action: 'BUY', strong: s.currency, weak: w.currency, gap: s.strength - w.strength })
+                  } else if (knownPairs.includes(pair2)) {
+                    alerts.push({ pair: pair2, action: 'SELL', strong: s.currency, weak: w.currency, gap: s.strength - w.strength })
+                  }
+                })
+              })
+
+              alerts.sort((a, b) => b.gap - a.gap)
+
+              if (alerts.length === 0) return (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-5">
+                  <h2 className="text-white font-bold text-lg mb-2">🔀 Divergence Alerts</h2>
+                  <p className="text-sm text-amber-400">No strong divergences detected. Currencies are mostly neutral — consider staying flat.</p>
+                </div>
+              )
+
+              return (
+                <div className="bg-[#020617] border border-white/10 rounded-2xl p-6">
+                  <h2 className="text-white font-bold text-lg mb-4">🔀 Divergence Alerts</h2>
+                  <div className="space-y-3">
+                    {alerts.slice(0, 5).map((a, i) => (
+                      <div key={i} className={`flex items-center justify-between p-4 rounded-xl border ${
+                        a.action === 'BUY' ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'
+                      }`}>
+                        <div className="flex items-center gap-3">
+                          <span className={`px-3 py-1.5 rounded-lg text-xs font-black ${
+                            a.action === 'BUY' ? 'bg-emerald-500 text-black' : 'bg-red-500 text-white'
+                          }`}>{a.action}</span>
+                          <div>
+                            <p className="text-white font-bold text-lg">{a.pair}</p>
+                            <p className="text-xs text-slate-400">
+                              {FLAG[a.strong]} {a.strong} strong vs {FLAG[a.weak]} {a.weak} weak
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className={`text-xl font-black ${a.gap >= 50 ? 'text-emerald-400' : 'text-cyan-400'}`}>{a.gap}</p>
+                          <p className="text-[10px] text-slate-500">Divergence Gap</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-600 mt-3">Higher gap = stronger divergence = higher conviction trade</p>
+                </div>
+              )
+            })()}
 
             {/* Disclaimer */}
             <div className="bg-white/5 border border-white/10 rounded-xl p-4">
