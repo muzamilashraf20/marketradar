@@ -137,7 +137,59 @@ export default function COTReport() {
             </div>
           </div>
         )}
-
+{/* ── Net Positioning Chart ── */}
+        {!loading && data.length > 0 && (
+          <div className="bg-[#020617] border border-white/10 rounded-2xl p-6">
+            <h2 className="text-white font-bold text-lg mb-4 flex items-center gap-2">
+              <BarChart3 size={18} className="text-cyan-400" />
+              Net Positioning Overview
+            </h2>
+            <div className="space-y-3">
+              {[...data].sort((a, b) => b.netPosition - a.netPosition).map(item => {
+                const maxAbs = Math.max(...data.map(d => Math.abs(d.netPosition)), 1)
+                const widthPct = Math.abs(item.netPosition) / maxAbs * 100
+                const isLong = item.netPosition > 0
+                return (
+                  <div key={item.currency} className="flex items-center gap-3">
+                    <span className="text-sm font-bold text-white w-10">{item.currency}</span>
+                    <div className="flex-1 flex items-center">
+                      {/* Negative bar (left) */}
+                      <div className="w-1/2 flex justify-end">
+                        {!isLong && (
+                          <div className="h-6 bg-red-500/30 border border-red-500/40 rounded-l-lg flex items-center justify-end px-2 transition-all duration-700"
+                            style={{ width: `${widthPct}%`, minWidth: '20px' }}>
+                            <span className="text-[10px] font-bold text-red-400">{item.netPosition.toLocaleString()}</span>
+                          </div>
+                        )}
+                      </div>
+                      {/* Center line */}
+                      <div className="w-px h-8 bg-white/20 shrink-0" />
+                      {/* Positive bar (right) */}
+                      <div className="w-1/2">
+                        {isLong && (
+                          <div className="h-6 bg-emerald-500/30 border border-emerald-500/40 rounded-r-lg flex items-center px-2 transition-all duration-700"
+                            style={{ width: `${widthPct}%`, minWidth: '20px' }}>
+                            <span className="text-[10px] font-bold text-emerald-400">+{item.netPosition.toLocaleString()}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                      item.bias === 'Bullish' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                      item.bias === 'Bearish' ? 'bg-red-500/10 border-red-500/30 text-red-400' :
+                      'bg-slate-500/10 border-slate-500/30 text-slate-400'
+                    }`}>{item.bias}</span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/5 text-[10px] text-slate-600">
+              <span>← Short (bearish)</span>
+              <span>0</span>
+              <span>Long (bullish) →</span>
+            </div>
+          </div>
+        )}
         {/* ── Trading Guide (Collapsible) ── */}
         <div className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
           <button
