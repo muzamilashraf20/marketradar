@@ -184,6 +184,72 @@ export default function Dashboard() {
   return (
     <DashboardLayout title="Overview" subtitle="Your macro intelligence hub">
       <div className="space-y-5">
+        {/* ── Morning Summary Widget ── */}
+        <div className="bg-gradient-to-r from-cyan-500/5 via-[#020617] to-emerald-500/5 border border-white/10 rounded-2xl p-4 sm:p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap size={14} className="text-cyan-400" />
+            <h2 className="text-xs font-bold text-white uppercase tracking-wider">Quick Glance</h2>
+            <span className="text-[10px] text-slate-600 ml-auto">
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* High Impact Events */}
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+              <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+                <Calendar size={16} className="text-amber-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-lg font-black text-white leading-none">
+                  {eventsLoading ? '...' : events.filter(e => e.impact === 'High' || e.impact === 3).length}
+                </p>
+                <p className="text-[10px] text-slate-500 truncate">High-Impact Events Today</p>
+              </div>
+            </div>
+            {/* Next Event */}
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+              <div className="w-9 h-9 rounded-lg bg-cyan-500/10 flex items-center justify-center shrink-0">
+                <AlertCircle size={16} className="text-cyan-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-white leading-tight truncate">
+                  {eventsLoading ? '...' : topEvent ? topEvent.title || topEvent.event || 'No events' : 'No events'}
+                </p>
+                <p className="text-[10px] text-slate-500 truncate">
+                  {topEvent?.time ? `at ${topEvent.time}` : 'Next event'}
+                </p>
+              </div>
+            </div>
+            {/* Top Bias */}
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
+              }`}>
+                {todaysBias?.action === 'SELL'
+                  ? <TrendingDown size={16} className="text-red-400" />
+                  : <TrendingUp size={16} className="text-emerald-400" />}
+              </div>
+              <div className="min-w-0">
+                <p className={`text-sm font-bold leading-tight ${
+                  todaysBias?.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
+                }`}>
+                  {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
+                </p>
+                <p className="text-[10px] text-slate-500 truncate">Top Bias from Strength</p>
+              </div>
+            </div>
+            {/* Prop Firm Status */}
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${propRisk.bg}`}>
+                <ShieldCheck size={16} className={propRisk.color} />
+              </div>
+              <div className="min-w-0">
+                <p className={`text-sm font-bold leading-tight ${propRisk.color}`}>{propRisk.status}</p>
+                <p className="text-[10px] text-slate-500">Drawdown: {propRisk.drawdown}% used</p>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* ── Row 1: Stat Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
