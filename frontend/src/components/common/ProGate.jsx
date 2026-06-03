@@ -71,7 +71,7 @@ export default function ProGate({ title, subtitle, children }) {
           </div>
 
           <p className="text-[11px] text-slate-600 mt-4">
-            7-day free trial · Cancel anytime · $40/month after trial
+             Cancel anytime · $40/month
           </p>
         </div>
       </div>

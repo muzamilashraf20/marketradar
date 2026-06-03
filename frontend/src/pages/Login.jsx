@@ -272,7 +272,7 @@ export default function Login() {
               <p className="text-slate-500 text-sm mt-1">
                 {tab === 'signin'
                   ? 'Sign in to access your BiasForge dashboard.'
-                  : 'Start your free trial. No credit card required.'}
+                  : 'Start free. Upgrade when ready..'}
               </p>
             </div>
 

@@ -14,7 +14,7 @@ const releases = [
       'COT Report viewer with smart money positioning',
       'Sessions tracker with live market hours',
       'News Feed with sentiment tagging',
-      'Pricing page with Basic & PRO plans via LemonSqueezy',
+      'Pricing page with Basic & PRO plans via Gumroad',
     ],
   },
   {
@@ -26,7 +26,7 @@ const releases = [
       'Complete dashboard UI overhaul with dark theme',
       'Added Bias Matrix page for currency strength analysis',
       'Integrated Supabase authentication (login & register)',
-      'LemonSqueezy checkout integration for paid plans',
+      'Gumroad checkout integration for paid plans',
       'Responsive sidebar navigation with collapsible support',
     ],
   },

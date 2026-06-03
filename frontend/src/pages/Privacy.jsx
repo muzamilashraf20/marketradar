@@ -14,7 +14,7 @@ const sections = [
   {
     title: '3. Data Storage & Security',
     content:
-      'Your data is stored securely using Supabase with industry-standard encryption. Payment processing is handled by LemonSqueezy — we never store your full card details on our servers.',
+      'Your data is stored securely using Supabase with industry-standard encryption. Payment processing is handled by Gumroad — we never store your full card details on our servers.',
   },
   {
     title: '4. Cookies',
@@ -24,7 +24,7 @@ const sections = [
   {
     title: '5. Third-Party Services',
     content:
-      'We use trusted third-party services including Supabase (auth & database), LemonSqueezy (payments), and TwelveData (market data). Each has their own privacy policy.',
+      'We use trusted third-party services including Supabase (auth & database), Gumroad (payments), and TwelveData (market data). Each has their own privacy policy.',
   },
   {
     title: '6. Your Rights',

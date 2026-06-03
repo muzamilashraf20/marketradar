@@ -239,7 +239,7 @@ export default function Pricing() {
 
         {/* Trust badges */}
         <div className="text-center pt-4">
-          <p className="text-xs text-slate-500 mb-3">🔒 Secure payment via Lemon Squeezy · Cancel anytime · 14-day money-back guarantee</p>
+          <p className="text-xs text-slate-500 mb-3">🔒 Secure payment via Gumroad · Cancel anytime · 30-day money-back guarantee</p>
           <div className="flex items-center justify-center gap-6 text-xs text-slate-600">
             <span>💳 All major cards accepted</span>
             <span>•</span>
@@ -259,7 +259,7 @@ export default function Pricing() {
             </div>
             <div>
               <p className="text-white font-semibold mb-1">What payment methods are accepted?</p>
-              <p className="text-slate-400">All major credit/debit cards (Visa, Mastercard, Amex) through Lemon Squeezy. Works globally.</p>
+              <p className="text-slate-400">All major credit/debit cards (Visa, Mastercard, Amex) through Gumroad. Works globally..</p>
             </div>
             <div>
               <p className="text-white font-semibold mb-1">Is there a refund policy?</p>
