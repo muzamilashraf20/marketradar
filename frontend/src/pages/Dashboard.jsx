@@ -409,7 +409,7 @@ export default function Dashboard() {
           </div>
 
           {strengthLoading && (
-            <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8].map(i => (
                 <div key={i} className="h-20 bg-white/5 rounded-lg animate-pulse" />
               ))}
@@ -419,7 +419,7 @@ export default function Dashboard() {
           {!strengthLoading && strength && (
             <>
               {/* FIX: 4 cols mobile → 8 cols desktop, smaller padding on mobile */}
-              <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                 {strength.currencies.map(c => {
                   const isStrong = c.label === 'Strong'
                   const isWeak = c.label === 'Weak'

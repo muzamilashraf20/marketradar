@@ -312,7 +312,7 @@ export default function Playbooks() {
         {/* Hero Stats Banner */}
         <div className="relative bg-gradient-to-br from-cyan-500/10 via-[#020617] to-emerald-500/10 border border-cyan-500/30 rounded-2xl p-6 overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl -z-0" />
-          <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <p className="text-xs uppercase tracking-wider text-slate-400 mb-1">Total Playbooks</p>
               <p className="text-3xl font-black text-white">{PLAYBOOKS.length}</p>

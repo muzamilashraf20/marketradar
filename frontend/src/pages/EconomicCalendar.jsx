@@ -186,7 +186,7 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
 
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">📈 Indices Impact</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {analysis.indices?.map((idx, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${biasBg(idx.bias)}`}>
                     <div className={`flex items-center gap-1 font-bold text-sm ${biasColor(idx.bias)}`}>
