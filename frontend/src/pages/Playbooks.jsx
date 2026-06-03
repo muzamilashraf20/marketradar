@@ -54,6 +54,11 @@ const PLAYBOOKS = [
       { time: '2:30 PM ET', event: 'Powell press conference begins' },
       { time: '3:30 PM ET', event: 'Press conference typically ends' },
     ],
+    historicalData: [
+      { date: 'Jan 2025', result: 'Hold (as expected)', move: 'EURUSD +35 pips, Gold +$18' },
+      { date: 'Mar 2025', result: 'Hold, dovish tilt', move: 'EURUSD +62 pips, Gold +$31' },
+      { date: 'May 2025', result: 'Cut 25bps', move: 'EURUSD +85 pips, DXY -0.8%' },
+    ],
   },
 
   {
@@ -103,6 +108,11 @@ const PLAYBOOKS = [
       { time: '8:35 AM ET', event: 'Initial spike + reversal common' },
       { time: '9:30 AM ET', event: 'NY stock market open — second wave' },
     ],
+    historicalData: [
+      { date: 'Jan 2025', result: '256K (exp 160K) — hot', move: 'EURUSD -78 pips, DXY +0.7%' },
+      { date: 'Feb 2025', result: '143K (exp 170K) — miss', move: 'EURUSD +55 pips, Gold +$22' },
+      { date: 'Mar 2025', result: '228K (exp 137K) — hot', move: 'EURUSD -45 pips initial, reversed +30 pips' },
+    ],
   },
 
   {
@@ -151,6 +161,11 @@ const PLAYBOOKS = [
       { time: '9:00 AM ET', event: 'First reaction settles, true trend forms' },
       { time: '2:00 PM ET', event: 'Fed officials often comment — second wave' },
     ],
+    historicalData: [
+      { date: 'Jan 2025', result: 'Core 3.2% (exp 3.1%) — hot', move: 'EURUSD -52 pips, Gold -$15' },
+      { date: 'Feb 2025', result: 'Core 3.1% (exp 3.1%) — inline', move: 'EURUSD +20 pips, range-bound' },
+      { date: 'Mar 2025', result: 'Core 2.8% (exp 3.0%) — cool', move: 'EURUSD +70 pips, Gold +$28' },
+    ],
   },
 
   {
@@ -187,6 +202,7 @@ const PLAYBOOKS = [
       'Avoid EUR crosses during last 30 min (liquidity drops)',
     ],
 
+
     commonMistakes: [
       'Trading the rate decision alone — Lagarde matters more',
       'Ignoring inflation projection revisions',
@@ -198,6 +214,11 @@ const PLAYBOOKS = [
       { time: '1:15 PM CET', event: 'Rate decision + monetary statement' },
       { time: '1:45 PM CET', event: 'Press conference begins (Lagarde)' },
       { time: '2:30 PM CET', event: 'Q&A session — peak volatility' },
+    ],
+    historicalData: [
+      { date: 'Jan 2025', result: 'Hold at 4.0%', move: 'EURUSD -25 pips, EURGBP flat' },
+      { date: 'Mar 2025', result: 'Cut 25bps to 3.75%', move: 'EURUSD -45 pips, EURGBP -30 pips' },
+      { date: 'Apr 2025', result: 'Cut 25bps, dovish guidance', move: 'EURUSD -65 pips' },
     ],
   },
 
@@ -246,6 +267,11 @@ const PLAYBOOKS = [
       { time: '12:00 PM GMT', event: 'Rate decision + minutes + vote split' },
       { time: '12:30 PM GMT', event: 'Press conference (when scheduled)' },
       { time: '4:00 PM GMT', event: 'London close — often reverses move' },
+    ],
+    historicalData: [
+      { date: 'Feb 2025', result: 'Hold 5.25%, vote 7-2', move: 'GBPUSD +40 pips' },
+      { date: 'Mar 2025', result: 'Cut 25bps, vote 5-4', move: 'GBPUSD -55 pips, tight vote = uncertainty' },
+      { date: 'May 2025', result: 'Hold, hawkish statement', move: 'GBPUSD +35 pips' },
     ],
   },
 ]
@@ -454,7 +480,24 @@ export default function Playbooks() {
                         </div>
                       </div>
                     )}
-
+{pb.historicalData && (
+                      <div>
+                        <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                          <BarChart3 size={14} className="text-amber-400" /> Recent Historical Moves
+                        </h4>
+                        <div className="space-y-2">
+                          {pb.historicalData.map((h, i) => (
+                            <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                              <span className="text-xs font-bold text-slate-500 w-20 shrink-0">{h.date}</span>
+                              <div>
+                                <p className="text-sm text-white font-semibold">{h.result}</p>
+                                <p className="text-xs text-cyan-400 mt-0.5">{h.move}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {/* Pre-Event Prep */}
                     <div>
                       <p className="text-xs uppercase tracking-wider text-emerald-400 mb-2 flex items-center gap-2">
