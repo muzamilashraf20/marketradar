@@ -23,6 +23,7 @@ function AnalyzeModal({ event, onClose }) {
       const prompt = `You are a professional macro trading analyst for BiasForge.
 
 Analyze this economic event and provide a complete pre-release trading brief:
+Include historical context: What typically happens when this event beats or misses expectations? Reference last 2-3 releases if possible.
 
 Event: ${event.title}
 Currency: ${event.currency}
@@ -65,7 +66,8 @@ Return ONLY a valid JSON object like this (no markdown, no explanation):
     "Reduce position size by 50%"
   ],
   "postEventStrategy": "If actual > forecast: Sell USD pairs. If actual < forecast: Buy USD pairs.",
-  "propFirmAdvice": "Do not hold positions into high-impact news. Max 0.5% risk per trade during news."
+  "propFirmAdvice": "Do not hold positions into high-impact news. Max 0.5% risk per trade during news.",
+  "historicalContext": "What happened last 3 times this exact event was released? e.g. Last 3 CPI: 2 above forecast → USD rallied avg 45 pips"
 }`
 
       const res = await fetch(`${API_BASE}/api/ai`, {
@@ -396,6 +398,29 @@ export default function EconomicCalendar() {
             <p className="text-3xl font-bold text-white mt-1">{filteredEvents.length}</p>
           </div>
         </div>
+        {/* ⚠️ PRE-EVENT ALERT */}
+        {(() => {
+          const upcoming = events.find(e => {
+            const diff = new Date(e.date) - new Date()
+            return diff > 0 && diff < 3600000 && (e.impact === 'High' || e.impact === 3)
+          })
+          if (!upcoming) return null
+          const mins = Math.floor((new Date(upcoming.date) - new Date()) / 60000)
+          return (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 flex items-start gap-3 animate-pulse">
+              <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold text-red-400">
+                  ⚡ HIGH IMPACT EVENT IN {mins} MINUTES
+                </p>
+                <p className="text-sm text-white font-semibold mt-1">{upcoming.title} ({upcoming.currency})</p>
+                <p className="text-xs text-red-400/70 mt-1">
+                  Consider reducing position size or closing trades before release. Prop firm traders: tighten stops or go flat.
+                </p>
+              </div>
+            </div>
+          )
+        })()}
 
         <div className="bg-[#020617] border border-white/10 rounded-2xl p-5">
           <div className="flex flex-wrap gap-3">
