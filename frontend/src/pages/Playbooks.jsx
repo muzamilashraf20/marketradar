@@ -3,7 +3,7 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   BookOpen, Zap, TrendingUp, AlertCircle, Clock, Lock, ChevronDown, ChevronUp,
   Target, Shield, AlertTriangle, CheckCircle2, XCircle, Globe, Sparkles,
-  TrendingDown, Activity, DollarSign
+  TrendingDown, Activity, DollarSign, BarChart3
 } from 'lucide-react'
 
 const PLAYBOOKS = [
