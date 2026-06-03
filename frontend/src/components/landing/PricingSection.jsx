@@ -37,7 +37,7 @@ const eliteFeatures = [
 ]
 
 const trustItems = [
-  { icon: <Lock size={14} />, text: 'Secure payments via LemonSqueezy' },
+  { icon: <Lock size={14} />, text: 'Secure payments via Gumroad' },
   { icon: <CreditCard size={14} />, text: 'Cancel anytime' },
   { icon: <RefreshCw size={14} />, text: '30-day money back guarantee' },
   { icon: <Shield size={14} />, text: 'GDPR Compliant' },
@@ -154,7 +154,7 @@ export default function PricingSection() {
               ) : annual ? (
                 'Get Annual Plan'
               ) : (
-                'Start 7-Day Free Trial'
+                'Get Pro Monthly'
               )}
             </button>
           </div>
