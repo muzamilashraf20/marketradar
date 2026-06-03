@@ -1,3 +1,4 @@
+import TradeAnalytics from '../components/dashboard/TradeAnalytics'
 import { useState, useEffect, useRef } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import { useAuth } from '../context/AuthContext'
@@ -491,7 +492,10 @@ export default function TradeJournal() {
             </button>
           </div>
         </div>
-
+{/* ── Analytics Section ── */}
+            {trades.length > 0 && (
+              <TradeAnalytics trades={trades} />
+            )}
         {/* Trade List */}
         {filtered.length === 0 && !showForm && (
           <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-10 text-center">
@@ -796,7 +800,25 @@ export default function TradeJournal() {
                     />
                   </div>
                 </div>
-
+{/* Tags */}
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5 block">Tags</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['A+ Setup', 'News Trade', 'Trend Follow', 'Reversal', 'Scalp', 'Revenge Trade', 'FOMO'].map(tag => (
+                      <button key={tag} type="button"
+                        onClick={() => {
+                          const current = form.tags || []
+                          setForm({...form, tags: current.includes(tag) ? current.filter(t => t !== tag) : [...current, tag]})
+                        }}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                          (form.tags || []).includes(tag)
+                            ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-400'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                        }`}
+                      >{tag}</button>
+                    ))}
+                  </div>
+                </div>
                 {/* Row 4: Date + Session */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
