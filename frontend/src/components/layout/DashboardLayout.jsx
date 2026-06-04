@@ -1,9 +1,36 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Topbar from './Topbar'
+import OnboardingTour from '../common/OnboardingTour'
 
 export default function DashboardLayout({ title, subtitle, children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const navigate = useNavigate()
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Skip if user is typing in an input/textarea
+      const tag = document.activeElement?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      if (e.altKey) {
+        switch (e.key.toLowerCase()) {
+          case 'b': e.preventDefault(); navigate('/bias'); break
+          case 'n': e.preventDefault(); navigate('/news'); break
+          case 'c': e.preventDefault(); navigate('/calendar'); break
+          case 'j': e.preventDefault(); navigate('/journal'); break
+          case 'p': e.preventDefault(); navigate('/prop-firm'); break
+          case 'd': e.preventDefault(); navigate('/'); break
+          case 's': e.preventDefault(); navigate('/strength'); break
+          default: break
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [navigate])
 
   return (
     <div className="min-h-screen bg-[#030712] text-white flex">
@@ -43,6 +70,9 @@ export default function DashboardLayout({ title, subtitle, children }) {
         </main>
 
       </div>
+
+      {/* Onboarding tour for first-time users */}
+      <OnboardingTour />
     </div>
   )
 }
