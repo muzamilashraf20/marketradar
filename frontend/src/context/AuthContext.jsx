@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+const TRIAL_DAYS = 7
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -35,6 +36,7 @@ export function AuthProvider({ children }) {
       avatar: u.user_metadata?.avatar_url || null,
       provider: u.app_metadata?.provider || 'email',
       token: session.access_token,
+      createdAt: u.created_at,
     }
   }
 
@@ -104,7 +106,7 @@ export function AuthProvider({ children }) {
 
   // Email/password login (existing backend flow)
   const login = (userData, session) => {
-    const payload = { ...userData, token: session?.access_token }
+    const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
     setUser(payload)
     if (payload.token) fetchPlan(payload.token)
@@ -129,10 +131,22 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut().catch(() => {})
   }
 
-  const isPro = plan?.tier === 'pro'
+  // Trial calculation
+  const isActualPro = plan?.tier === 'pro'
+  const trialDaysLeft = user?.createdAt
+    ? Math.max(0, TRIAL_DAYS - Math.floor((Date.now() - new Date(user.createdAt).getTime()) / 86400000))
+    : 0
+  const isTrialActive = trialDaysLeft > 0 && !isActualPro
+  const trialExpired = user && trialDaysLeft === 0 && !isActualPro
+
+  // isPro = has full access (either paid OR in trial)
+  const isPro = isActualPro || isTrialActive
 
   return (
-    <AuthContext.Provider value={{ user, plan, isPro, login, loginWithGoogle, logout, loading, fetchPlan }}>
+    <AuthContext.Provider value={{
+      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired,
+      login, loginWithGoogle, logout, loading, fetchPlan
+    }}>
       {children}
     </AuthContext.Provider>
   )

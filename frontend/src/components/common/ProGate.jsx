@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
-import { Lock, ArrowRight, Zap, ShieldCheck, BookOpen, BarChart2, PieChart, Flag, Calendar } from 'lucide-react'
+import { Lock, ArrowRight, Zap, ShieldCheck, BookOpen, BarChart2, PieChart, Flag, Calendar, AlertTriangle } from 'lucide-react'
 import DashboardLayout from '../layout/DashboardLayout'
 
 const PRO_FEATURES = [
@@ -14,7 +14,7 @@ const PRO_FEATURES = [
 ]
 
 export default function ProGate({ title, subtitle, children }) {
-  const { isPro } = useAuth()
+  const { isPro, trialExpired } = useAuth()
   const navigate = useNavigate()
 
   if (isPro) return children
@@ -23,16 +23,26 @@ export default function ProGate({ title, subtitle, children }) {
     <DashboardLayout title={title} subtitle={subtitle}>
       <div className="flex items-center justify-center py-10">
         <div className="max-w-lg w-full text-center">
-          {/* Lock icon */}
-          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto mb-6">
-            <Lock size={28} className="text-amber-400" />
+          {/* Icon */}
+          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 ${
+            trialExpired
+              ? 'bg-red-500/10 border border-red-500/20'
+              : 'bg-amber-500/10 border border-amber-500/20'
+          }`}>
+            {trialExpired
+              ? <AlertTriangle size={28} className="text-red-400" />
+              : <Lock size={28} className="text-amber-400" />
+            }
           </div>
 
           <h2 className="text-2xl font-black text-white mb-2">
-            Pro Feature
+            {trialExpired ? 'Your Trial Has Ended' : 'Pro Feature'}
           </h2>
           <p className="text-slate-400 text-sm mb-8 max-w-md mx-auto">
-            Upgrade to BiasForge Pro to unlock {title?.toLowerCase() || 'this feature'} and all premium trading tools.
+            {trialExpired
+              ? 'Your 7-day free trial has expired. Upgrade to BiasForge Pro to continue using all trading tools.'
+              : `Upgrade to BiasForge Pro to unlock ${title?.toLowerCase() || 'this feature'} and all premium trading tools.`
+            }
           </p>
 
           {/* Features list */}
@@ -59,7 +69,7 @@ export default function ProGate({ title, subtitle, children }) {
               onClick={() => window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')}
               className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold rounded-xl hover:opacity-90 transition-all flex items-center gap-2 shadow-lg shadow-cyan-500/20"
             >
-              Start 7-Day Free Trial
+              Upgrade to Pro — $40/mo
               <ArrowRight size={16} />
             </button>
             <button
@@ -71,7 +81,7 @@ export default function ProGate({ title, subtitle, children }) {
           </div>
 
           <p className="text-[11px] text-slate-600 mt-4">
-             Cancel anytime · $40/month
+            Cancel anytime · Secure payment via Gumroad
           </p>
         </div>
       </div>
