@@ -88,7 +88,7 @@ export default function Sidebar({ onClose }) {
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
           const isActive = location.pathname === item.path
-          const isLocked = item.pro && !isPro
+          const isLocked = trialExpired ? !isActualPro : (item.pro && !isPro)
 
           return (
             <button
