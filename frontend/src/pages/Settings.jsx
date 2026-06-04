@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
-import { Settings, User, Bell, Shield, CreditCard, LogOut, Mail, Loader2, CheckCircle, AlertCircle } from 'lucide-react'
+import { Settings, User, Bell, Shield, CreditCard, LogOut, Mail, Loader2, CheckCircle, AlertCircle, Share2, Copy, Check } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 
@@ -36,7 +36,25 @@ export default function SettingsPage() {
   const [emailLoading, setEmailLoading] = useState(true)
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailMessage, setEmailMessage] = useState({ type: '', text: '' })
+const [copied, setCopied] = useState(false)
 
+  const referralLink = `https://biasforge.co/login?ref=${user?.id || 'invite'}`
+
+  const copyReferral = () => {
+    navigator.clipboard.writeText(referralLink)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const shareTwitter = () => {
+    const text = encodeURIComponent('I use BiasForge for AI-powered macro trading bias, prop firm risk tools & more. Check it out:')
+    window.open(`https://twitter.com/intent/tweet?text=${text}&url=${encodeURIComponent(referralLink)}`, '_blank')
+  }
+
+  const shareWhatsApp = () => {
+    const text = encodeURIComponent(`Check out BiasForge — AI macro trading tools for funded traders: ${referralLink}`)
+    window.open(`https://wa.me/?text=${text}`, '_blank')
+  }
   // Load email subscription status on mount
   useEffect(() => {
     if (!email) return
@@ -343,7 +361,50 @@ export default function SettingsPage() {
             </button>
           </div>
         </div>
-
+{/* Referral */}
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
+            <Share2 size={15} className="text-emerald-400" />
+            <h2 className="text-sm font-semibold text-white">Refer a Trader</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <p className="text-xs text-slate-400">
+              Share BiasForge with other traders. More users = better platform for everyone.
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={referralLink}
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-slate-300 font-mono truncate"
+              />
+              <button
+                onClick={copyReferral}
+                className={`px-3 py-2.5 rounded-lg border text-xs font-semibold transition-all ${
+                  copied
+                    ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400'
+                    : 'bg-white/5 border-white/10 text-slate-300 hover:text-white hover:border-white/20'
+                }`}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={shareTwitter}
+                className="flex-1 py-2 rounded-lg bg-[#1DA1F2]/10 border border-[#1DA1F2]/20 text-[#1DA1F2] text-xs font-semibold hover:bg-[#1DA1F2]/20 transition-colors"
+              >
+                Share on X / Twitter
+              </button>
+              <button
+                onClick={shareWhatsApp}
+                className="flex-1 py-2 rounded-lg bg-[#25D366]/10 border border-[#25D366]/20 text-[#25D366] text-xs font-semibold hover:bg-[#25D366]/20 transition-colors"
+              >
+                Share on WhatsApp
+              </button>
+            </div>
+          </div>
+        </div>
         {/* Save + Logout */}
         <div className="flex items-center justify-between pb-8">
           <button
