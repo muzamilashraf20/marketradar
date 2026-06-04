@@ -8,6 +8,8 @@ import {
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonCard, SkeletonRow } from '../components/common/Skeleton'
+import { useAuth } from '../context/AuthContext'
+import { Lock } from 'lucide-react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -27,6 +29,7 @@ function timeAgo(dateString) {
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const { isPro } = useAuth()
 
   const [news, setNews] = useState([])
   const [newsLoading, setNewsLoading] = useState(true)
@@ -133,7 +136,7 @@ export default function Dashboard() {
   const generateBias = async () => {
     setBiasLoading(true)
     setBiasError('')
-    const symbols = ['EUR/USD', 'GBP/USD', 'XAU/USD', 'NAS100']
+    const symbols = isPro ? ['EUR/USD', 'GBP/USD', 'XAU/USD', 'NAS100'] : ['EUR/USD']
     const cards = []
 
     for (const symbol of symbols) {
@@ -483,7 +486,32 @@ export default function Dashboard() {
             </div>
           )}
 
-          {!strengthLoading && strength && (
+          {!strengthLoading && strength && !isPro && (
+            <div className="relative">
+              <div className="absolute inset-0 z-10 bg-[#030712]/80 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center gap-2">
+                <Lock size={20} className="text-cyan-400" />
+                <p className="text-sm font-bold text-white">Pro Feature</p>
+                <p className="text-xs text-slate-400">Currency strength analysis</p>
+                <button onClick={() => navigate('/pricing')} className="mt-1 px-4 py-2 bg-cyan-500 text-black text-xs font-bold rounded-lg hover:bg-cyan-400 transition-colors">
+                  Upgrade to Pro
+                </button>
+              </div>
+              <div className="filter blur-sm pointer-events-none">
+              {/* Blurred preview for free users */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+                {strength.currencies.map(c => (
+                  <div key={c.currency} className="rounded-lg p-2 sm:p-3 border bg-white/5 border-white/10 text-center">
+                    <div className="text-base sm:text-lg mb-0.5">🏳️</div>
+                    <div className="text-[10px] sm:text-xs font-black text-white">{c.currency}</div>
+                    <div className="text-[10px] sm:text-xs font-bold mt-0.5 text-slate-400">--</div>
+                  </div>
+                ))}
+              </div>
+              </div>
+            </div>
+          )}
+
+          {!strengthLoading && strength && isPro && (
             <>
               {/* FIX: 4 cols mobile → 8 cols desktop, smaller padding on mobile */}
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
@@ -562,6 +590,14 @@ export default function Dashboard() {
                 Generate AI Bias
               </button>
               {biasError && <p className="text-xs text-red-400 mt-3">{biasError}</p>}
+              {!isPro && (
+                <p className="text-xs text-slate-500 mt-3">
+                  Free plan: 1 pair only.{' '}
+                  <span onClick={() => navigate('/pricing')} className="text-cyan-400 hover:text-cyan-300 cursor-pointer font-semibold">
+                    Upgrade to Pro for all 4 pairs →
+                  </span>
+                </p>
+              )}
             </div>
           )}
 
