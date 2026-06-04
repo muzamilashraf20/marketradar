@@ -139,11 +139,11 @@ export default function ComparisonTable() {
         {/* Bottom CTA */}
         <div className="text-center mt-12 flex flex-col items-center gap-4">
           <p className="text-slate-300 font-semibold text-base">
-            Join 1,000+ funded traders who made the switch
+            Try BiasForge free for 7 days
           </p>
           
           <a href="#pricing" className="px-8 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-600 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20">
-            Get BiasForge Free
+            Start 7-Day Free Trial
           </a>
           <p className="text-xs text-slate-500">
             No credit card required • Cancel anytime
