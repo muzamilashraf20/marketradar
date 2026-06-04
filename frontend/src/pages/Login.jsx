@@ -23,7 +23,23 @@ export default function Login() {
   useEffect(() => {
     if (user) navigate('/dashboard', { replace: true })
   }, [user, navigate])
-
+// Detect OAuth redirect errors from URL
+  useEffect(() => {
+    const hash = window.location.hash
+    if (hash.includes('error')) {
+      const params = new URLSearchParams(hash.replace('#', '?'))
+      const errorType = params.get('error')
+      const desc = params.get('error_description')
+      if (errorType === 'access_denied') {
+        setError('Google sign-in was cancelled. Please try again.')
+      } else if (desc) {
+        setError(desc.replace(/\+/g, ' '))
+      } else {
+        setError('Sign-in failed. Please try again.')
+      }
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+  }, [])
   const validate = () => {
     const errors = {}
     if (tab === 'signup' && !name.trim()) errors.name = 'Name is required'
@@ -80,7 +96,16 @@ export default function Login() {
     try {
       await loginWithGoogle()
     } catch (err) {
-      setError('Google sign-in failed. Please try again.')
+      const msg = err?.message?.toLowerCase() || ''
+      if (msg.includes('popup') || msg.includes('closed')) {
+        setError('Sign-in popup was closed. Please try again.')
+      } else if (msg.includes('network') || msg.includes('fetch')) {
+        setError('Network error. Check your internet and try again.')
+      } else if (msg.includes('denied') || msg.includes('access')) {
+        setError('Google access was denied. Please allow permissions.')
+      } else {
+        setError('Google sign-in failed. Please try again or use email login.')
+      }
       setGoogleLoading(false)
     }
   }
