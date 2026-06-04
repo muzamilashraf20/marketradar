@@ -131,7 +131,7 @@ export default function PropFirmSection() {
           <h3 className="text-2xl font-black text-white">Protect Your Funded Account</h3>
           
            <a href="#pricing" className="px-8 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-emerald-500/20">
-            Activate Prop Firm Mode — Start Free
+            Try Prop Firm Mode — 7-Day Free Trial
           </a>
           <p className="text-xs text-slate-500">
             Works with FTMO, MyFundedFX, The5ers, TFT and more

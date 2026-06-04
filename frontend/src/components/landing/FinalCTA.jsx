@@ -42,7 +42,7 @@ export default function FinalCTA() {
           <div className="flex flex-wrap gap-4 justify-center mt-2">
             
            <a href="#pricing" className="flex items-center gap-2 px-8 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20">
-              Start Free Today <ArrowRight size={16} />
+              Start 7-Day Free Trial <ArrowRight size={16} />
             </a>
             
            <a href="#features" className="px-8 py-4 rounded-xl border border-white/20 text-white font-semibold text-sm hover:bg-white/5 hover:border-white/30 transition-all duration-200">

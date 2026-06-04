@@ -38,7 +38,7 @@ export default function HeroSection() {
               onClick={() => navigate('/login')}
               className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-base hover:opacity-90 transition-all flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 hover:scale-[1.02]"
             >
-              Start Free Today
+              Start 7-Day Free Trial
               <ArrowRight size={18} strokeWidth={2.5} />
             </button>
 

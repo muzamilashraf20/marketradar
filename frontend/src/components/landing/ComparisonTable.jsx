@@ -7,7 +7,7 @@ const rows = [
     others: { text: '$49–99/month', type: 'neutral' },
   },
   {
-    feature: 'Free Plan Available',
+    feature: '7-Day Free Trial',
     biasforge: { text: 'Yes, Forever', type: 'good', icon: 'check' },
     others: { text: 'No', type: 'bad', icon: 'x' },
   },
