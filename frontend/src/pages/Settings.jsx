@@ -361,6 +361,33 @@ const [copied, setCopied] = useState(false)
             </button>
           </div>
         </div>
+        {/* Telegram Notifications */}
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
+            <Share2 size={15} className="text-[#26A5E4]" />
+            <h2 className="text-sm font-semibold text-white">Telegram Alerts</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <p className="text-xs text-slate-400">
+              Get real-time trading alerts (bias updates, calendar events, high-impact news) directly on Telegram.
+            </p>
+            <div className="bg-[#26A5E4]/5 border border-[#26A5E4]/20 rounded-xl p-4 space-y-2">
+              <p className="text-xs font-bold text-white">How to connect:</p>
+              <ol className="text-xs text-slate-300 space-y-1.5 list-decimal list-inside">
+                <li>Open Telegram app</li>
+                <li>Search for <span className="text-[#26A5E4] font-semibold">@BiasForgeAlertsBot</span></li>
+                <li>Send <span className="text-cyan-400 font-mono bg-white/5 px-1.5 py-0.5 rounded">/start</span> to activate</li>
+              </ol>
+            </div>
+            
+             <a href="https://t.me/BiasForgeAlertsBot" target="_blank" rel="noopener noreferrer" className="block text-center py-2.5 rounded-lg bg-[#26A5E4]/10 border border-[#26A5E4]/20 text-[#26A5E4] text-xs font-semibold hover:bg-[#26A5E4]/20 transition-colors">
+              Open @BiasForgeAlertsBot on Telegram
+            </a>
+            <p className="text-[10px] text-slate-600">
+              Commands: /start (subscribe) · /stop (unsubscribe) · /calendar on/off · /news on/off
+            </p>
+          </div>
+        </div>
 {/* Referral */}
         <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
           <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/10">
