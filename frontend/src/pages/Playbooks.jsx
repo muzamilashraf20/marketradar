@@ -176,7 +176,7 @@ const PLAYBOOKS = [
     impact: 'HIGH',
     affectedPairs: ['EUR/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/CHF', 'DAX', 'EUSTX50'],
     duration: '45-90 minutes (decision + Lagarde)',
-    locked: true,
+    locked: false,
     description: 'European Central Bank rate decision. Lagarde\'s press conference often more important than the rate itself.',
 
     preEvent: [
@@ -230,7 +230,7 @@ const PLAYBOOKS = [
     impact: 'HIGH',
     affectedPairs: ['GBP/USD', 'EUR/GBP', 'GBP/JPY', 'FTSE100', 'GILT'],
     duration: '30-60 minutes',
-    locked: true,
+    locked: false,
     description: 'Bank of England rate decision + MPC vote split. Vote of 5-4 or 4-5 creates explosive GBP moves.',
 
     preEvent: [
