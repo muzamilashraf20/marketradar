@@ -331,7 +331,7 @@ export default function Playbooks() {
           {/* Pro Badge */}
           <div className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500/10 to-emerald-500/10 border border-cyan-500/30 rounded-xl">
             <Sparkles className="w-4 h-4 text-cyan-400" />
-            <span className="text-sm font-semibold text-cyan-300">3 Free • 2 Pro</span>
+            <span className="text-sm font-semibold text-cyan-300">5 Pro Playbooks</span>
           </div>
         </div>
 
