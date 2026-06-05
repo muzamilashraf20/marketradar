@@ -778,7 +778,7 @@ function isForexClosed() {
   const hour = now.getUTCHours()
 
   if (day === 6) return true                          // Saturday all day
-  if (day === 5 && hour >= 22) return true            // Friday after 22:00 UTC
+  if (day === 5 && hour >= 21) return true            // Friday after 21:00 UTC (5PM EDT summer)            // Friday after 22:00 UTC
   if (day === 0 && hour < 21) return true           // Sunday before 22:00 UTC
   return false
 }
