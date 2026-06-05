@@ -11,10 +11,16 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [planLoaded, setPlanLoaded] = useState(false)
 
-  const fetchPlan = async (token) => {
+  // Always gets fresh token from Supabase before fetching plan
+  const fetchPlan = async () => {
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setPlanLoaded(true)
+        return
+      }
       const res = await fetch(`${API_URL}/api/user/plan`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${session.access_token}` }
       })
       const data = await res.json()
       if (data.success) {
@@ -52,14 +58,14 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          if (payload.token) fetchPlan(payload.token)
+          fetchPlan()
         } else {
           const stored = localStorage.getItem('bf_user')
           if (stored) {
             try {
               const parsed = JSON.parse(stored)
               setUser(parsed)
-              if (parsed.token) fetchPlan(parsed.token)
+              fetchPlan()
             } catch {
               localStorage.removeItem('bf_user')
             }
@@ -76,7 +82,7 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          if (payload.token) fetchPlan(payload.token)
+          fetchPlan()
         }
 
         if (event === 'SIGNED_OUT') {
@@ -90,7 +96,7 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          if (payload.token) fetchPlan(payload.token)
+          fetchPlan()
         }
       })
 
@@ -108,7 +114,7 @@ export function AuthProvider({ children }) {
     const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
     setUser(payload)
-    if (payload.token) fetchPlan(payload.token)
+    fetchPlan()
   }
 
   const loginWithGoogle = async () => {
