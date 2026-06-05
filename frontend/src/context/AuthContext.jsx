@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [plan, setPlan] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [planLoaded, setPlanLoaded] = useState(false)
 
   // Fetch user plan from backend
   const fetchPlan = async (token) => {
@@ -22,6 +23,9 @@ export function AuthProvider({ children }) {
       }
     } catch (e) {
       console.error('Failed to fetch plan')
+      } finally {
+      setPlanLoaded(true)
+    }
     }
   }
 
@@ -137,7 +141,8 @@ export function AuthProvider({ children }) {
     ? Math.max(0, TRIAL_DAYS - Math.floor((Date.now() - new Date(user.createdAt).getTime()) / 86400000))
     : 0
   const isTrialActive = trialDaysLeft > 0 && !isActualPro
-  const trialExpired = user && trialDaysLeft === 0 && !isActualPro
+  const trialExpired = user && planLoaded && trialDaysLeft === 0 && !isActualPro
+  
 
   // isPro = has full access (either paid OR in trial)
   const isPro = isActualPro || isTrialActive
@@ -150,7 +155,7 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   )
-}
+
 
 export function useAuth() {
   return useContext(AuthContext)
