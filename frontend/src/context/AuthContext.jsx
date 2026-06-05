@@ -7,7 +7,9 @@ const TRIAL_DAYS = 7
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [plan, setPlan] = useState(null)
+  const [plan, setPlan] = useState(() => {
+    try { const p = localStorage.getItem('bf_plan'); return p ? JSON.parse(p) : null } catch { return null }
+  })
   const [loading, setLoading] = useState(true)
   const [planLoaded, setPlanLoaded] = useState(false)
 
@@ -25,6 +27,7 @@ export function AuthProvider({ children }) {
       const data = await res.json()
       if (data.success) {
         setPlan(data.plan)
+        localStorage.setItem('bf_plan', JSON.stringify(data.plan))
       }
     } catch (e) {
       console.error('Failed to fetch plan')
@@ -68,6 +71,7 @@ export function AuthProvider({ children }) {
               fetchPlan()
             } catch {
               localStorage.removeItem('bf_user')
+              localStorage.removeItem('bf_plan')
             }
           }
         }
@@ -90,6 +94,7 @@ export function AuthProvider({ children }) {
           setPlan(null)
           setPlanLoaded(false)
           localStorage.removeItem('bf_user')
+          localStorage.removeItem('bf_plan')
         }
 
         if (event === 'TOKEN_REFRESHED' && session) {
@@ -129,6 +134,7 @@ export function AuthProvider({ children }) {
 
   const logout = async () => {
     localStorage.removeItem('bf_user')
+    localStorage.removeItem('bf_plan')
     setUser(null)
     setPlan(null)
     setPlanLoaded(false)
