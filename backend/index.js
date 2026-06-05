@@ -46,7 +46,7 @@ const PLANS = {
 // ============================================
 let emailSubscribers = []
 let telegramSubscribers = []
-
+let lastBiasKey = ''
 async function loadSubscribers() {
   try {
     const { data } = await supabase.from('email_subscribers').select('*').eq('active', true)
@@ -76,7 +76,42 @@ async function sendTG(chatId, text) {
     return true
   } catch (e) { console.error(`❌ TG error ${chatId}:`, e.message); return false }
 }
+async function notifyBiasChange(bp) {
+  if (!bp || !bp.pair) return
+  const newKey = `${bp.action} ${bp.pair}`
+  if (newKey === lastBiasKey) return
+  const oldBias = lastBiasKey
+  lastBiasKey = newKey
+  if (!oldBias) return // first load, skip notification
 
+  const msg = `🔄 <b>Bias Change Alert!</b>\n\n` +
+    `Old: <b>${oldBias}</b>\n` +
+    `New: <b>${bp.action} ${bp.pair}</b>\n` +
+    `Reason: ${bp.reason}\n\n` +
+    `📊 Check full analysis at biasforge.co`
+
+  // Telegram notifications
+  for (const sub of telegramSubscribers.filter(s => s.active)) {
+    sendTG(sub.chat_id, msg).catch(() => {})
+  }
+
+  // Email notifications
+  try {
+    const { data: emailSubs } = await supabase.from('email_subscribers').select('email').eq('active', true)
+    if (emailSubs && emailSubs.length > 0) {
+      for (const sub of emailSubs) {
+        resend.emails.send({
+          from: `BiasForge <${FROM_EMAIL}>`,
+          to: [sub.email],
+          subject: `🔄 Bias Changed: ${bp.action} ${bp.pair}`,
+          html: `<h2>Bias Change Alert</h2><p>Old bias: <b>${oldBias}</b></p><p>New bias: <b>${bp.action} ${bp.pair}</b></p><p>${bp.reason}</p><p><a href="https://biasforge.co/dashboard">Open Dashboard</a></p>`
+        }).catch(() => {})
+      }
+    }
+  } catch(e) { console.error('Email bias notify error:', e.message) }
+
+  console.log(`🔄 Bias changed: ${oldBias} → ${newKey} — notified subscribers`)
+}
 function tgCalendarAlert(event, alertType, currency, timeStr) {
   const icon = alertType === '1hr' ? '⏰' : '🔥'
   return `${icon} <b>BiasForge Alert</b>\n\n<b>${event.event} ${alertType === '1hr' ? 'in ~1 Hour' : 'in ~30 Minutes!'}</b>\n\n💱 Currency: <b>${currency}</b>\n📊 Impact: <b>🔴 HIGH</b>\n🕐 Time: <b>${timeStr} EST</b>\n\n${alertType === '1hr' ? '📋 <i>Check your Playbook</i>' : '🛡️ <i>Tighten stops! Volatility incoming.</i>'}\n\n🔗 <a href="https://www.biasforge.co/calendar">Open Dashboard</a>`
@@ -834,7 +869,7 @@ app.get('/api/strength', async (req, res) => {
       })
       if(best)bp.push(best)
     }
-    const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ)setCache('strength',result);res.json(result)
+    const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ){if(bp[0])notifyBiasChange(bp[0]);setCache('strength',result)}res.json(result)
   } catch(e){if(stale)return res.json(stale);res.status(500).json({success:false,error:'Strength failed'})}
 })
 
