@@ -11,7 +11,6 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [planLoaded, setPlanLoaded] = useState(false)
 
-  // Fetch user plan from backend
   const fetchPlan = async (token) => {
     try {
       const res = await fetch(`${API_URL}/api/user/plan`, {
@@ -23,13 +22,11 @@ export function AuthProvider({ children }) {
       }
     } catch (e) {
       console.error('Failed to fetch plan')
-      } finally {
+    } finally {
       setPlanLoaded(true)
-    }
     }
   }
 
-  // Build user payload from Supabase session
   const buildUserFromSession = (session) => {
     if (!session?.user) return null
     const u = session.user
@@ -49,7 +46,6 @@ export function AuthProvider({ children }) {
 
     const initAuth = async () => {
       try {
-        // 1. Check existing Supabase session (handles OAuth redirect too)
         const { data: { session } } = await supabase.auth.getSession()
 
         if (session) {
@@ -58,7 +54,6 @@ export function AuthProvider({ children }) {
           localStorage.setItem('bf_user', JSON.stringify(payload))
           if (payload.token) fetchPlan(payload.token)
         } else {
-          // 2. Fallback: check localStorage (for existing email/password users)
           const stored = localStorage.getItem('bf_user')
           if (stored) {
             try {
@@ -76,7 +71,6 @@ export function AuthProvider({ children }) {
 
       setLoading(false)
 
-      // 3. Listen for auth changes (OAuth redirects, sign out, token refresh)
       const { data } = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'SIGNED_IN' && session) {
           const payload = buildUserFromSession(session)
@@ -88,6 +82,7 @@ export function AuthProvider({ children }) {
         if (event === 'SIGNED_OUT') {
           setUser(null)
           setPlan(null)
+          setPlanLoaded(false)
           localStorage.removeItem('bf_user')
         }
 
@@ -95,6 +90,7 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
+          if (payload.token) fetchPlan(payload.token)
         }
       })
 
@@ -108,7 +104,6 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  // Email/password login (existing backend flow)
   const login = (userData, session) => {
     const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
@@ -116,7 +111,6 @@ export function AuthProvider({ children }) {
     if (payload.token) fetchPlan(payload.token)
   }
 
-  // Google OAuth login
   const loginWithGoogle = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -131,20 +125,17 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('bf_user')
     setUser(null)
     setPlan(null)
-    // Sign out from Supabase too (clears OAuth session)
+    setPlanLoaded(false)
     await supabase.auth.signOut().catch(() => {})
   }
 
-  // Trial calculation
   const isActualPro = plan?.tier === 'pro'
   const trialDaysLeft = user?.createdAt
     ? Math.max(0, TRIAL_DAYS - Math.floor((Date.now() - new Date(user.createdAt).getTime()) / 86400000))
     : 0
   const isTrialActive = trialDaysLeft > 0 && !isActualPro
   const trialExpired = user && planLoaded && trialDaysLeft === 0 && !isActualPro
-  
 
-  // isPro = has full access (either paid OR in trial)
   const isPro = isActualPro || isTrialActive
 
   return (
@@ -155,7 +146,7 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   )
-
+}
 
 export function useAuth() {
   return useContext(AuthContext)
