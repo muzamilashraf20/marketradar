@@ -11,26 +11,51 @@ export function AuthProvider({ children }) {
     try { const p = localStorage.getItem('bf_plan'); return p ? JSON.parse(p) : null } catch { return null }
   })
   const [loading, setLoading] = useState(true)
-  const [planLoaded, setPlanLoaded] = useState(false)
+  const [planLoaded, setPlanLoaded] = useState(() => {
+    return !!localStorage.getItem('bf_plan')
+  })
 
-  // Always gets fresh token from Supabase before fetching plan
-  const fetchPlan = async () => {
+  const fetchPlan = async (userId) => {
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+      // 1. Check localStorage cache first
+      const cached = localStorage.getItem('bf_plan')
+      if (cached) {
+        setPlan(JSON.parse(cached))
         setPlanLoaded(true)
         return
       }
-      const res = await fetch(`${API_URL}/api/user/plan`, {
-        headers: { 'Authorization': `Bearer ${session.access_token}` }
-      })
-      const data = await res.json()
-      if (data.success) {
-        setPlan(data.plan)
-        localStorage.setItem('bf_plan', JSON.stringify(data.plan))
+
+      // 2. Try direct Supabase query (no backend needed)
+      const uid = userId || user?.id
+      if (uid) {
+        const { data } = await supabase
+          .from('user_plans')
+          .select('*')
+          .eq('user_id', uid)
+          .maybeSingle()
+
+        if (data) {
+          setPlan(data)
+          localStorage.setItem('bf_plan', JSON.stringify(data))
+          setPlanLoaded(true)
+          return
+        }
+      }
+
+      // 3. Fallback: try backend API
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.access_token) {
+        const res = await fetch(`${API_URL}/api/user/plan`, {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        })
+        const d = await res.json()
+        if (d.success && d.plan) {
+          setPlan(d.plan)
+          localStorage.setItem('bf_plan', JSON.stringify(d.plan))
+        }
       }
     } catch (e) {
-      console.error('Failed to fetch plan')
+      console.error('Failed to fetch plan:', e.message)
     } finally {
       setPlanLoaded(true)
     }
@@ -61,17 +86,16 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          fetchPlan()
+          fetchPlan(session.user.id)
         } else {
           const stored = localStorage.getItem('bf_user')
           if (stored) {
             try {
               const parsed = JSON.parse(stored)
               setUser(parsed)
-              fetchPlan()
+              fetchPlan(parsed.id)
             } catch {
               localStorage.removeItem('bf_user')
-              localStorage.removeItem('bf_plan')
             }
           }
         }
@@ -86,7 +110,8 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          fetchPlan()
+          localStorage.removeItem('bf_plan')
+          fetchPlan(session.user.id)
         }
 
         if (event === 'SIGNED_OUT') {
@@ -101,7 +126,6 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          fetchPlan()
         }
       })
 
@@ -118,8 +142,9 @@ export function AuthProvider({ children }) {
   const login = (userData, session) => {
     const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
+    localStorage.removeItem('bf_plan')
     setUser(payload)
-    fetchPlan()
+    fetchPlan(payload.id)
   }
 
   const loginWithGoogle = async () => {
