@@ -34,6 +34,7 @@ const CACHE_TTL = 10 * 60 * 1000
 function getCached(key) { const e = API_CACHE[key]; return e ? e.data : null }
 function isCacheFresh(key) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < CACHE_TTL : false }
 function setCache(key, data) { API_CACHE[key] = { data, timestamp: Date.now() } }
+function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < ttlMs : false }
 
 const PLANS = {
   pro_monthly: { variantId: '1682107', name: 'BiasForge Pro Monthly' },
@@ -297,6 +298,7 @@ async function checkAndSendCalendarAlerts() {
     const highImpact = events.filter(e => { if (!e.time || e.impact?.toLowerCase() !== 'high') return false; const m = (new Date(e.time) - now) / 60000; return m > 0 && m <= 65 })
     if (highImpact.length === 0) return
     const cMap = { 'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY', 'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD' }
+    let preEventRefresh = false
 
     for (const event of highImpact) {
       const et = new Date(event.time), min = Math.round((et - now) / 60000), cur = cMap[event.country?.toUpperCase()] || event.country
@@ -316,8 +318,13 @@ async function checkAndSendCalendarAlerts() {
       for (const s of tgSubs.filter(s => s.preferences?.calendar !== false)) await sendTG(s.chat_id, tgTxt)
 
       sentAlerts.set(key, Date.now())
+      if (at === '1hr') preEventRefresh = true
       console.log(`📧📱 ${at} alert: ${event.event}`)
     }
+
+    // Pre-event: refresh Today's AI Bias once when a high-impact event is ~1hr out (fires change alert if it flipped)
+    if (preEventRefresh) { computeTodaysAIBias().catch(() => {}) }
+
     const cutoff = Date.now() - 3 * 60 * 60 * 1000
     for (const [k, v] of sentAlerts) if (v < cutoff) sentAlerts.delete(k)
   } catch (e) { console.error('Cal alert error:', e.message) }
@@ -455,11 +462,12 @@ async function getLiveStrength() {
   } catch (e) { return getCached('strength') || null }
 }
 
-app.post('/api/bias', async (req, res) => {
-  const { symbol, timeframe } = req.body
-  if (!symbol) return res.status(400).json({ error: 'Symbol required' })
-  const cacheKey = `bias_${symbol}_${timeframe || 'intraday'}`
-  if (isCacheFresh(cacheKey)) return res.json({ success: true, bias: getCached(cacheKey), cached: true })
+// Reusable AI bias generator — used by both the /api/bias route and the Today's Bias scheduler.
+// Returns the bias object (cached for CACHE_TTL per symbol+timeframe). Throws on AI/parse failure.
+async function generateBiasFor(symbol, timeframe) {
+  const tf = timeframe || 'intraday'
+  const cacheKey = `bias_${symbol}_${tf}`
+  if (isCacheFresh(cacheKey)) return getCached(cacheKey)
 
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
 
@@ -481,13 +489,13 @@ app.post('/api/bias', async (req, res) => {
     }
   } catch (e) {}
 
-  // 3. Get upcoming calendar events
+  // 3. Get upcoming calendar events (3 days ahead)
   let calendarData = 'No upcoming events'
   try {
     const apiKey = process.env.FINNHUB_API_KEY
     if (apiKey) {
       const now = new Date()
-      const ahead = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000) // FIX: look 3 days ahead, not just 24h
+      const ahead = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
       const from = now.toISOString().split('T')[0]
       const to = ahead.toISOString().split('T')[0]
       const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`)
@@ -502,8 +510,7 @@ app.post('/api/bias', async (req, res) => {
     }
   } catch (e) {}
 
-  // 4. Get recent high-impact news from cache
-  // FIX: news is cached under 'latest_news' as a raw array, and the score field is `impact` (not `impactScore`)
+  // 4. Get recent high-impact news from cache (cached under 'latest_news', score field is `impact`)
   let newsData = 'No recent high-impact news'
   try {
     const cachedNews = getCached('latest_news')
@@ -525,7 +532,7 @@ app.post('/api/bias', async (req, res) => {
   "direction": "Bullish|Bearish|Neutral",
   "confidence": 0,
   "confidenceReasoning": "1 sentence explaining why confidence is at this level",
-  "timeframe": "${timeframe || 'intraday'}",
+  "timeframe": "${tf}",
   "reasoning": "3-4 sentence detailed macro analysis combining all data sources",
   "keyDrivers": ["driver1", "driver2", "driver3", "driver4"],
   "scenarios": [
@@ -562,7 +569,7 @@ CRITICAL RULES:
    - 40-54% = Very low conviction (conflicting data, recommend sitting out)
    Never default to 75%. Calibrate based on actual data quality.
 
-2. INVALIDATION LEVEL: This is the MOST important field. It must be a specific price where the bias is completely wrong. For ${timeframe || 'intraday'}:
+2. INVALIDATION LEVEL: This is the MOST important field. It must be a specific price where the bias is completely wrong. For ${tf}:
    - Intraday: within 30-80 pips of entry for forex, proportional for gold/indices
    - Swing: within 100-200 pips of entry for forex
 
@@ -572,7 +579,7 @@ CRITICAL RULES:
 
 5. Return ONLY valid JSON. No markdown, no explanation outside JSON.`
 
-  const userPrompt = `Analyze ${symbol} (${baseCur}/${quoteCur}) for ${timeframe || 'intraday'} bias.
+  const userPrompt = `Analyze ${symbol} (${baseCur}/${quoteCur}) for ${tf} bias.
 
 CURRENT LIVE PRICE: ${currentPrice}
 TIMESTAMP: ${new Date().toISOString()}
@@ -580,7 +587,7 @@ TIMESTAMP: ${new Date().toISOString()}
 CURRENCY STRENGTH DATA:
 ${strengthData || 'Not available'}
 
-UPCOMING HIGH-IMPACT EVENTS (next 24h):
+UPCOMING HIGH-IMPACT EVENTS (next 3 days):
 ${calendarData}
 
 RECENT HIGH-IMPACT NEWS:
@@ -589,27 +596,136 @@ ${newsData}
 Combine ALL data sources above for your analysis. Return JSON matching this structure:
 ${template}`
 
+  const m = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2048,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }]
+  })
+  const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
+  const bias = JSON.parse(raw)
+  bias.generatedAt = new Date().toISOString()
+  bias.dataSources = {
+    price: currentPrice !== 'unknown',
+    strength: !!strengthData,
+    calendar: calendarData !== 'No upcoming events',
+    news: newsData !== 'No recent high-impact news'
+  }
+  setCache(cacheKey, bias)
+  return bias
+}
+
+app.post('/api/bias', async (req, res) => {
+  const { symbol, timeframe } = req.body
+  if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   try {
-    const m = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }]
-    })
-    const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
-    const bias = JSON.parse(raw)
-    bias.generatedAt = new Date().toISOString()
-    bias.dataSources = {
-      price: currentPrice !== 'unknown',
-      strength: !!strengthData,
-      calendar: calendarData !== 'No upcoming events',
-      news: newsData !== 'No recent high-impact news'
-    }
-    setCache(cacheKey, bias)
-    res.json({ success: true, bias })
+    const wasCached = isCacheFresh(`bias_${symbol}_${timeframe || 'intraday'}`)
+    const bias = await generateBiasFor(symbol, timeframe)
+    res.json({ success: true, bias, cached: wasCached })
   } catch (e) {
     console.error('Bias error:', e?.message)
     res.status(500).json({ success: false, error: e?.message || 'AI analysis failed.' })
+  }
+})
+
+// ============================================
+// 📌 TODAY'S AI BIAS (auto-computed + change alerts) — session opens + pre-event
+// ============================================
+let lastTodaysBiasKey = ''
+const TODAY_BIAS_TTL = 45 * 60 * 1000 // 45 min — keeps Anthropic cost bounded under dashboard traffic
+
+// Pick the strongest OANDA-tradeable pair from live currency strength divergence
+function pickTopOandaPair(strength) {
+  if (!strength?.currencies?.length) return null
+  const str = {}; strength.currencies.forEach(c => { str[c.currency] = c.strength })
+  const oandaPairs = [['EUR','USD'],['GBP','USD'],['USD','JPY'],['AUD','USD'],['USD','CAD'],['USD','CHF'],['NZD','USD'],['EUR','GBP'],['EUR','JPY'],['GBP','JPY'],['AUD','JPY']]
+  let best = null, bestDiff = 0
+  for (const [b, q] of oandaPairs) {
+    if (str[b] === undefined || str[q] === undefined) continue
+    const diff = str[b] - str[q]
+    if (Math.abs(diff) > bestDiff) {
+      bestDiff = Math.abs(diff)
+      best = { symbol: `${b}${q}`, pair: `${b}${q}`, action: diff > 0 ? 'BUY' : 'SELL', diff: Math.abs(diff) }
+    }
+  }
+  return best
+}
+
+// Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
+async function computeTodaysAIBias() {
+  if (isForexClosed()) return null
+  const strength = await getLiveStrength()
+  const top = pickTopOandaPair(strength)
+  if (!top) return null
+
+  let bias
+  try {
+    bias = await generateBiasFor(top.symbol, 'intraday')
+  } catch (e) { console.error('Today bias gen error:', e?.message); return getCached('today_bias') || null }
+
+  const result = {
+    symbol: top.symbol,
+    pair: top.pair,
+    direction: bias.direction || 'Neutral',
+    confidence: bias.confidence || 0,
+    tradeGrade: bias.tradeGrade || '-',
+    reasoning: bias.reasoning || '',
+    bias, // full object for the dashboard widget
+    updatedAt: new Date().toISOString(),
+  }
+  setCache('today_bias', result)
+
+  // Change detection → alert subscribers (skip the very first computation)
+  const newKey = `${result.direction} ${result.pair}`.toUpperCase()
+  if (lastTodaysBiasKey && newKey !== lastTodaysBiasKey) {
+    notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
+  }
+  lastTodaysBiasKey = newKey
+  return result
+}
+
+// Telegram + Email alert when Today's AI Bias flips direction/pair
+async function notifyTodaysBiasChange(result, oldKey) {
+  const dirUp = result.direction.toUpperCase()
+  const msg = `📌 <b>Today's Bias Changed!</b>\n\n` +
+    `Pair: <b>${result.pair}</b>\n` +
+    `Old: <b>${oldKey}</b>\n` +
+    `New: <b>${dirUp} ${result.pair}</b>\n` +
+    `Confidence: <b>${result.confidence}%</b> · Grade <b>${result.tradeGrade}</b>\n\n` +
+    `🧠 ${result.reasoning}\n\n` +
+    `🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
+  for (const sub of telegramSubscribers.filter(s => s.active)) sendTG(sub.chat_id, msg).catch(() => {})
+  try {
+    const { data: emailSubs } = await supabase.from('email_subscribers').select('email').eq('active', true)
+    if (emailSubs?.length) {
+      for (const sub of emailSubs) {
+        resend.emails.send({
+          from: `BiasForge <${FROM_EMAIL}>`,
+          to: [sub.email],
+          subject: `📌 Today's Bias: ${dirUp} ${result.pair} (${result.confidence}%)`,
+          html: `<h2>Today's Bias Changed</h2><p>Old: <b>${oldKey}</b></p><p>New: <b>${dirUp} ${result.pair}</b> · ${result.confidence}% · Grade ${result.tradeGrade}</p><p>${result.reasoning}</p><p><a href="https://www.biasforge.co/bias">Open AI Bias Engine</a></p>`
+        }).catch(() => {})
+      }
+    }
+  } catch (e) { console.error('Today bias email error:', e.message) }
+  console.log(`📌 Today's bias changed: ${oldKey} → ${lastTodaysBiasKey}`)
+}
+
+// Dashboard widget endpoint — serves cached AI bias; computes lazily only when stale (>45 min)
+app.get('/api/today-bias', async (req, res) => {
+  try {
+    if (isForexClosed()) {
+      return res.json({ success: true, marketClosed: true, reason: 'Forex market closed (weekend)', bias: getCached('today_bias') || null })
+    }
+    if (isCacheFreshFor('today_bias', TODAY_BIAS_TTL)) {
+      return res.json({ success: true, ...getCached('today_bias'), cached: true })
+    }
+    const result = await computeTodaysAIBias()
+    if (!result) return res.json({ success: true, bias: null, reason: 'No strong pair available right now' })
+    res.json({ success: true, ...result })
+  } catch (e) {
+    console.error('today-bias error:', e?.message)
+    res.json({ success: true, bias: getCached('today_bias') || null, error: 'compute failed' })
   }
 })
 
@@ -1071,7 +1187,7 @@ app.get('/api/earnings', async (req, res) => {
 // ============================================
 // 🚀 START
 // ============================================
-// 🧠 Session bias alert — every hour, sends at session opens
+// 🧠 Session bias alert — every hour, computes Today's AI Bias at session opens
   setInterval(async () => {
     try {
       const now = new Date()
@@ -1081,17 +1197,21 @@ app.get('/api/earnings', async (req, res) => {
       const sessionOpens = { 21: 'Sydney', 0: 'Tokyo', 8: 'London', 13: 'New York' }
       const session = sessionOpens[hour]
       if (!session) return
-      const cached = getCached('strength')
-      if (!cached || !cached.bestPairs || !cached.bestPairs[0]) return
-      const bp = cached.bestPairs[0]
-      const msg = `🔔 <b>${session} Session Open!</b>\n\n📊 <b>Today's Bias: ${bp.action} ${bp.pair}</b>\n💡 ${bp.reason}\n\n🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
+      // Compute fresh AI bias (this also fires a change-alert internally if direction flipped)
+      const result = await computeTodaysAIBias()
+      if (!result) return
+      const msg = `🔔 <b>${session} Session Open!</b>\n\n` +
+        `📊 <b>Today's Bias: ${result.direction.toUpperCase()} ${result.pair}</b>\n` +
+        `Confidence: <b>${result.confidence}%</b> · Grade <b>${result.tradeGrade}</b>\n` +
+        `💡 ${result.reasoning}\n\n` +
+        `🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
       for (const sub of telegramSubscribers.filter(s => s.active)) {
         await sendTG(sub.chat_id, msg)
       }
-      console.log(`🧠 Session bias alert sent: ${session} — ${bp.action} ${bp.pair}`)
+      console.log(`🧠 Session AI bias alert sent: ${session} — ${result.direction} ${result.pair} (${result.confidence}%)`)
     } catch (e) { console.error('Session alert error:', e.message) }
   }, 60 * 60 * 1000)
-  console.log('🧠 Session bias alerts (hourly)')
+  console.log('🧠 Session AI bias alerts (hourly)')
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
