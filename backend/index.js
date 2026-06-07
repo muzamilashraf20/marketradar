@@ -433,6 +433,28 @@ app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
   try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
+// Returns fresh currency strength, computing it live if the cache is cold and the market is open.
+// Returns null when the forex market is closed (weekend) — strength is meaningless then.
+async function getLiveStrength() {
+  if (isForexClosed()) return null
+  if (isCacheFresh('strength')) return getCached('strength')
+  const pairs = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
+  try {
+    const r = await axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`)
+    if (r.data.code === 429) return getCached('strength') || null
+    const scores = {USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0}, counts = {...scores}
+    pairs.forEach(p => { const [b,q] = p.split('/'), d = r.data[p]; if (!d?.values || d.values.length < 2) return; const c = parseFloat(d.values[0].close), pr = parseFloat(d.values[1].close); if (!c || !pr) return; const ch = ((c-pr)/pr)*100; scores[b]+=ch; counts[b]++; scores[q]-=ch; counts[q]++ })
+    const avg = {}; Object.keys(scores).forEach(c => avg[c] = counts[c] > 0 ? scores[c]/counts[c] : 0)
+    const vals = Object.values(avg), mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1
+    const norm = {}; Object.keys(avg).forEach(c => norm[c] = Math.round(((avg[c]-mn)/rng)*100))
+    const sorted = Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
+    const allZ = sorted.every(c => c.strength === 0)
+    const result = { success:true, currencies:sorted, bestPairs:[], marketClosed:allZ, updatedAt:new Date().toISOString() }
+    if (!allZ) setCache('strength', result)
+    return result
+  } catch (e) { return getCached('strength') || null }
+}
+
 app.post('/api/bias', async (req, res) => {
   const { symbol, timeframe } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
@@ -448,12 +470,14 @@ app.post('/api/bias', async (req, res) => {
     currentPrice = pr.data?.price || 'unknown'
   } catch (e) {}
 
-  // 2. Get currency strength from cache
+  // 2. Get currency strength (live if cache cold and market open)
   let strengthData = ''
   try {
-    const cached = getCached('strength')
-    if (cached?.currencies) {
-      strengthData = cached.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
+    const strength = await getLiveStrength()
+    if (strength?.currencies) {
+      strengthData = strength.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
+    } else if (isForexClosed()) {
+      strengthData = 'Forex market is currently closed (weekend) — no live currency strength available.'
     }
   } catch (e) {}
 
@@ -463,9 +487,9 @@ app.post('/api/bias', async (req, res) => {
     const apiKey = process.env.FINNHUB_API_KEY
     if (apiKey) {
       const now = new Date()
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+      const ahead = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000) // FIX: look 3 days ahead, not just 24h
       const from = now.toISOString().split('T')[0]
-      const to = tomorrow.toISOString().split('T')[0]
+      const to = ahead.toISOString().split('T')[0]
       const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`)
       if (r.ok) {
         const d = await r.json()
@@ -479,12 +503,13 @@ app.post('/api/bias', async (req, res) => {
   } catch (e) {}
 
   // 4. Get recent high-impact news from cache
+  // FIX: news is cached under 'latest_news' as a raw array, and the score field is `impact` (not `impactScore`)
   let newsData = 'No recent high-impact news'
   try {
-    const cachedNews = getCached('news')
-    if (cachedNews?.articles) {
-      const highImpact = cachedNews.articles
-        .filter(a => (a.impactScore || 0) >= 7)
+    const cachedNews = getCached('latest_news')
+    if (Array.isArray(cachedNews)) {
+      const highImpact = cachedNews
+        .filter(a => (a.impact || 0) >= 7)
         .slice(0, 5)
         .map(a => a.title)
       if (highImpact.length > 0) newsData = highImpact.join(' | ')
