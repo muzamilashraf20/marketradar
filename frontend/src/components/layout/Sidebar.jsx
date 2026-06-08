@@ -25,7 +25,7 @@ const NAV_ITEMS = [
 export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, logout } = useAuth()
+  const { user, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded, logout } = useAuth()
 
   const handleLogout = () => {
     logout()
@@ -42,7 +42,11 @@ export default function Sidebar({ onClose }) {
 
   // Plan badge logic
   let planLabel, planBadgeClass
-  if (isActualPro) {
+  if (!planLoaded) {
+    // Plan still resolving — show neutral state instead of flashing "Expired"
+    planLabel = '···'
+    planBadgeClass = 'bg-white/5 text-slate-400 border border-white/10'
+  } else if (isActualPro) {
     planLabel = 'Pro'
     planBadgeClass = 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20'
   } else if (isTrialActive) {
@@ -170,7 +174,7 @@ export default function Sidebar({ onClose }) {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs text-white font-medium truncate">{email}</p>
-            <p className={`text-[10px] ${isActualPro ? 'text-cyan-400' : isTrialActive ? 'text-emerald-400' : 'text-red-400'}`}>{planLabel}</p>
+            <p className={`text-[10px] ${!planLoaded ? 'text-slate-400' : isActualPro ? 'text-cyan-400' : isTrialActive ? 'text-emerald-400' : 'text-red-400'}`}>{planLabel}</p>
           </div>
         </div>
 

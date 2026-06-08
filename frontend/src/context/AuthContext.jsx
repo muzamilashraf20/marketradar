@@ -177,7 +177,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired,
+      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded,
       login, loginWithGoogle, logout, loading, fetchPlan
     }}>
       {children}
