@@ -65,7 +65,7 @@ export default function PricingSection() {
                 <span className="text-5xl font-black text-white">$40</span>
                 <span className="text-slate-500 text-sm mb-1">/month</span>
               </div>
-              <p className="text-slate-400 text-sm mt-2">For serious funded traders</p>
+              <p className="text-slate-400 text-sm mt-2">For serious traders</p>
             </div>
             <ul className="flex flex-col gap-3 flex-1">
               {proFeatures.map(f => (

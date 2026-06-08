@@ -20,7 +20,7 @@ export default function HeroSection() {
         <div className="flex flex-col items-center text-center lg:items-start lg:text-left">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-cyan-400 text-xs font-medium mb-5">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-            Built for funded & prop firm traders
+            Built for every serious trader
           </div>
 
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight mb-4 text-white leading-[1.1]">

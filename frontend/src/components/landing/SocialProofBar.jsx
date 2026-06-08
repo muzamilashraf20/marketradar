@@ -13,7 +13,7 @@ export default function SocialProofBar() {
       <div className="max-w-5xl mx-auto flex flex-col items-center gap-6">
 
         <p className="text-slate-400 text-sm font-medium tracking-widest uppercase text-center">
-          Trusted by funded & prop firm traders worldwide
+          Trusted by serious traders worldwide
         </p>
 
         <div className="flex flex-wrap justify-center gap-3">

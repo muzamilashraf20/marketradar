@@ -52,7 +52,7 @@ export default function FinalCTA() {
 
           {/* Trust line */}
           <p className="text-sm text-slate-400">
-            No credit card required · Cancel anytime · Built for funded traders
+            No credit card required · Cancel anytime · Built for serious traders
           </p>
 
         </div>

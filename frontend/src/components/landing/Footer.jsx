@@ -41,7 +41,7 @@ export default function Footer() {
               </span>
             </a>
             <p className="text-sm text-slate-400 max-w-xs leading-relaxed">
-              AI macro clarity for funded traders.
+              AI macro clarity for serious traders.
             </p>
             <p className="text-xs text-slate-600 max-w-xs leading-relaxed">
               Not financial advice. Trading involves risk.
@@ -93,7 +93,7 @@ export default function Footer() {
             © 2026 BiasForge. All rights reserved.
           </p>
           <p className="text-xs text-slate-600">
-            Made for funded traders.
+            Made for serious traders.
           </p>
         </div>
 

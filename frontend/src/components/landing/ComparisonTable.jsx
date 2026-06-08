@@ -89,7 +89,7 @@ export default function ComparisonTable() {
             BiasForge vs Other Platforms
           </h2>
           <p className="text-lg text-slate-400">
-            Why funded traders are switching to BiasForge.
+            Why serious traders are switching to BiasForge.
           </p>
         </div>
 
