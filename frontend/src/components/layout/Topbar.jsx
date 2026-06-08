@@ -8,39 +8,31 @@ import {
 } from 'lucide-react'
 
 /* ───────── Session helper ─────────
-   Forex market hours (UTC):
-   - Closes: Friday 22:00 UTC
-   - Opens:  Sunday 22:00 UTC (Sydney session)
-   Sessions during weekdays:
-   - Sydney:   22:00 - 07:00 UTC
-   - Tokyo:    00:00 - 09:00 UTC
-   - London:   07:00 - 16:00 UTC
-   - New York: 13:00 - 22:00 UTC
+   Forex week: Sunday 5PM ET → Friday 5PM ET.
+   Uses each market's LOCAL time via Intl, so DST (EDT/EST, BST/GMT) is auto-handled.
 */
 function getSession() {
   const now = new Date()
-  const day = now.getUTCDay()   // 0 = Sunday, 6 = Saturday
-  const hour = now.getUTCHours()
+  const hourIn = (tz) => {
+    const h = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(now), 10)
+    return h === 24 ? 0 : h
+  }
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(now)
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  const nyDay = dayMap[wd]
+  const ny = hourIn('America/New_York')
 
-  // Saturday all day → market closed
-  if (day === 6) {
+  // Market closed (anchored to New York time, DST-safe)
+  if (nyDay === 6 || (nyDay === 5 && ny >= 17) || (nyDay === 0 && ny < 17)) {
     return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
   }
 
-  // Friday after 22:00 UTC → market closed
-  if (day === 5 && hour >= 22) {
-    return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
-  }
-
-  // Sunday before 22:00 UTC → market closed (Sydney opens at 22:00 UTC Sunday)
-  if (day === 0 && hour < 21) {
-    return { name: 'Market Closed', color: 'text-slate-500', dot: 'bg-slate-500', closed: true }
-  }
-
-  // Market is open — determine active session
-  if (hour >= 0 && hour < 7) return { name: 'Tokyo', color: 'text-purple-400', dot: 'bg-purple-400', closed: false }
-  if (hour >= 7 && hour < 13) return { name: 'London', color: 'text-blue-400', dot: 'bg-blue-400', closed: false }
-  if (hour >= 13 && hour < 22) return { name: 'New York', color: 'text-amber-400', dot: 'bg-amber-400', closed: false }
+  // Active session by precedence (higher-liquidity session wins on overlaps)
+  const london = hourIn('Europe/London')
+  const tokyo = hourIn('Asia/Tokyo')
+  if (ny >= 8 && ny < 17) return { name: 'New York', color: 'text-amber-400', dot: 'bg-amber-400', closed: false }
+  if (london >= 8 && london < 17) return { name: 'London', color: 'text-blue-400', dot: 'bg-blue-400', closed: false }
+  if (tokyo >= 9 && tokyo < 18) return { name: 'Tokyo', color: 'text-purple-400', dot: 'bg-purple-400', closed: false }
   return { name: 'Sydney', color: 'text-emerald-400', dot: 'bg-emerald-400', closed: false }
 }
 

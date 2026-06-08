@@ -948,14 +948,21 @@ app.get('/api/calendar', async (req, res) => {
 // Helper: Check if Forex market is currently closed
 // Forex closes: Friday 22:00 UTC
 // Forex opens:  Sunday 22:00 UTC
-function isForexClosed() {
+// Returns true when the forex market is closed.
+// Anchored to New York local time (Sun 5PM ET → Fri 5PM ET) so DST (EDT/EST) is auto-handled.
+function nyParts() {
   const now = new Date()
-  const day = now.getUTCDay()   // 0 = Sunday, 6 = Saturday
-  const hour = now.getUTCHours()
-
-  if (day === 6) return true                          // Saturday all day
-  if (day === 5 && hour >= 21) return true            // Friday after 21:00 UTC (5PM EDT summer)            // Friday after 22:00 UTC
-  if (day === 0 && hour < 21) return true           // Sunday before 22:00 UTC
+  const p = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', hour12: false }).formatToParts(now)
+  let h = parseInt(p.find(x => x.type === 'hour')?.value, 10)
+  if (h === 24) h = 0
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  return { day: dayMap[p.find(x => x.type === 'weekday')?.value], hour: h }
+}
+function isForexClosed() {
+  const { day, hour } = nyParts()
+  if (day === 6) return true              // Saturday — closed all day (ET)
+  if (day === 5 && hour >= 17) return true // Friday after 5PM ET
+  if (day === 0 && hour < 17) return true  // Sunday before 5PM ET (Sydney open)
   return false
 }
 
@@ -1190,12 +1197,14 @@ app.get('/api/earnings', async (req, res) => {
 // 🧠 Session bias alert — every hour, computes Today's AI Bias at session opens
   setInterval(async () => {
     try {
-      const now = new Date()
-      const hour = now.getUTCHours()
-      const day = now.getUTCDay()
-      if (day === 6 || (day === 0 && hour < 21)) return // weekend
-      const sessionOpens = { 21: 'Sydney', 0: 'Tokyo', 8: 'London', 13: 'New York' }
-      const session = sessionOpens[hour]
+      if (isForexClosed()) return
+      // Match each market's LOCAL open hour so DST shifts are handled automatically
+      const hourIn = (tz) => { const h = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()), 10); return h === 24 ? 0 : h }
+      let session = null
+      if (hourIn('Australia/Sydney') === 7) session = 'Sydney'
+      else if (hourIn('Asia/Tokyo') === 9) session = 'Tokyo'
+      else if (hourIn('Europe/London') === 8) session = 'London'
+      else if (hourIn('America/New_York') === 8) session = 'New York'
       if (!session) return
       // Compute fresh AI bias (this also fires a change-alert internally if direction flipped)
       const result = await computeTodaysAIBias()
@@ -1211,7 +1220,7 @@ app.get('/api/earnings', async (req, res) => {
       console.log(`🧠 Session AI bias alert sent: ${session} — ${result.direction} ${result.pair} (${result.confidence}%)`)
     } catch (e) { console.error('Session alert error:', e.message) }
   }, 60 * 60 * 1000)
-  console.log('🧠 Session AI bias alerts (hourly)')
+  console.log('🧠 Session AI bias alerts (hourly, DST-safe)')
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
