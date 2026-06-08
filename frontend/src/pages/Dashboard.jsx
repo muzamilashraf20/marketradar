@@ -44,6 +44,10 @@ export default function Dashboard() {
   const [biasLoading, setBiasLoading] = useState(false)
   const [biasError, setBiasError] = useState('')
 
+  // AI-powered Today's Bias (from /api/today-bias)
+  const [aiBias, setAiBias] = useState(null)
+  const [aiBiasLoading, setAiBiasLoading] = useState(true)
+
   const [propRisk, setPropRisk] = useState({
     status: 'SAFE', color: 'text-emerald-400',
     bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: '0.0'
@@ -53,6 +57,7 @@ export default function Dashboard() {
     fetchNews()
     fetchCalendar()
     fetchStrength()
+    fetchTodayBias()
     loadPropRisk()
   }, [])
 
@@ -109,6 +114,31 @@ export default function Dashboard() {
       console.error('Strength fetch error:', e)
     } finally {
       setStrengthLoading(false)
+    }
+  }
+
+  const fetchTodayBias = async () => {
+    try {
+      setAiBiasLoading(true)
+      const res = await fetch(`${API_BASE}/api/today-bias`)
+      const data = await res.json()
+      // Endpoint returns top-level direction/pair/confidence/tradeGrade/reasoning when a bias exists
+      if (data.success && data.direction) {
+        setAiBias({
+          pair: data.pair,
+          direction: data.direction,
+          confidence: data.confidence,
+          grade: data.tradeGrade,
+          reasoning: data.reasoning,
+        })
+      } else {
+        setAiBias(null)
+      }
+    } catch (e) {
+      console.error('Today bias fetch error:', e)
+      setAiBias(null)
+    } finally {
+      setAiBiasLoading(false)
     }
   }
 
@@ -181,7 +211,26 @@ export default function Dashboard() {
     return { pair: best.pair, action: best.action, reason: best.reason }
   }
 
-  const todaysBias = getBiasFromStrength()
+  const dirToAction = (dir) => {
+    const d = (dir || '').toLowerCase()
+    if (d.includes('bull')) return 'BUY'
+    if (d.includes('bear')) return 'SELL'
+    return 'NEUTRAL'
+  }
+
+  // Prefer the AI-powered bias; fall back to rule-based strength divergence
+  const todaysBias = aiBias
+    ? {
+        pair: aiBias.pair,
+        action: dirToAction(aiBias.direction),
+        reason: aiBias.reasoning,
+        confidence: aiBias.confidence,
+        grade: aiBias.grade,
+        ai: true,
+      }
+    : getBiasFromStrength()
+
+  const biasWidgetLoading = aiBiasLoading && strengthLoading
   const topEvent = events[0]
 
   return (
@@ -288,6 +337,11 @@ export default function Dashboard() {
                 }`}>
                   {todaysBias.action} {todaysBias.pair}
                 </p>
+                {todaysBias.ai && todaysBias.confidence ? (
+                  <p className="text-[10px] font-semibold text-cyan-400 mb-0.5">
+                    {todaysBias.confidence}% confidence{todaysBias.grade && todaysBias.grade !== '-' ? ` · Grade ${todaysBias.grade}` : ''}
+                  </p>
+                ) : null}
                 <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
               </>
             ) : (
