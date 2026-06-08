@@ -1,0 +1,21 @@
+User-agent: *
+Allow: /
+
+# Authenticated app pages — nothing to index, require login
+Disallow: /dashboard
+Disallow: /bias
+Disallow: /news
+Disallow: /calendar
+Disallow: /sessions
+Disallow: /settings
+Disallow: /strength
+Disallow: /prop-firm
+Disallow: /playbooks
+Disallow: /cot
+Disallow: /earnings
+Disallow: /market-movers
+Disallow: /trump
+Disallow: /journal
+Disallow: /reset-password
+
+Sitemap: https://www.biasforge.co/sitemap.xml
