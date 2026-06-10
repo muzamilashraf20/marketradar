@@ -36,6 +36,32 @@ function isCacheFresh(key) { const e = API_CACHE[key]; return e ? Date.now() - e
 function setCache(key, data) { API_CACHE[key] = { data, timestamp: Date.now() } }
 function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < ttlMs : false }
 
+// ============================================
+// 📅 SHARED ECONOMIC CALENDAR (ForexFactory feed)
+// Finnhub /calendar/economic is premium-only now — FF feed is free.
+// Normalized shape: { event, country (currency code), time (ISO), impact, forecast, previous }
+// 10-min cache + stale fallback (FF rate-limits aggressively)
+// ============================================
+const FF_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'application/json' }
+async function getEconomicCalendar() {
+  if (isCacheFresh('ff_calendar')) return getCached('ff_calendar')
+  const urls = ['https://nfs.faireconomy.media/ff_calendar_thisweek.json', 'https://nfs.faireconomy.media/ff_calendar_nextweek.json']
+  try {
+    const results = await Promise.allSettled(urls.map(u => fetch(u, { headers: FF_HEADERS }).then(r => r.ok ? r.json() : Promise.reject(new Error('FF ' + r.status)))))
+    const raw = []
+    for (const r of results) if (r.status === 'fulfilled' && Array.isArray(r.value)) raw.push(...r.value)
+    if (raw.length === 0) throw new Error('FF calendar empty')
+    const norm = raw.filter(e => e.date).map(e => ({ event: e.title || 'Event', country: (e.country || 'N/A').toUpperCase(), time: new Date(e.date).toISOString(), impact: e.impact || 'Low', forecast: e.forecast || '', previous: e.previous || '' }))
+    setCache('ff_calendar', norm)
+    return norm
+  } catch (err) {
+    console.error('❌ FF calendar fetch failed:', err.message)
+    const stale = getCached('ff_calendar')
+    if (stale) { console.log('📦 Using stale FF calendar cache'); return stale }
+    throw err
+  }
+}
+
 const PLANS = {
   pro_monthly: { variantId: '1682107', name: 'BiasForge Pro Monthly' },
   pro_annual: { variantId: '1682117', name: 'BiasForge Pro Annual' },
@@ -289,12 +315,9 @@ async function checkAndSendCalendarAlerts() {
   const tgSubs = telegramSubscribers.filter(s => s.active)
   if (emailSubs.length === 0 && tgSubs.length === 0) return
   try {
-    const apiKey = process.env.FINNHUB_API_KEY
-    if (!apiKey) return
-    const now = new Date(), future = new Date(now.getTime() + 2 * 60 * 60 * 1000)
-    const calResp = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${now.toISOString().split('T')[0]}&to=${future.toISOString().split('T')[0]}&token=${apiKey}`)
-    if (!calResp.ok) return
-    const events = (await calResp.json()).economicCalendar || []
+    const now = new Date()
+    let events = []
+    try { events = await getEconomicCalendar() } catch (e) { return }
     const highImpact = events.filter(e => { if (!e.time || e.impact?.toLowerCase() !== 'high') return false; const m = (new Date(e.time) - now) / 60000; return m > 0 && m <= 65 })
     if (highImpact.length === 0) return
     const cMap = { 'US': 'USD', 'EU': 'EUR', 'GB': 'GBP', 'JP': 'JPY', 'AU': 'AUD', 'CA': 'CAD', 'CH': 'CHF', 'NZ': 'NZD' }
@@ -495,22 +518,13 @@ async function generateBiasFor(symbol, timeframe) {
   // 3. Get upcoming calendar events (3 days ahead)
   let calendarData = 'No upcoming events'
   try {
-    const apiKey = process.env.FINNHUB_API_KEY
-    if (apiKey) {
-      const now = new Date()
-      const ahead = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
-      const from = now.toISOString().split('T')[0]
-      const to = ahead.toISOString().split('T')[0]
-      const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${apiKey}`)
-      if (r.ok) {
-        const d = await r.json()
-        const events = (d.economicCalendar || [])
-          .filter(e => e.impact === 3 || e.impact?.toLowerCase?.() === 'high')
-          .slice(0, 8)
-          .map(e => `${e.event} (${e.country}) at ${e.time || 'TBD'} - Impact: HIGH`)
-        if (events.length > 0) calendarData = events.join(' | ')
-      }
-    }
+    const now = new Date()
+    const ahead = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000)
+    const events = (await getEconomicCalendar())
+      .filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) > now && new Date(e.time) < ahead)
+      .slice(0, 8)
+      .map(e => `${e.event} (${e.country}) at ${e.time || 'TBD'} - Impact: HIGH`)
+    if (events.length > 0) calendarData = events.join(' | ')
   } catch (e) {}
 
   // 4. Get recent high-impact news from cache (cached under 'latest_news', score field is `impact`)
@@ -746,13 +760,13 @@ app.post('/api/trade-check', async (req, res) => {
   if (!symbol || !direction || !lotSize || !stopLossPips) return res.status(400).json({ success: false, error: 'Required fields missing' })
   try {
     let upcomingEvents = []
-    try { const apiKey = process.env.FINNHUB_API_KEY; if (apiKey) { const now = new Date(), future = new Date(now.getTime() + 4*60*60*1000); const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${now.toISOString().split('T')[0]}&to=${future.toISOString().split('T')[0]}&token=${apiKey}`); if (r.ok) { const d = await r.json(); upcomingEvents = (d.economicCalendar||[]).filter(e => e.time && new Date(e.time) > now && new Date(e.time) < future && e.impact?.toLowerCase()==='high').slice(0,5).map(e => ({ event:e.event, country:e.country, time:e.time, minutesUntil:Math.round((new Date(e.time)-now)/60000) })) } } } catch(e){}
+    try { const now = new Date(), future = new Date(now.getTime() + 4*60*60*1000); upcomingEvents = (await getEconomicCalendar()).filter(e => e.time && new Date(e.time) > now && new Date(e.time) < future && e.impact?.toLowerCase()==='high').slice(0,5).map(e => ({ event:e.event, country:e.country, time:e.time, minutesUntil:Math.round((new Date(e.time)-now)/60000) })) } catch(e){}
 
     const pipValue = symbol.toUpperCase().includes('JPY') ? 9.09 : 10
     const estRisk$ = lotSize * pipValue * stopLossPips, estRiskPct = accountSize ? (estRisk$ / accountSize) * 100 : 0
     const tradeCur = symbol.toUpperCase().replace('/','').match(/.{1,3}/g)||[]
     const cMap = { 'US':'USD','EU':'EUR','GB':'GBP','JP':'JPY','AU':'AUD','CA':'CAD','CH':'CHF','NZ':'NZD' }
-    const conflicting = upcomingEvents.filter(e => { const ec = cMap[e.country?.toUpperCase()]; return ec && tradeCur.includes(ec) })
+    const conflicting = upcomingEvents.filter(e => { const ec = cMap[e.country?.toUpperCase()] || e.country?.toUpperCase(); return ec && tradeCur.includes(ec) })
     const imminent = upcomingEvents.find(e => e.minutesUntil <= 60), conflImm = conflicting.find(e => e.minutesUntil <= 60)
 
     const reasons=[], warnings=[]; let verdict='GREEN', headline='Trade conditions look clear', rec='Proceed with your setup.', conf=85
@@ -936,15 +950,13 @@ app.get('/api/user/plan', async (req, res) => {
   }
 })
 // ============================================
-// 📅 CALENDAR
+// 📅 CALENDAR (ForexFactory feed — Finnhub economic calendar is premium-only)
 // ============================================
 app.get('/api/calendar', async (req, res) => {
-  const apiKey = process.env.FINNHUB_API_KEY; if (!apiKey) return res.status(500).json({ error: 'No API key' })
-  const mc = ['US','EU','GB','JP','AU','CA','CH','NZ','CN']
+  const mc = ['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD','CNY']
   try {
-    const now=new Date(), from=new Date(now), to=new Date(now); from.setDate(now.getDate()-3); to.setDate(now.getDate()+14)
-    const r = await fetch(`https://finnhub.io/api/v1/calendar/economic?from=${from.toISOString().split('T')[0]}&to=${to.toISOString().split('T')[0]}&token=${apiKey}`,{headers:{'Accept':'application/json'}}); if(!r.ok) throw new Error('Finnhub error')
-    const norm = ((await r.json()).economicCalendar||[]).filter(i=>mc.includes(i.country?.toUpperCase())).map(i=>({ title:i.event||'Event', country:({'US':'USD','EU':'EUR','GB':'GBP','JP':'JPY','AU':'AUD','CA':'CAD','CH':'CHF','NZ':'NZD','CN':'CNY'})[i.country?.toUpperCase()]||i.country||'N/A', date:i.time?new Date(i.time).toISOString():new Date().toISOString(), impact:i.impact?.toLowerCase()==='high'?'High':i.impact?.toLowerCase()==='medium'?'Medium':'Low', forecast:i.estimate!=null?String(i.estimate):'-', previous:i.prev!=null?String(i.prev):'-', actual:i.actual!=null?String(i.actual):'-' }))
+    const events = await getEconomicCalendar()
+    const norm = events.filter(e=>mc.includes(e.country)).map(e=>({ title:e.event, country:e.country, date:e.time, impact:e.impact?.toLowerCase()==='high'?'High':e.impact?.toLowerCase()==='medium'?'Medium':'Low', forecast:e.forecast||'-', previous:e.previous||'-', actual:'-' }))
     norm.sort((a,b)=>{const o={High:0,Medium:1,Low:2};return o[a.impact]!==o[b.impact]?o[a.impact]-o[b.impact]:new Date(a.date)-new Date(b.date)})
     res.json(norm)
   } catch(e){ res.status(502).json({error:'Calendar fetch failed'}) }
