@@ -471,12 +471,15 @@ async function generateBiasFor(symbol, timeframe) {
 
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
 
-  // 1. Fetch current price
+  // 1. Fetch current price (with retry — TwelveData free tier rate-limits in bursts)
   let currentPrice = 'unknown'
-  try {
-    const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
-    currentPrice = pr.data?.price || 'unknown'
-  } catch (e) {}
+  for (let attempt = 0; attempt < 3 && currentPrice === 'unknown'; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+      const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
+      if (pr.data?.price) currentPrice = pr.data.price
+    } catch (e) {}
+  }
 
   // 2. Get currency strength (live if cache cold and market open)
   let strengthData = ''
@@ -575,7 +578,7 @@ CRITICAL RULES:
 
 3. TRADE GRADE: A+ = perfect alignment all sources. A = strong. B = decent. C = marginal. D = don't trade.
 
-4. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text.
+4. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text. IF THE CURRENT PRICE IS "unknown": do NOT estimate or invent any price levels from memory — set every field inside "levels" and the invalidation to the string "N/A" and focus only on direction, confidence, and reasoning.
 
 5. Return ONLY valid JSON. No markdown, no explanation outside JSON.`
 
@@ -605,6 +608,12 @@ ${template}`
   const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
   const bias = JSON.parse(raw)
   bias.generatedAt = new Date().toISOString()
+  // HARD GUARD: if live price was unavailable, never ship AI-guessed levels — suppress them.
+  if (currentPrice === 'unknown') {
+    bias.levels = { currentPrice: 'N/A', entry: 'N/A', target1: 'N/A', target2: 'N/A', stopLoss: 'N/A', invalidation: 'N/A' }
+    bias.invalidationNote = 'Live price feed temporarily unavailable — exact levels suppressed to avoid inaccurate figures. Direction & reasoning are based on live strength, calendar, and news data.'
+    if (bias.tradeGrade === 'A+' || bias.tradeGrade === 'A') bias.tradeGrade = 'B'
+  }
   bias.dataSources = {
     price: currentPrice !== 'unknown',
     strength: !!strengthData,
