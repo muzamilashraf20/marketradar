@@ -664,28 +664,64 @@ let lastTodaysBiasKey = ''
 const TODAY_BIAS_TTL = 45 * 60 * 1000 // 45 min — keeps Anthropic cost bounded under dashboard traffic
 
 // Pick the strongest OANDA-tradeable pair from live currency strength divergence
-function pickTopOandaPair(strength) {
-  if (!strength?.currencies?.length) return null
+function rankOandaPairs(strength) {
+  if (!strength?.currencies?.length) return []
   const str = {}; strength.currencies.forEach(c => { str[c.currency] = c.strength })
   const oandaPairs = [['EUR','USD'],['GBP','USD'],['USD','JPY'],['AUD','USD'],['USD','CAD'],['USD','CHF'],['NZD','USD'],['EUR','GBP'],['EUR','JPY'],['GBP','JPY'],['AUD','JPY']]
-  let best = null, bestDiff = 0
+  const ranked = []
   for (const [b, q] of oandaPairs) {
     if (str[b] === undefined || str[q] === undefined) continue
     const diff = str[b] - str[q]
-    if (Math.abs(diff) > bestDiff) {
-      bestDiff = Math.abs(diff)
-      best = { symbol: `${b}${q}`, pair: `${b}${q}`, action: diff > 0 ? 'BUY' : 'SELL', diff: Math.abs(diff) }
-    }
+    ranked.push({ symbol: `${b}${q}`, pair: `${b}${q}`, action: diff > 0 ? 'BUY' : 'SELL', diff: Math.abs(diff) })
   }
-  return best
+  ranked.sort((a, b) => b.diff - a.diff)
+  return ranked
+}
+function pickTopOandaPair(strength) { return rankOandaPairs(strength)[0] || null }
+
+// ── Today's Bias daily pair lock (anchor + hysteresis, persisted across restarts) ──
+let todayBiasLock = null // { date: 'YYYY-MM-DD', symbol, pair }
+const utcDay = () => new Date().toISOString().slice(0, 10)
+
+async function loadTodayBiasState() {
+  try {
+    const { data } = await supabase.from('app_state').select('value').eq('key', 'today_bias_state').single()
+    const v = data?.value
+    if (v?.lock?.date === utcDay()) {
+      todayBiasLock = v.lock
+      if (v.result) {
+        setCache('today_bias', v.result)
+        lastTodaysBiasKey = `${v.result.direction} ${v.result.pair}`.toUpperCase()
+      }
+      console.log(`✅ Restored today's bias state: ${v.lock.pair}`)
+    }
+  } catch (e) { /* table may not exist yet — non-fatal */ }
+}
+async function saveTodayBiasState(result) {
+  try {
+    await supabase.from('app_state').upsert(
+      { key: 'today_bias_state', value: { lock: todayBiasLock, result }, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    )
+  } catch (e) { console.error('today_bias persist error:', e?.message) }
 }
 
 // Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
 async function computeTodaysAIBias() {
   if (isForexClosed()) return null
   const strength = await getLiveStrength()
-  const top = pickTopOandaPair(strength)
-  if (!top) return null
+  const ranked = rankOandaPairs(strength)
+  if (!ranked.length) return null
+
+  // Daily anchor: keep today's locked pair unless its signal genuinely faded (fell out of top 3)
+  let top = ranked[0]
+  const day = utcDay()
+  if (todayBiasLock?.date === day) {
+    const lockedIdx = ranked.findIndex(r => r.symbol === todayBiasLock.symbol)
+    if (lockedIdx > -1 && lockedIdx < 3) top = ranked[lockedIdx]
+    else console.log(`🔄 Today's pair switched: ${todayBiasLock.pair} fell out of top 3 → ${top.pair}`)
+  }
+  todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
 
   let bias
   try {
@@ -704,6 +740,7 @@ async function computeTodaysAIBias() {
     updatedAt: new Date().toISOString(),
   }
   setCache('today_bias', result)
+  saveTodayBiasState(result).catch(() => {})
 
   // Change detection → alert subscribers (skip the very first computation)
   const newKey = `${result.direction} ${result.pair}`.toUpperCase()
@@ -1282,6 +1319,7 @@ app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
   loadTelegramSubscribers()
+  loadTodayBiasState()
   setInterval(checkAndSendCalendarAlerts, 5 * 60 * 1000)
   console.log('⏰ Calendar cron (5min)')
   setInterval(checkAndSendNewsAlerts, 10 * 60 * 1000)
