@@ -468,7 +468,7 @@ app.get('/api/prices', async (req, res) => {
 // ============================================
 // 🤖 AI
 // ============================================
-app.post('/api/ai', async (req, res) => {
+app.post('/api/ai', aiRateLimiter, async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
   try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); trackAI('ai-analyze', 'claude-sonnet-4-6', m.usage); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
@@ -664,7 +664,7 @@ ${template}`
   return bias
 }
 
-app.post('/api/bias', async (req, res) => {
+app.post('/api/bias', aiRateLimiter, async (req, res) => {
   const { symbol, timeframe } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   try {
@@ -701,6 +701,23 @@ function trackAI(label, model, usage) {
 
 // Memo of already-scored news (title → scores) so each article is scored by AI only ONCE
 const newsScoreMemo = new Map()
+
+// ── 🛡️ Per-IP rate limit for expensive AI endpoints (cache hits don't count) ──
+const AI_RATE_LIMIT = 30 // fresh AI requests per IP per hour
+const aiRateMap = new Map() // ip → { count, resetAt }
+function aiRateLimiter(req, res, next) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown'
+  const now = Date.now()
+  let entry = aiRateMap.get(ip)
+  if (!entry || now > entry.resetAt) { entry = { count: 0, resetAt: now + 60 * 60 * 1000 }; aiRateMap.set(ip, entry) }
+  entry.count++
+  if (entry.count > AI_RATE_LIMIT) {
+    console.warn(`🛡️ Rate limit hit: ${ip} (${entry.count} AI requests this hour)`)
+    return res.status(429).json({ success: false, error: 'Too many AI requests — please wait a bit and try again.' })
+  }
+  if (aiRateMap.size > 5000) aiRateMap.clear() // memory guard
+  next()
+}
 
 // Pick the strongest OANDA-tradeable pair from live currency strength divergence
 function rankOandaPairs(strength) {
@@ -886,7 +903,7 @@ app.get('/api/today-bias', async (req, res) => {
 // ============================================
 // 🚀 PRE-TRADE GUARDIAN
 // ============================================
-app.post('/api/trade-check', async (req, res) => {
+app.post('/api/trade-check', aiRateLimiter, async (req, res) => {
   const { symbol, direction, lotSize, stopLossPips, accountSize, dailyDrawdownUsed, totalDrawdownUsed, maxDailyDrawdown, maxTotalDrawdown, riskPerTrade, useAI = true } = req.body
   if (!symbol || !direction || !lotSize || !stopLossPips) return res.status(400).json({ success: false, error: 'Required fields missing' })
   try {
