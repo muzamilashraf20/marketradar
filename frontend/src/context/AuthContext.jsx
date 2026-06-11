@@ -145,6 +145,11 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('bf_plan')
     setUser(payload)
     fetchPlan(payload.id)
+    // Hand the session to the supabase client so it auto-refreshes the JWT
+    // (same as the OAuth flow — without this, email users' tokens expire after ~1h → "Invalid token")
+    if (session?.access_token && session?.refresh_token) {
+      supabase.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token }).catch(() => {})
+    }
   }
 
   const loginWithGoogle = async () => {

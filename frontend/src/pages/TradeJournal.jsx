@@ -8,8 +8,17 @@ import {
   BarChart3, Award, Flame, Search, ChevronDown, ChevronUp,
   Image, Link, ExternalLink, Camera, Eye, Loader2, CloudOff, Cloud
 } from 'lucide-react'
+import { supabase } from '../lib/supabase'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+
+// Always use a fresh access token — supabase client auto-refreshes; falls back to the stored one
+const getFreshToken = async (fallback) => {
+  try {
+    const { data } = await supabase.auth.getSession()
+    return data?.session?.access_token || fallback
+  } catch { return fallback }
+}
 
 const PAIRS = [
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'NZD/USD', 'USD/CAD',
@@ -195,8 +204,9 @@ export default function TradeJournal() {
   const fetchTrades = async () => {
     if (!user?.token) { setLoading(false); return }
     try {
+      const token = await getFreshToken(user.token)
       const res = await fetch(`${API_URL}/api/trades`, {
-        headers: { 'Authorization': `Bearer ${user.token}` }
+        headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
       if (data.success) {
@@ -259,11 +269,12 @@ export default function TradeJournal() {
     }
 
     try {
+      const token = await getFreshToken(user.token)
       const res = await fetch(`${API_URL}/api/trades`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(tradeData),
       })
@@ -284,9 +295,10 @@ export default function TradeJournal() {
   const deleteTrade = async (id) => {
     if (!user?.token) return
     try {
+      const token = await getFreshToken(user.token)
       const res = await fetch(`${API_URL}/api/trades/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${user.token}` },
+        headers: { 'Authorization': `Bearer ${token}` },
       })
       const data = await res.json()
       if (data.success) {
