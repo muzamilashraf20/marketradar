@@ -780,7 +780,32 @@ app.post('/api/trade-check', async (req, res) => {
     if (totalDrawdownUsed>=80&&verdict!=='RED') warnings.push(`Total DD at ${totalDrawdownUsed.toFixed(1)}%`)
 
     let final = { verdict, headline, reasons, warnings, recommendation:rec, confidence:conf, engine:'rule-based' }
-    if (useAI) { try { const ctx=`TRADE:${direction} ${lotSize}lots ${symbol} SL${stopLossPips}\nRISK:$${estRisk$.toFixed(2)}(${estRiskPct.toFixed(2)}%)\nDD:${dailyDrawdownUsed?.toFixed(1)}%/${maxDailyDrawdown}%\nNEWS:${upcomingEvents.map(e=>`${e.event}(${e.country})${e.minutesUntil}m`).join(';')||'none'}`; const m=await anthropic.messages.create({model:'claude-sonnet-4-6',max_tokens:2048,system:'Elite prop firm risk advisor. ONLY JSON.',messages:[{role:'user',content:`Refine:\n${ctx}`}]}); final={...JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim()),engine:'ai-enhanced'} } catch(e){} }
+    if (useAI) {
+      try {
+        const ctx = `TRADE: ${direction} ${lotSize} lots ${symbol}, SL ${stopLossPips} pips
+RISK: $${estRisk$.toFixed(2)} (${estRiskPct.toFixed(2)}% of account)
+DRAWDOWN: daily ${dailyDrawdownUsed?.toFixed(1) || 0}% used of ${maxDailyDrawdown}% limit, total ${totalDrawdownUsed?.toFixed(1) || 0}% of ${maxTotalDrawdown}%
+RISK RULE: ${riskPerTrade}% per trade
+UPCOMING HIGH-IMPACT NEWS (next 4h): ${upcomingEvents.map(e=>`${e.event} (${e.country}) in ${e.minutesUntil}min`).join('; ') || 'none'}
+RULE-BASED DRAFT: ${JSON.stringify({ verdict, headline, reasons, warnings, recommendation: rec, confidence: conf })}`
+        const m = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1024,
+          system: 'You are an elite prop firm risk advisor. Refine the rule-based draft verdict using the trade context. Respond with ONLY valid JSON, no markdown fences, no preamble, exactly this shape: {"verdict":"GREEN|YELLOW|RED","headline":"short punchy headline (max 8 words)","reasons":["3-4 short specific bullets, each under 12 words"],"warnings":["0-2 warnings, only if genuinely warranted"],"recommendation":"one actionable sentence","confidence":85}. Rules: verdict must be GREEN, YELLOW or RED. reasons must always contain 3-4 items grounded in the numbers provided. Never invent news events not listed in context. confidence is an integer 0-100.',
+          messages: [{ role: 'user', content: ctx }]
+        })
+        const ai = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
+        final = {
+          verdict: ['GREEN','YELLOW','RED'].includes(ai.verdict) ? ai.verdict : verdict,
+          headline: (typeof ai.headline === 'string' && ai.headline.trim()) ? ai.headline.trim() : headline,
+          reasons: (Array.isArray(ai.reasons) && ai.reasons.length) ? ai.reasons.map(String).slice(0, 4) : reasons,
+          warnings: Array.isArray(ai.warnings) ? ai.warnings.map(String).slice(0, 2) : warnings,
+          recommendation: (typeof ai.recommendation === 'string' && ai.recommendation.trim()) ? ai.recommendation.trim() : rec,
+          confidence: Number.isFinite(+ai.confidence) ? Math.min(100, Math.max(0, Math.round(+ai.confidence))) : conf,
+          engine: 'ai-enhanced'
+        }
+      } catch (e) { console.error('Guardian AI refine failed, falling back to rule-based:', e?.message) }
+    }
     res.json({ success:true, verdict:final, meta:{ estimatedRiskDollars:estRisk$.toFixed(2), estimatedRiskPercent:estRiskPct.toFixed(2), upcomingEvents, analyzedAt:new Date().toISOString() } })
   } catch(e){ res.status(500).json({ success:false, error:'Analysis failed' }) }
 })
