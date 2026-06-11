@@ -1056,6 +1056,51 @@ app.post('/api/trades', async (req, res) => {
   }
 })
 
+app.put('/api/trades/:id', async (req, res) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
+  try {
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+
+    const t = req.body
+    const { data, error } = await supabase
+      .from('trades')
+      .update({
+        pair: t.pair,
+        direction: t.direction,
+        entry_price: t.entryPrice || null,
+        exit_price: t.exitPrice || null,
+        lot_size: t.lotSize || null,
+        stop_loss: t.stopLoss || null,
+        take_profit: t.takeProfit || null,
+        pnl: parseFloat(t.pnl) || 0,
+        result: t.result,
+        date: t.date,
+        session: t.session || null,
+        setup: t.setup || null,
+        notes: t.notes || null,
+        emotion: t.emotion || null,
+        rating: t.rating || 3,
+        before_image: t.beforeImage || null,
+        before_link: t.beforeLink || null,
+        after_image: t.afterImage || null,
+        after_link: t.afterLink || null,
+      })
+      .eq('id', req.params.id)
+      .eq('user_id', user.id) // users can only edit their own trades
+      .select()
+      .single()
+
+    if (error) throw error
+    if (!data) return res.status(404).json({ error: 'Trade not found' })
+    res.json({ success: true, trade: data })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to update trade' })
+  }
+})
+
 app.delete('/api/trades/:id', async (req, res) => {
   const authHeader = req.headers.authorization
   if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })

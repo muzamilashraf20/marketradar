@@ -75,11 +75,28 @@ export function AuthProvider({ children }) {
     }
   }
 
+  // ── Idle timeout: if the user hasn't opened/used the app for this long, require re-login ──
+  // 7 days = daily users never see a login screen; change to e.g. 5*60*60*1000 for 5 hours
+  const SESSION_IDLE_LIMIT = 7 * 24 * 60 * 60 * 1000
+
   useEffect(() => {
     let subscription
 
     const initAuth = async () => {
       try {
+        // Idle check BEFORE restoring any session
+        const lastActive = parseInt(localStorage.getItem('bf_last_active') || '0', 10)
+        if (lastActive && Date.now() - lastActive > SESSION_IDLE_LIMIT) {
+          await supabase.auth.signOut().catch(() => {})
+          localStorage.removeItem('bf_user')
+          localStorage.removeItem('bf_plan')
+          localStorage.setItem('bf_last_active', String(Date.now()))
+          setUser(null)
+          setLoading(false)
+          return
+        }
+        localStorage.setItem('bf_last_active', String(Date.now()))
+
         const { data: { session } } = await supabase.auth.getSession()
 
         if (session) {
@@ -136,6 +153,23 @@ export function AuthProvider({ children }) {
 
     return () => {
       subscription?.unsubscribe()
+    }
+  }, [])
+
+  // Keep last-activity timestamp fresh while the app is in use (throttled to once a minute)
+  useEffect(() => {
+    let last = 0
+    const mark = () => {
+      const now = Date.now()
+      if (now - last > 60 * 1000) { last = now; localStorage.setItem('bf_last_active', String(now)) }
+    }
+    window.addEventListener('click', mark)
+    window.addEventListener('keydown', mark)
+    document.addEventListener('visibilitychange', mark)
+    return () => {
+      window.removeEventListener('click', mark)
+      window.removeEventListener('keydown', mark)
+      document.removeEventListener('visibilitychange', mark)
     }
   }, [])
 

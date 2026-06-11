@@ -6,7 +6,7 @@ import {
   Plus, Trash2, TrendingUp, TrendingDown, Filter,
   Calendar, DollarSign, Target, AlertTriangle, X,
   BarChart3, Award, Flame, Search, ChevronDown, ChevronUp,
-  Image, Link, ExternalLink, Camera, Eye, Loader2, CloudOff, Cloud
+  Image, Link, ExternalLink, Camera, Eye, Loader2, CloudOff, Cloud, Pencil
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
@@ -167,6 +167,7 @@ export default function TradeJournal() {
   const { user } = useAuth()
   const [trades, setTrades] = useState([])
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState(null)
   const [filterPair, setFilterPair] = useState('All')
   const [filterResult, setFilterResult] = useState('All')
   const [searchQuery, setSearchQuery] = useState('')
@@ -254,6 +255,34 @@ export default function TradeJournal() {
       setup: '', notes: '', emotion: 'Calm', rating: 3,
       beforeImage: '', beforeLink: '', afterImage: '', afterLink: '',
     })
+    setEditingId(null)
+  }
+
+  // Prefill the form with an existing trade and open it in edit mode
+  const startEdit = (trade) => {
+    setForm({
+      pair: trade.pair || 'EUR/USD',
+      direction: trade.direction || 'LONG',
+      entryPrice: trade.entryPrice || '',
+      exitPrice: trade.exitPrice || '',
+      lotSize: trade.lotSize || '',
+      stopLoss: trade.stopLoss || '',
+      takeProfit: trade.takeProfit || '',
+      pnl: trade.pnl ?? '',
+      date: trade.date ? String(trade.date).split('T')[0] : new Date().toISOString().split('T')[0],
+      session: trade.session || 'London',
+      setup: trade.setup || '',
+      notes: trade.notes || '',
+      emotion: trade.emotion || 'Calm',
+      rating: trade.rating || 3,
+      beforeImage: trade.beforeImage || '',
+      beforeLink: trade.beforeLink || '',
+      afterImage: trade.afterImage || '',
+      afterLink: trade.afterLink || '',
+    })
+    setEditingId(trade.id)
+    setError('')
+    setShowForm(true)
   }
 
   const handleSubmit = async () => {
@@ -270,8 +299,8 @@ export default function TradeJournal() {
 
     try {
       const token = await getFreshToken(user.token)
-      const res = await fetch(`${API_URL}/api/trades`, {
-        method: 'POST',
+      const res = await fetch(editingId ? `${API_URL}/api/trades/${editingId}` : `${API_URL}/api/trades`, {
+        method: editingId ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
@@ -454,7 +483,7 @@ export default function TradeJournal() {
         {/* Action Bar */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
           <button
-            onClick={() => setShowForm(true)}
+            onClick={() => { resetForm(); setShowForm(true) }}
             className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
           >
             <Plus size={14} />
@@ -522,7 +551,7 @@ export default function TradeJournal() {
             </p>
             {trades.length === 0 && (
               <button
-                onClick={() => setShowForm(true)}
+                onClick={() => { resetForm(); setShowForm(true) }}
                 className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
               >
                 Log Your First Trade
@@ -688,12 +717,21 @@ export default function TradeJournal() {
                             {'★'.repeat(trade.rating)}{'☆'.repeat(5 - trade.rating)}
                           </span>
                         </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); deleteTrade(trade.id) }}
-                          className="text-slate-600 hover:text-red-400 transition-colors p-1"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); startEdit(trade) }}
+                            className="text-slate-600 hover:text-cyan-400 transition-colors p-1"
+                            title="Edit trade"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteTrade(trade.id) }}
+                            className="text-slate-600 hover:text-red-400 transition-colors p-1"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -710,8 +748,8 @@ export default function TradeJournal() {
             <div className="relative w-full max-w-lg bg-[#0a1628] border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] overflow-y-auto">
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 sticky top-0 bg-[#0a1628] z-10">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Plus size={16} className="text-cyan-400" />
-                  Log New Trade
+                  {editingId ? <Pencil size={16} className="text-cyan-400" /> : <Plus size={16} className="text-cyan-400" />}
+                  {editingId ? 'Edit Trade' : 'Log New Trade'}
                 </h3>
                 <button onClick={() => setShowForm(false)} className="text-slate-500 hover:text-white transition-colors">
                   <X size={18} />
@@ -955,7 +993,7 @@ export default function TradeJournal() {
                       Saving...
                     </>
                   ) : (
-                    'Save Trade'
+                    editingId ? 'Update Trade' : 'Save Trade'
                   )}
                 </button>
               </div>
