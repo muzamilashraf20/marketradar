@@ -764,11 +764,30 @@ async function computeTodaysAIBias(force = false) {
 
   // Change detection → alert subscribers (skip the very first computation)
   const newKey = `${result.direction} ${result.pair}`.toUpperCase()
-  if (lastTodaysBiasKey && newKey !== lastTodaysBiasKey) {
-    notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
+  if (newKey !== lastTodaysBiasKey) {
+    // 📜 Bias History: record every new bias (first of day + every pair/direction change)
+    saveBiasHistory(result, lastTodaysBiasKey || null).catch(() => {})
+    if (lastTodaysBiasKey) notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
   }
   lastTodaysBiasKey = newKey
   return result
+}
+
+// Save a Today's Bias snapshot to history whenever it changes
+async function saveBiasHistory(result, previousKey) {
+  try {
+    await supabase.from('bias_history').insert({
+      pair: result.pair,
+      direction: result.direction,
+      confidence: result.confidence,
+      trade_grade: result.tradeGrade,
+      reasoning: result.reasoning,
+      previous_bias: previousKey,
+      invalidation: result.bias?.levels?.invalidation || null,
+      generated_at: result.generatedAt || new Date().toISOString(),
+    })
+    console.log(`📜 Bias history saved: ${result.direction} ${result.pair} (was: ${previousKey || 'first of day'})`)
+  } catch (e) { console.error('Bias history save error:', e?.message) }
 }
 
 // Telegram + Email alert when Today's AI Bias flips direction/pair
@@ -799,6 +818,25 @@ async function notifyTodaysBiasChange(result, oldKey) {
 }
 
 // Dashboard widget endpoint — serves cached AI bias; computes lazily only when stale (>45 min)
+// 📜 Bias History — timeline of all Today's Bias changes (default: last 7 days, max 30)
+app.get('/api/bias-history', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 7, 30)
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+    const { data, error } = await supabase
+      .from('bias_history')
+      .select('*')
+      .gte('generated_at', since)
+      .order('generated_at', { ascending: false })
+      .limit(100)
+    if (error) throw error
+    res.json({ success: true, history: data || [], days })
+  } catch (e) {
+    console.error('bias-history error:', e?.message)
+    res.json({ success: true, history: [], error: 'history unavailable' })
+  }
+})
+
 app.get('/api/today-bias', async (req, res) => {
   try {
     if (isForexClosed()) {
