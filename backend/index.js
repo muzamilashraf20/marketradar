@@ -356,19 +356,28 @@ async function checkAndSendCalendarAlerts() {
 async function checkAndSendNewsAlerts() {
   const eSubs = emailSubscribers.filter(s => s.active && s.preferences?.news !== false)
   const tSubs = telegramSubscribers.filter(s => s.active && s.preferences?.news !== false)
-  if (eSubs.length === 0 && tSubs.length === 0) return
   try {
     const cached = getCached('latest_news')
     if (!cached) return
     const hi = cached.filter(a => a.impact >= 8 && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
 
-    const items = hi.slice(0, 3).map(a => ({ title: a.title, subtitle: `${a.source} · Impact: ${a.impact}/10`, badge: 'BREAKING', badgeColor: '#ef4444' }))
-    const html = buildAlertEmail({ type: 'news', title: `🚨 ${hi.length} High Impact News`, greeting: 'Breaking!', items })
-    for (const s of eSubs) await sendAlertEmail(s.email, `🚨 BiasForge: ${hi[0].title.slice(0, 50)}...`, html)
+    // ⚡ CATALYST TRIGGER: breaking high-impact news → re-evaluate Today's Bias immediately
+    // (force=true bypasses the 10-min per-symbol cache; daily pair lock still applies —
+    //  direction/confidence refresh on the locked pair, pair switches only if signal genuinely flipped)
+    console.log(`⚡ Catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → refreshing Today's Bias`)
+    computeTodaysAIBias(true).catch(() => {})
 
-    const tgTxt = tgNewsAlert(hi)
-    for (const s of tSubs) await sendTG(s.chat_id, tgTxt)
+    if (eSubs.length > 0) {
+      const items = hi.slice(0, 3).map(a => ({ title: a.title, subtitle: `${a.source} · Impact: ${a.impact}/10`, badge: 'BREAKING', badgeColor: '#ef4444' }))
+      const html = buildAlertEmail({ type: 'news', title: `🚨 ${hi.length} High Impact News`, greeting: 'Breaking!', items })
+      for (const s of eSubs) await sendAlertEmail(s.email, `🚨 BiasForge: ${hi[0].title.slice(0, 50)}...`, html)
+    }
+
+    if (tSubs.length > 0) {
+      const tgTxt = tgNewsAlert(hi)
+      for (const s of tSubs) await sendTG(s.chat_id, tgTxt)
+    }
 
     hi.forEach(a => sentNewsAlerts.add(a.title))
     console.log(`📰 News alert → ${eSubs.length} emails, ${tSubs.length} TG`)
@@ -487,10 +496,10 @@ async function getLiveStrength() {
 
 // Reusable AI bias generator — used by both the /api/bias route and the Today's Bias scheduler.
 // Returns the bias object (cached for CACHE_TTL per symbol+timeframe). Throws on AI/parse failure.
-async function generateBiasFor(symbol, timeframe) {
+async function generateBiasFor(symbol, timeframe, force = false) {
   const tf = timeframe || 'intraday'
   const cacheKey = `bias_${symbol}_${tf}`
-  if (isCacheFresh(cacheKey)) return getCached(cacheKey)
+  if (!force && isCacheFresh(cacheKey)) return getCached(cacheKey)
 
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
 
@@ -707,7 +716,8 @@ async function saveTodayBiasState(result) {
 }
 
 // Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
-async function computeTodaysAIBias() {
+// force=true bypasses the per-symbol cache (used on breaking-news catalysts)
+async function computeTodaysAIBias(force = false) {
   if (isForexClosed()) return null
   const strength = await getLiveStrength()
   const ranked = rankOandaPairs(strength)
@@ -725,7 +735,7 @@ async function computeTodaysAIBias() {
 
   let bias
   try {
-    bias = await generateBiasFor(top.symbol, 'intraday')
+    bias = await generateBiasFor(top.symbol, 'intraday', force)
   } catch (e) { console.error('Today bias gen error:', e?.message); return getCached('today_bias') || null }
 
   const result = {
