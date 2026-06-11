@@ -558,6 +558,18 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   const baseCur = symbol.substring(0, 3)
   const quoteCur = symbol.substring(3, 6)
 
+  // 6. Institutional positioning (COT) for the pair's currencies — weekly CFTC data
+  let cotData = 'Not available'
+  try {
+    const cot = await getCOTData()
+    const rel = (cot?.data || []).filter(c => c.currency === baseCur || c.currency === quoteCur)
+    if (rel.length) {
+      cotData = rel.map(c =>
+        `${c.currency}: ${c.bias} (net ${c.netPosition > 0 ? '+' : ''}${c.netPosition.toLocaleString()} contracts; leveraged funds net ${c.breakdown?.leveragedFunds?.net > 0 ? '+' : ''}${(c.breakdown?.leveragedFunds?.net || 0).toLocaleString()})`
+      ).join(' | ') + ` [CFTC report: ${cot.reportDate}]`
+    }
+  } catch (e) {}
+
   const template = `{
   "symbol": "${symbol}",
   "direction": "Bullish|Bearish|Neutral",
@@ -612,7 +624,9 @@ CRITICAL RULES:
 
 6. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.
 
-7. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.`
+7. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.
+
+8. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.`
 
   const prevLine = prevBias
     ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
@@ -634,6 +648,9 @@ ${calendarData}
 
 RECENT HIGH-IMPACT NEWS:
 ${newsData}
+
+INSTITUTIONAL POSITIONING (COT — weekly CFTC report, ${baseCur}/${quoteCur} relevant only):
+${cotData}
 
 Combine ALL data sources above for your analysis. Return JSON matching this structure:
 ${template}`
@@ -1293,7 +1310,9 @@ app.get('/api/news', async (req, res) => {
 // ============================================
 // 📊 COT REPORT (Currencies + Commodities + Crypto)
 // ============================================
-app.get('/api/cot', async (req, res) => {
+// Reusable COT fetcher (cached 6h — CFTC data updates weekly on Fridays)
+async function getCOTData() {
+  if (isCacheFreshFor('cot_data', 6 * 60 * 60 * 1000)) return getCached('cot_data')
   // ── Dataset 1: TFF (gpe5-46if) — Currencies + USD Index ──
   const FINANCIAL_MAP = {
     'EURO FX':              { currency: 'EUR', flag: '🇪🇺' },
@@ -1313,16 +1332,14 @@ app.get('/api/cot', async (req, res) => {
     
   }
 
-  try {
-    const results = []
-    const seen = new Set()
-
+  const results = []
+  const seen = new Set()
+  let reportDate = ''
+  {
     // ── Fetch 1: Financial instruments (currencies) ──
     const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
                    '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
     const finRes = await fetch(finUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
-
-    let reportDate = ''
 
     if (finRes.ok) {
       const finRows = await finRes.json()
@@ -1424,14 +1441,20 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
         : Math.abs(b.netPosition) - Math.abs(a.netPosition)
     })
 
-    res.json({
-      success: true,
-      data: results,
-      reportDate,
-      fetchedAt: new Date().toISOString(),
-    })
+    const payload = { data: results, reportDate }
+    setCache('cot_data', payload)
+    return payload
+  }
+}
+
+app.get('/api/cot', async (req, res) => {
+  try {
+    const cot = await getCOTData()
+    res.json({ success: true, data: cot.data, reportDate: cot.reportDate, fetchedAt: new Date().toISOString() })
   } catch (e) {
     console.error('COT error:', e.message)
+    const stale = getCached('cot_data')
+    if (stale) return res.json({ success: true, ...stale, stale: true, fetchedAt: new Date().toISOString() })
     res.status(502).json({ success: false, error: 'COT fetch failed' })
   }
 })
