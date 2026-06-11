@@ -500,6 +500,7 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   const tf = timeframe || 'intraday'
   const cacheKey = `bias_${symbol}_${tf}`
   if (!force && isCacheFresh(cacheKey)) return getCached(cacheKey)
+  const prevBias = getCached(cacheKey) // previous analysis (even if stale) — used for bias continuity
 
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
 
@@ -609,12 +610,21 @@ CRITICAL RULES:
 
 5. Return ONLY valid JSON. No markdown, no explanation outside JSON.
 
-6. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.`
+6. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.
+
+7. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.`
+
+  const prevLine = prevBias
+    ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
+    : 'None — this is the first analysis for this symbol today'
 
   const userPrompt = `Analyze ${symbol} (${baseCur}/${quoteCur}) for ${tf} bias.
 
 CURRENT LIVE PRICE: ${currentPrice}
 TIMESTAMP: ${new Date().toISOString()}
+
+PREVIOUS BIAS (your own earlier analysis — apply rule 7):
+${prevLine}
 
 CURRENCY STRENGTH DATA:
 ${strengthData || 'Not available'}
