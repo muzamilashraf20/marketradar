@@ -36,6 +36,7 @@ export default function Dashboard() {
 
   const [events, setEvents] = useState([])
   const [eventsLoading, setEventsLoading] = useState(true)
+  const [highImpactToday, setHighImpactToday] = useState(0)
 
   const [strength, setStrength] = useState(null)
   const [strengthLoading, setStrengthLoading] = useState(true)
@@ -86,6 +87,15 @@ export default function Dashboard() {
       const data = await res.json()
       if (Array.isArray(data)) {
         const now = new Date()
+        // Count ALL of today's high-impact events (same logic as Econ Calendar page)
+        const isTodayDate = (ds) => {
+          if (!ds) return false
+          const d = new Date(ds), t = new Date()
+          return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate()
+        }
+        setHighImpactToday(
+          data.filter(e => isTodayDate(e.date) && (String(e.impact).toLowerCase() === 'high' || e.impact === 3)).length
+        )
         const upcoming = data
           .filter(e => new Date(e.date) >= now)
           .sort((a, b) => {
@@ -130,6 +140,7 @@ export default function Dashboard() {
           confidence: data.confidence,
           grade: data.tradeGrade,
           reasoning: data.reasoning,
+          generatedAt: data.generatedAt || null,
         })
       } else {
         setAiBias(null)
@@ -226,9 +237,19 @@ export default function Dashboard() {
         reason: aiBias.reasoning,
         confidence: aiBias.confidence,
         grade: aiBias.grade,
+        generatedAt: aiBias.generatedAt,
         ai: true,
       }
     : getBiasFromStrength()
+
+  // Bias freshness: stale if generated 60+ minutes ago
+  const biasAgeMins = todaysBias?.generatedAt
+    ? Math.floor((Date.now() - new Date(todaysBias.generatedAt).getTime()) / 60000)
+    : null
+  const biasIsStale = biasAgeMins !== null && biasAgeMins >= 60
+  const biasGeneratedLabel = todaysBias?.generatedAt
+    ? new Date(todaysBias.generatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
+    : null
 
   const biasWidgetLoading = aiBiasLoading && strengthLoading
   const topEvent = events[0]
@@ -253,7 +274,7 @@ export default function Dashboard() {
               </div>
               <div className="min-w-0">
                 <p className="text-lg font-black text-white leading-none">
-                  {eventsLoading ? '...' : events.filter(e => e.impact === 'High' || e.impact === 3).length}
+                  {eventsLoading ? '...' : highImpactToday}
                 </p>
                 <p className="text-[10px] text-slate-500 truncate">High-Impact Events Today</p>
               </div>
@@ -343,6 +364,21 @@ export default function Dashboard() {
                   </p>
                 ) : null}
                 <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
+                {todaysBias.ai && biasGeneratedLabel ? (
+                  biasIsStale ? (
+                    <button
+                      onClick={fetchTodayBias}
+                      className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      <AlertCircle size={10} />
+                      Stale · {biasGeneratedLabel} · Tap to refresh
+                    </button>
+                  ) : (
+                    <p className="mt-1 text-[10px] text-slate-400 font-medium">
+                      Generated at {biasGeneratedLabel}
+                    </p>
+                  )
+                ) : null}
               </>
             ) : (
               <>
