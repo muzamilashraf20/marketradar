@@ -470,7 +470,7 @@ app.get('/api/prices', async (req, res) => {
 // ============================================
 app.post('/api/ai', async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
-  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
+  try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); trackAI('ai-analyze', 'claude-sonnet-4-6', m.usage); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
 // Returns fresh currency strength, computing it live if the cache is cold and the market is open.
 // Returns null when the forex market is closed (weekend) — strength is meaningless then.
@@ -644,6 +644,7 @@ ${template}`
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }]
   })
+  trackAI('bias-engine', 'claude-sonnet-4-6', m.usage)
   const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
   const bias = JSON.parse(raw)
   bias.generatedAt = new Date().toISOString()
@@ -681,6 +682,25 @@ app.post('/api/bias', async (req, res) => {
 // ============================================
 let lastTodaysBiasKey = ''
 const TODAY_BIAS_TTL = 45 * 60 * 1000 // 45 min — keeps Anthropic cost bounded under dashboard traffic
+
+// ── 💰 AI cost tracking — logs every Anthropic call's token usage and estimated cost ──
+const MODEL_PRICES = { 'claude-sonnet-4-6': { in: 3, out: 15 }, 'claude-haiku-4-5-20251001': { in: 1, out: 5 } } // $ per 1M tokens
+let aiCosts = { date: new Date().toISOString().slice(0, 10), totalUSD: 0, calls: 0, byFeature: {} }
+function trackAI(label, model, usage) {
+  try {
+    const day = new Date().toISOString().slice(0, 10)
+    if (aiCosts.date !== day) aiCosts = { date: day, totalUSD: 0, calls: 0, byFeature: {} }
+    const p = MODEL_PRICES[model] || { in: 3, out: 15 }
+    const cost = ((usage?.input_tokens || 0) * p.in + (usage?.output_tokens || 0) * p.out) / 1e6
+    aiCosts.totalUSD += cost; aiCosts.calls++
+    if (!aiCosts.byFeature[label]) aiCosts.byFeature[label] = { calls: 0, usd: 0 }
+    aiCosts.byFeature[label].calls++; aiCosts.byFeature[label].usd = +(aiCosts.byFeature[label].usd + cost).toFixed(4)
+    console.log(`💰 [${label}] in:${usage?.input_tokens || 0} out:${usage?.output_tokens || 0} ≈ $${cost.toFixed(4)} | today: $${aiCosts.totalUSD.toFixed(3)} (${aiCosts.calls} calls)`)
+  } catch (e) {}
+}
+
+// Memo of already-scored news (title → scores) so each article is scored by AI only ONCE
+const newsScoreMemo = new Map()
 
 // Pick the strongest OANDA-tradeable pair from live currency strength divergence
 function rankOandaPairs(strength) {
@@ -818,6 +838,11 @@ async function notifyTodaysBiasChange(result, oldKey) {
 }
 
 // Dashboard widget endpoint — serves cached AI bias; computes lazily only when stale (>45 min)
+// 💰 AI cost dashboard — today's Anthropic spend estimate, per feature
+app.get('/api/ai-costs', (req, res) => {
+  res.json({ success: true, ...aiCosts, totalUSD: +aiCosts.totalUSD.toFixed(4) })
+})
+
 // 📜 Bias History — timeline of all Today's Bias changes (default: last 7 days, max 30)
 app.get('/api/bias-history', async (req, res) => {
   try {
@@ -900,6 +925,7 @@ RULE-BASED DRAFT: ${JSON.stringify({ verdict, headline, reasons, warnings, recom
           system: 'You are an elite prop firm risk advisor. Refine the rule-based draft verdict using the trade context. Respond with ONLY valid JSON, no markdown fences, no preamble, exactly this shape: {"verdict":"GREEN|YELLOW|RED","headline":"short punchy headline (max 8 words)","reasons":["3-4 short specific bullets, each under 12 words"],"warnings":["0-2 warnings, only if genuinely warranted"],"recommendation":"one actionable sentence","confidence":85}. Rules: verdict must be GREEN, YELLOW or RED. reasons must always contain 3-4 items grounded in the numbers provided. Never invent news events not listed in context. confidence is an integer 0-100.',
           messages: [{ role: 'user', content: ctx }]
         })
+        trackAI('guardian', 'claude-sonnet-4-6', m.usage)
         const ai = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
         final = {
           verdict: ['GREEN','YELLOW','RED'].includes(ai.verdict) ? ai.verdict : verdict,
@@ -1183,8 +1209,20 @@ app.get('/api/news', async (req, res) => {
     const results=await Promise.allSettled(feeds.map(f=>rssParser.parseURL(f.url).then(p=>p.items.slice(0,12).map(i=>({source:f.name,title:i.title||'',summary:i.contentSnippet||'',url:i.link||'',publishedAt:i.pubDate?new Date(i.pubDate).toISOString():new Date().toISOString()})))))
     let articles=[];results.forEach((r,i)=>{if(r.status==='fulfilled')articles.push(...r.value)})
     if(!articles.length)return res.status(502).json({success:false,error:'All feeds failed'})
-    let scored=articles.map(a=>({...a,impact:5,category:'General',bias:'neutral',marketTags:[],oneliner:''}))
-    try{const titles=articles.map((a,i)=>`${i+1}.[${a.source}]${a.title}`).join('\n');const m=await anthropic.messages.create({model:'claude-haiku-4-5-20251001',max_tokens:8192,system:'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]',messages:[{role:'user',content:`Score:\n${titles}`}]});const s=JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim());s.forEach(x=>{const idx=x.index-1;if(scored[idx]){scored[idx].impact=x.impact||5;scored[idx].category=x.category||'General';scored[idx].bias=x.bias||'neutral';scored[idx].marketTags=x.marketTags||[];scored[idx].oneliner=x.oneliner||''}})}catch(e){}
+    // Reuse previous scores; only send NEW (unseen) articles to the AI — was re-scoring all ~50 articles every 10 min
+    let scored=articles.map(a=>{const prev=newsScoreMemo.get(a.title);return prev?{...a,...prev}:{...a,impact:5,category:'General',bias:'neutral',marketTags:[],oneliner:'',_unscored:true}})
+    const unscored=scored.map((a,i)=>({a,i})).filter(x=>x.a._unscored)
+    if(unscored.length){
+      try{
+        const titles=unscored.map((x,n)=>`${n+1}.[${x.a.source}]${x.a.title}`).join('\n')
+        const m=await anthropic.messages.create({model:'claude-haiku-4-5-20251001',max_tokens:4096,system:'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]',messages:[{role:'user',content:`Score:\n${titles}`}]})
+        trackAI('news-scoring','claude-haiku-4-5-20251001',m.usage)
+        const s=JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim())
+        s.forEach(x=>{const u=unscored[x.index-1];if(u){const f={impact:x.impact||5,category:x.category||'General',bias:x.bias||'neutral',marketTags:x.marketTags||[],oneliner:x.oneliner||''};Object.assign(scored[u.i],f);newsScoreMemo.set(u.a.title,f)}})
+        if(newsScoreMemo.size>300){const keys=[...newsScoreMemo.keys()];keys.slice(0,keys.length-300).forEach(k=>newsScoreMemo.delete(k))}
+      }catch(e){}
+    }
+    scored.forEach(a=>{delete a._unscored})
     scored.sort((a,b)=>b.impact!==a.impact?b.impact-a.impact:new Date(b.publishedAt)-new Date(a.publishedAt))
     setCache('latest_news',scored);res.json({success:true,articles:scored})
   } catch(e){res.status(500).json({success:false,error:'News failed'})}
