@@ -4,7 +4,7 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight, ArrowDownRight, Minus,
-  BarChart2, RefreshCw, Zap, Loader2
+  BarChart2, RefreshCw, Zap, Loader2, History, X
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonCard, SkeletonRow } from '../components/common/Skeleton'
@@ -37,6 +37,20 @@ export default function Dashboard() {
   const [events, setEvents] = useState([])
   const [eventsLoading, setEventsLoading] = useState(true)
   const [highImpactToday, setHighImpactToday] = useState(0)
+  const [showBiasHistory, setShowBiasHistory] = useState(false)
+  const [biasHistory, setBiasHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const openBiasHistory = async () => {
+    setShowBiasHistory(true)
+    setHistoryLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/bias-history?days=7`)
+      const data = await res.json()
+      setBiasHistory(Array.isArray(data.history) ? data.history : [])
+    } catch (e) { setBiasHistory([]) }
+    setHistoryLoading(false)
+  }
 
   const [strength, setStrength] = useState(null)
   const [strengthLoading, setStrengthLoading] = useState(true)
@@ -337,15 +351,24 @@ export default function Dashboard() {
           }`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
-              <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center ${
-                todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
-              }`}>
-                {strengthLoading
-                  ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={openBiasHistory}
+                  title="Bias history"
+                  className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors"
+                >
+                  <History size={13} className="text-slate-400" />
+                </button>
+                <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center ${
+                  todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
+                }`}>
+                  {strengthLoading
+                    ? <Loader2 size={13} className="text-slate-400 animate-spin" />
                   : todaysBias?.action === 'SELL'
                   ? <TrendingDown size={13} className="text-red-400" />
                   : <TrendingUp size={13} className="text-emerald-400" />
                 }
+                </div>
               </div>
             </div>
             {strengthLoading ? (
@@ -744,6 +767,67 @@ export default function Dashboard() {
         </div>
 
       </div>
+
+      {/* ── Bias History Modal ── */}
+      {showBiasHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setShowBiasHistory(false)}>
+          <div
+            className="w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl bg-[#030712] border border-white/10 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <History size={16} className="text-cyan-400" />
+                <h3 className="text-sm font-bold text-white">Bias History</h3>
+                <span className="text-[10px] text-slate-500">Last 7 days</span>
+              </div>
+              <button onClick={() => setShowBiasHistory(false)} className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors">
+                <X size={14} className="text-slate-400" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {historyLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 size={20} className="text-cyan-400 animate-spin" />
+                </div>
+              ) : biasHistory.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-8">No bias history yet — entries appear as the bias updates.</p>
+              ) : (
+                biasHistory.map((h) => {
+                  const isSell = /bear/i.test(h.direction || '')
+                  return (
+                    <div key={h.id} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            isSell ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'
+                          }`}>
+                            {isSell ? 'SELL' : 'BUY'} {h.pair}
+                          </span>
+                          {h.confidence ? (
+                            <span className="text-[10px] text-cyan-400 font-semibold">
+                              {h.confidence}%{h.trade_grade && h.trade_grade !== '-' ? ` · ${h.trade_grade}` : ''}
+                            </span>
+                          ) : null}
+                        </div>
+                        <span className="text-[10px] text-slate-500 shrink-0">
+                          {h.generated_at ? new Date(h.generated_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
+                      </div>
+                      {h.previous_bias ? (
+                        <p className="text-[10px] text-amber-400/80 mb-0.5">Changed from: {h.previous_bias}</p>
+                      ) : (
+                        <p className="text-[10px] text-slate-500 mb-0.5">First bias of the day</p>
+                      )}
+                      {h.reasoning ? <p className="text-[10px] text-slate-500 line-clamp-2">{h.reasoning}</p> : null}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   )
 }
