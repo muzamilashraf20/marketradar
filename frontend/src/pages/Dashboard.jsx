@@ -140,7 +140,8 @@ export default function Dashboard() {
           confidence: data.confidence,
           grade: data.tradeGrade,
           reasoning: data.reasoning,
-          generatedAt: data.generatedAt || null,
+          generatedAt: data.generatedAt || data.updatedAt || data.bias?.generatedAt || null,
+          stale: !!data.stale,
         })
       } else {
         setAiBias(null)
@@ -238,15 +239,16 @@ export default function Dashboard() {
         confidence: aiBias.confidence,
         grade: aiBias.grade,
         generatedAt: aiBias.generatedAt,
+        stale: aiBias.stale,
         ai: true,
       }
     : getBiasFromStrength()
 
-  // Bias freshness: stale if generated 60+ minutes ago
+  // Bias freshness: stale if generated 60+ minutes ago, or backend flagged it stale
   const biasAgeMins = todaysBias?.generatedAt
     ? Math.floor((Date.now() - new Date(todaysBias.generatedAt).getTime()) / 60000)
     : null
-  const biasIsStale = biasAgeMins !== null && biasAgeMins >= 60
+  const biasIsStale = todaysBias?.stale || (biasAgeMins !== null && biasAgeMins >= 60)
   const biasGeneratedLabel = todaysBias?.generatedAt
     ? new Date(todaysBias.generatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
     : null

@@ -515,7 +515,7 @@ async function generateBiasFor(symbol, timeframe) {
     }
   } catch (e) {}
 
-  // 3. Get upcoming calendar events (3 days ahead)
+  // 3. Get upcoming calendar events (3 days ahead) — with relative time so the AI never calls a past event "upcoming"
   let calendarData = 'No upcoming events'
   try {
     const now = new Date()
@@ -523,7 +523,11 @@ async function generateBiasFor(symbol, timeframe) {
     const events = (await getEconomicCalendar())
       .filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) > now && new Date(e.time) < ahead)
       .slice(0, 8)
-      .map(e => `${e.event} (${e.country}) at ${e.time || 'TBD'} - Impact: HIGH`)
+      .map(e => {
+        const mins = Math.round((new Date(e.time) - now) / 60000)
+        const rel = mins < 60 ? `in ${mins}min` : mins < 1440 ? `in ${Math.floor(mins / 60)}h ${mins % 60}m` : `in ${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`
+        return `${e.event} (${e.country}) ${rel} [${e.time}] - Impact: HIGH`
+      })
     if (events.length > 0) calendarData = events.join(' | ')
   } catch (e) {}
 
@@ -594,7 +598,9 @@ CRITICAL RULES:
 
 4. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text. IF THE CURRENT PRICE IS "unknown": do NOT estimate or invent any price levels from memory — set every field inside "levels" and the invalidation to the string "N/A" and focus only on direction, confidence, and reasoning.
 
-5. Return ONLY valid JSON. No markdown, no explanation outside JSON.`
+5. Return ONLY valid JSON. No markdown, no explanation outside JSON.
+
+6. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.`
 
   const userPrompt = `Analyze ${symbol} (${baseCur}/${quoteCur}) for ${tf} bias.
 
@@ -694,6 +700,7 @@ async function computeTodaysAIBias() {
     tradeGrade: bias.tradeGrade || '-',
     reasoning: bias.reasoning || '',
     bias, // full object for the dashboard widget
+    generatedAt: bias.generatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
   setCache('today_bias', result)
@@ -738,17 +745,21 @@ async function notifyTodaysBiasChange(result, oldKey) {
 app.get('/api/today-bias', async (req, res) => {
   try {
     if (isForexClosed()) {
-      return res.json({ success: true, marketClosed: true, reason: 'Forex market closed (weekend)', bias: getCached('today_bias') || null })
+      const cached = getCached('today_bias')
+      return res.json({ success: true, marketClosed: true, reason: 'Forex market closed (weekend)', ...(cached || { bias: null }), stale: !!cached })
     }
     if (isCacheFreshFor('today_bias', TODAY_BIAS_TTL)) {
       return res.json({ success: true, ...getCached('today_bias'), cached: true })
     }
     const result = await computeTodaysAIBias()
     if (!result) return res.json({ success: true, bias: null, reason: 'No strong pair available right now' })
-    res.json({ success: true, ...result })
+    // computeTodaysAIBias falls back to the old cache on AI failure — flag it if it's older than the TTL
+    const isStale = result.updatedAt && (Date.now() - new Date(result.updatedAt).getTime()) > TODAY_BIAS_TTL
+    res.json({ success: true, ...result, stale: isStale })
   } catch (e) {
     console.error('today-bias error:', e?.message)
-    res.json({ success: true, bias: getCached('today_bias') || null, error: 'compute failed' })
+    const cached = getCached('today_bias')
+    res.json({ success: true, ...(cached || { bias: null }), stale: !!cached, error: 'compute failed' })
   }
 })
 
