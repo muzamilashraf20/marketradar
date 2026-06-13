@@ -896,6 +896,124 @@ app.get('/api/bias-history', async (req, res) => {
   }
 })
 
+// ============================================
+// 🎯 BIAS ACCURACY TRACKER
+// Scores every saved bias against REAL TwelveData 1h candles (24h window).
+// Finalized scores are persisted to bias_history.performance (jsonb), so each
+// bias is fetched/computed exactly ONCE — protects the TwelveData free tier.
+// Requires (run once in Supabase SQL editor):
+//   alter table bias_history add column if not exists performance jsonb;
+// ============================================
+const TRACKER_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
+const TRACKER_WINDOW_HOURS = 24
+const TRACKER_MAX_FETCHES = 6 // TwelveData free tier = 8 credits/min — leave headroom
+
+function trackerPipSize(pair) {
+  const p = (pair || '').toUpperCase()
+  if (p.includes('JPY')) return 0.01
+  if (p.includes('XAU')) return 0.1
+  if (p.includes('BTC') || p.includes('NAS')) return 1
+  return 0.0001
+}
+function trackerIsLong(direction) { return /BULL|BUY|LONG/i.test(direction || '') }
+function tdDateUTC(d) { return new Date(d).toISOString().slice(0, 19).replace('T', ' ') }
+
+// Score one bias against real candles. NEVER guesses — explicit error on missing data.
+async function scoreBias(row) {
+  const symbol = TRACKER_SYMBOL_MAP[(row.pair || '').toUpperCase()]
+  if (!symbol) return { status: 'error', error: `No symbol mapping for ${row.pair}` }
+  const start = new Date(row.generated_at)
+  const windowEnd = new Date(start.getTime() + TRACKER_WINDOW_HOURS * 3600 * 1000)
+  const isFinal = Date.now() > windowEnd.getTime()
+  try {
+    const r = await axios.get('https://api.twelvedata.com/time_series', {
+      params: {
+        symbol, interval: '1h', timezone: 'UTC',
+        start_date: tdDateUTC(start), end_date: tdDateUTC(windowEnd),
+        outputsize: 30, apikey: process.env.TWELVEDATA_API_KEY
+      }
+    })
+    if (r.data?.status === 'error' || !Array.isArray(r.data?.values) || !r.data.values.length) {
+      return { status: 'error', error: r.data?.message || 'No candle data returned (market closed or rate limit)' }
+    }
+    const candles = [...r.data.values].reverse() // TwelveData = newest first → flip to ascending
+    const entry = parseFloat(candles[0].open)
+    const endPrice = parseFloat(candles[candles.length - 1].close)
+    const hi = Math.max(...candles.map(c => parseFloat(c.high)))
+    const lo = Math.min(...candles.map(c => parseFloat(c.low)))
+    const pip = trackerPipSize(row.pair)
+    const long = trackerIsLong(row.direction)
+    const pips = +(((endPrice - entry) * (long ? 1 : -1)) / pip).toFixed(1)
+    const mfe = +((long ? hi - entry : entry - lo) / pip).toFixed(1)
+    const mae = +((long ? entry - lo : hi - entry) / pip).toFixed(1)
+    return {
+      status: isFinal ? 'final' : 'live',
+      entryPrice: entry, endPrice,
+      pips, mfePips: mfe, maePips: mae,
+      correct: pips > 0,
+      candles: candles.length, windowHours: TRACKER_WINDOW_HOURS,
+      scoredAt: new Date().toISOString()
+    }
+  } catch (e) {
+    return { status: 'error', error: e?.message || 'TwelveData fetch failed' }
+  }
+}
+
+// 🎯 Bias performance — every bias scored vs real market + summary stats
+app.get('/api/bias-performance', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 14, 30)
+    const cacheKey = `bias_performance_${days}`
+    if (isCacheFresh(cacheKey)) return res.json(getCached(cacheKey))
+    const since = new Date(Date.now() - days * 86400 * 1000).toISOString()
+    const { data: rows, error } = await supabase
+      .from('bias_history').select('*')
+      .gte('generated_at', since)
+      .order('generated_at', { ascending: false })
+      .limit(50)
+    if (error) throw error
+
+    let fetches = 0
+    const results = []
+    for (const row of rows || []) {
+      // Already permanently scored → reuse, zero API cost
+      if (row.performance?.status === 'final') { results.push(row); continue }
+      if (fetches >= TRACKER_MAX_FETCHES) {
+        results.push({ ...row, performance: { status: 'pending', note: 'Queued (rate-limit headroom) — scores on next refresh' } })
+        continue
+      }
+      fetches++
+      const perf = await scoreBias(row)
+      // Persist ONLY completed 24h windows — each bias costs exactly one fetch, ever
+      if (perf.status === 'final') {
+        try {
+          const { error: upErr } = await supabase.from('bias_history').update({ performance: perf }).eq('id', row.id)
+          if (upErr) console.error('Tracker persist error (run the performance column SQL?):', upErr.message)
+        } catch (pe) { console.error('Tracker persist error:', pe?.message) }
+      }
+      results.push({ ...row, performance: perf })
+    }
+
+    const scored = results.filter(r => r.performance && (r.performance.status === 'final' || r.performance.status === 'live'))
+    const wins = scored.filter(r => r.performance.correct)
+    const summary = {
+      total: results.length,
+      scored: scored.length,
+      wins: wins.length,
+      winRate: scored.length ? +((wins.length / scored.length) * 100).toFixed(1) : null,
+      avgPips: scored.length ? +(scored.reduce((s, r) => s + r.performance.pips, 0) / scored.length).toFixed(1) : null,
+      avgMfePips: scored.length ? +(scored.reduce((s, r) => s + r.performance.mfePips, 0) / scored.length).toFixed(1) : null,
+      avgMaePips: scored.length ? +(scored.reduce((s, r) => s + r.performance.maePips, 0) / scored.length).toFixed(1) : null
+    }
+    const payload = { success: true, days, summary, history: results }
+    setCache(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('bias-performance error:', e?.message)
+    res.status(500).json({ success: false, error: e?.message || 'performance unavailable' })
+  }
+})
+
 app.get('/api/today-bias', async (req, res) => {
   try {
     if (isForexClosed()) {
