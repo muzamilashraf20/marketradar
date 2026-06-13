@@ -43,11 +43,11 @@ function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date
 // 10-min cache + stale fallback (FF rate-limits aggressively)
 // ============================================
 const FF_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'application/json' }
+// FF nextweek.json is dead (404) — FF free feed only reliably serves thisweek. Used as FALLBACK only.
 const FF_FEEDS = [
-  { name: 'thisweek', url: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json' },
-  { name: 'nextweek', url: 'https://nfs.faireconomy.media/ff_calendar_nextweek.json' }
+  { name: 'thisweek', url: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json' }
 ]
-// Fetch a single FF feed with retry. Returns [] on failure (logged), never throws.
+// Fetch a single FF feed with retry. 404 = dead URL → skip immediately (no retry). Returns [] on failure.
 async function fetchFFFeed(feed) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -57,31 +57,70 @@ async function fetchFFFeed(feed) {
       console.log(`📅 FF ${feed.name}: ${arr.length} events loaded`)
       return arr
     } catch (e) {
-      console.error(`⚠️ FF ${feed.name} attempt ${attempt} failed: ${e?.response?.status || ''} ${e?.message}`)
+      const status = e?.response?.status
+      console.error(`⚠️ FF ${feed.name} attempt ${attempt} failed: ${status || ''} ${e?.message}`)
+      if (status === 404) break // dead URL — retrying won't help
       if (attempt < 2) await new Promise(r => setTimeout(r, 1500))
     }
   }
-  console.error(`❌ FF ${feed.name}: ALL attempts failed — feed skipped`)
+  console.error(`❌ FF ${feed.name}: skipped`)
   return []
 }
+
+// ── FMP economic calendar (PRIMARY): forward-looking, date-range, works on weekends ──
+// Docs: https://financialmodelingprep.com/stable/economic-calendar  (free tier 250 req/day, UTC times)
+const FMP_KEY = process.env.FMP_API_KEY
+const MAJOR_CCY = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY']
+const CCY_FROM_COUNTRY = { US: 'USD', EU: 'EUR', EA: 'EUR', EMU: 'EUR', DE: 'EUR', FR: 'EUR', IT: 'EUR', ES: 'EUR', GB: 'GBP', UK: 'GBP', JP: 'JPY', AU: 'AUD', CA: 'CAD', CH: 'CHF', NZ: 'NZD', CN: 'CNY' }
+function normImpact(v) { const s = String(v || '').toLowerCase(); return s === 'high' ? 'High' : s === 'medium' ? 'Medium' : s === 'low' ? 'Low' : 'Low' }
+function parseFMPDate(d) {
+  if (!d) return null
+  let s = String(d).trim()
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s).toISOString() // already has tz
+  return new Date(s.replace(' ', 'T') + 'Z').toISOString()                 // "YYYY-MM-DD HH:mm:ss" = UTC
+}
+async function fetchFMPCalendar() {
+  if (!FMP_KEY) return null
+  const from = new Date().toISOString().slice(0, 10)
+  const to = new Date(Date.now() + 14 * 86400 * 1000).toISOString().slice(0, 10)
+  try {
+    const r = await axios.get('https://financialmodelingprep.com/stable/economic-calendar', { params: { from, to, apikey: FMP_KEY }, timeout: 12000 })
+    if (!Array.isArray(r.data) || !r.data.length) { console.error('⚠️ FMP calendar returned empty/invalid'); return null }
+    const norm = r.data.map(e => {
+      const ccy = (e.currency && String(e.currency).toUpperCase()) || CCY_FROM_COUNTRY[String(e.country || '').toUpperCase()] || String(e.country || '').toUpperCase()
+      const fc = e.estimate ?? e.forecast
+      return { event: e.event || 'Event', country: ccy, time: parseFMPDate(e.date), impact: normImpact(e.impact), forecast: (fc === null || fc === undefined) ? '' : String(fc), previous: (e.previous === null || e.previous === undefined) ? '' : String(e.previous) }
+    }).filter(e => e.time && MAJOR_CCY.includes(e.country))
+    console.log(`📅 FMP calendar: ${norm.length} major-currency events (${from} → ${to})`)
+    return norm
+  } catch (e) {
+    console.error(`⚠️ FMP calendar failed: ${e?.response?.status || ''} ${e?.message}`)
+    return null
+  }
+}
+
 async function getEconomicCalendar() {
   if (isCacheFresh('ff_calendar')) return getCached('ff_calendar')
+  // 1) PRIMARY: FMP (forward-looking, weekend-safe)
+  const fmp = await fetchFMPCalendar()
+  if (fmp && fmp.length) { setCache('ff_calendar', fmp); return fmp }
+  // 2) FALLBACK: ForexFactory thisweek
   try {
+    console.log('↩️ FMP unavailable — falling back to ForexFactory')
     const arrays = await Promise.all(FF_FEEDS.map(fetchFFFeed))
     const raw = arrays.flat()
     if (raw.length === 0) throw new Error('FF calendar empty (all feeds failed)')
     const norm = raw.filter(e => e.date).map(e => ({ event: e.title || 'Event', country: (e.country || 'N/A').toUpperCase(), time: new Date(e.date).toISOString(), impact: e.impact || 'Low', forecast: e.forecast || '', previous: e.previous || '' }))
-    // Dedupe (both feeds can overlap on week boundary) by event+country+time
     const seen = new Set()
     const deduped = norm.filter(e => { const k = `${e.event}|${e.country}|${e.time}`; if (seen.has(k)) return false; seen.add(k); return true })
     const future = deduped.filter(e => new Date(e.time) >= new Date()).length
-    console.log(`📅 FF calendar merged: ${deduped.length} unique events (${future} upcoming)`)
+    console.log(`📅 FF calendar (fallback): ${deduped.length} events (${future} upcoming)`)
     setCache('ff_calendar', deduped)
     return deduped
   } catch (err) {
-    console.error('❌ FF calendar fetch failed:', err.message)
+    console.error('❌ Calendar fetch failed (FMP + FF):', err.message)
     const stale = getCached('ff_calendar')
-    if (stale) { console.log('📦 Using stale FF calendar cache'); return stale }
+    if (stale) { console.log('📦 Using stale calendar cache'); return stale }
     throw err
   }
 }
