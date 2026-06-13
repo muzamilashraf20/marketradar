@@ -269,7 +269,7 @@ export default function EconomicCalendar() {
   const [error, setError] = useState('');
   const [selectedEvent, setSelectedEvent] = useState(null);
 
-  const [dayFilter, setDayFilter] = useState('Today');
+  const [dayFilter, setDayFilter] = useState('All');
   const [currencyFilter, setCurrencyFilter] = useState('All');
   const [impactFilter, setImpactFilter] = useState('All');
   const [search, setSearch] = useState('');
@@ -308,30 +308,16 @@ export default function EconomicCalendar() {
     return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
   }
 
-  function isThisWeek(dateString) {
+  // Rolling windows (not rigid Sun-Sat weeks) so loaded events always stay visible
+  function isUpcoming(dateString) {
     if (!dateString) return false;
-    const d = new Date(dateString);
-    const now = new Date();
-    const start = new Date(now);
-    start.setDate(now.getDate() - now.getDay());
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
-    return d >= start && d <= end;
+    return new Date(dateString) >= new Date(); // now → future
   }
 
-  function isNextWeek(dateString) {
+  function isRecent(dateString) {
     if (!dateString) return false;
-    const d = new Date(dateString);
-    const now = new Date();
-    const start = new Date(now);
-    start.setDate(now.getDate() - now.getDay() + 7);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
-    return d >= start && d <= end;
+    const diff = new Date() - new Date(dateString);
+    return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000; // last 7 days (already released)
   }
 
   function getCountdown(dateString) {
@@ -348,9 +334,9 @@ export default function EconomicCalendar() {
     return events
       .filter(e => {
         if (dayFilter === 'Today') return isToday(e.date)
-        if (dayFilter === 'This Week') return isThisWeek(e.date)
-        if (dayFilter === 'Next Week') return isNextWeek(e.date)
-        return true
+        if (dayFilter === 'Upcoming') return isUpcoming(e.date)
+        if (dayFilter === 'Recent') return isRecent(e.date)
+        return true // 'All'
       })
       .filter(e => currencyFilter !== 'All' ? e.currency === currencyFilter : true)
       .filter(e => impactFilter !== 'All' ? e.impact.toLowerCase() === impactFilter.toLowerCase() : true)
@@ -432,9 +418,10 @@ export default function EconomicCalendar() {
             </div>
             <select value={dayFilter} onChange={e => setDayFilter(e.target.value)}
               className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
+              <option value="All">All Events</option>
+              <option value="Upcoming">Upcoming</option>
               <option value="Today">Today</option>
-              <option value="This Week">This Week</option>
-              <option value="Next Week">Next Week</option>
+              <option value="Recent">Recent (7d)</option>
             </select>
             <select value={currencyFilter} onChange={e => setCurrencyFilter(e.target.value)}
               className="bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
@@ -503,8 +490,17 @@ export default function EconomicCalendar() {
         {!loading && filteredEvents.length === 0 && !error && (
           <div className="text-center py-16">
             <AlertTriangle className="mx-auto w-10 h-10 text-slate-500 mb-4" />
-            <p className="text-white font-semibold">No events match your filters</p>
-            <p className="text-slate-500 mt-1">Try changing the filters above</p>
+            {events.length > 0 && (dayFilter === 'Upcoming' || dayFilter === 'Today') ? (
+              <>
+                <p className="text-white font-semibold">No upcoming events right now</p>
+                <p className="text-slate-500 mt-1">The week's releases may have concluded — fresh events load when markets reopen. Switch to "All Events" to see the latest calendar.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-white font-semibold">No events match your filters</p>
+                <p className="text-slate-500 mt-1">Try changing the filters above</p>
+              </>
+            )}
           </div>
         )}
 
