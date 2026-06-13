@@ -919,30 +919,44 @@ function trackerIsLong(direction) { return /BULL|BUY|LONG/i.test(direction || ''
 function tdDateUTC(d) { return new Date(d).toISOString().slice(0, 19).replace('T', ' ') }
 
 // Score one bias against real candles. NEVER guesses — explicit error on missing data.
+// Uses 15m candles so entry is taken at the candle closest to the bias minute
+// (a 1h candle's open can be up to 59 min stale and spans the whole hourly range).
 async function scoreBias(row) {
   const symbol = TRACKER_SYMBOL_MAP[(row.pair || '').toUpperCase()]
   if (!symbol) return { status: 'error', error: `No symbol mapping for ${row.pair}` }
   const start = new Date(row.generated_at)
   const windowEnd = new Date(start.getTime() + TRACKER_WINDOW_HOURS * 3600 * 1000)
   const isFinal = Date.now() > windowEnd.getTime()
+  // Pull a little before the bias and a little past the window so edges aren't clipped
+  const fetchStart = new Date(start.getTime() - 30 * 60 * 1000)
+  const fetchEnd = new Date(Math.min(windowEnd.getTime() + 30 * 60 * 1000, Date.now()))
   try {
     const r = await axios.get('https://api.twelvedata.com/time_series', {
       params: {
-        symbol, interval: '1h', timezone: 'UTC',
-        start_date: tdDateUTC(start), end_date: tdDateUTC(windowEnd),
-        outputsize: 30, apikey: process.env.TWELVEDATA_API_KEY
+        symbol, interval: '15min', timezone: 'UTC',
+        start_date: tdDateUTC(fetchStart), end_date: tdDateUTC(fetchEnd),
+        outputsize: 120, apikey: process.env.TWELVEDATA_API_KEY
       }
     })
     if (r.data?.status === 'error' || !Array.isArray(r.data?.values) || !r.data.values.length) {
       return { status: 'error', error: r.data?.message || 'No candle data returned (market closed or rate limit)' }
     }
-    const candles = [...r.data.values].reverse() // TwelveData = newest first → flip to ascending
-    const entry = parseFloat(candles[0].open)
-    const endPrice = parseFloat(candles[candles.length - 1].close)
-    const hi = Math.max(...candles.map(c => parseFloat(c.high)))
-    const lo = Math.min(...candles.map(c => parseFloat(c.low)))
+    // TwelveData = newest first → flip to ascending, keep only candles at/after the bias time
+    const all = [...r.data.values].reverse().map(c => ({
+      t: new Date(c.datetime.includes('T') ? c.datetime : c.datetime.replace(' ', 'T') + 'Z'),
+      o: parseFloat(c.open), h: parseFloat(c.high), l: parseFloat(c.low), c: parseFloat(c.close)
+    }))
+    const startMs = start.getTime()
+    const inWindow = all.filter(c => c.t.getTime() >= startMs - 15 * 60 * 1000 && c.t.getTime() <= windowEnd.getTime())
+    if (inWindow.length < 2) {
+      return { status: 'live', correct: null, note: 'Awaiting more candles (market closed / window still open)', candles: inWindow.length, windowHours: TRACKER_WINDOW_HOURS, scoredAt: new Date().toISOString() }
+    }
     const pip = trackerPipSize(row.pair)
     const long = trackerIsLong(row.direction)
+    const entry = inWindow[0].o                       // entry = open of the candle at/just after the bias minute
+    const endPrice = inWindow[inWindow.length - 1].c
+    const hi = Math.max(...inWindow.map(c => c.h))
+    const lo = Math.min(...inWindow.map(c => c.l))
     const pips = +(((endPrice - entry) * (long ? 1 : -1)) / pip).toFixed(1)
     const mfe = +((long ? hi - entry : entry - lo) / pip).toFixed(1)
     const mae = +((long ? entry - lo : hi - entry) / pip).toFixed(1)
@@ -950,8 +964,10 @@ async function scoreBias(row) {
       status: isFinal ? 'final' : 'live',
       entryPrice: entry, endPrice,
       pips, mfePips: mfe, maePips: mae,
-      correct: pips > 0,
-      candles: candles.length, windowHours: TRACKER_WINDOW_HOURS,
+      // Only deliver a win/loss verdict once the 24h window has actually closed.
+      // While live, show running pips/MFE/MAE but leave correct = null (no premature ✗).
+      correct: isFinal ? pips > 0 : null,
+      candles: inWindow.length, windowHours: TRACKER_WINDOW_HOURS, interval: '15min',
       scoredAt: new Date().toISOString()
     }
   } catch (e) {
@@ -994,16 +1010,21 @@ app.get('/api/bias-performance', async (req, res) => {
       results.push({ ...row, performance: perf })
     }
 
-    const scored = results.filter(r => r.performance && (r.performance.status === 'final' || r.performance.status === 'live'))
-    const wins = scored.filter(r => r.performance.correct)
+    // Win/loss verdict ONLY from closed 24h windows (final). Live biases show running pips but don't affect win rate.
+    const final = results.filter(r => r.performance && r.performance.status === 'final')
+    const live = results.filter(r => r.performance && r.performance.status === 'live')
+    const withPips = results.filter(r => r.performance && typeof r.performance.pips === 'number' && (r.performance.status === 'final' || r.performance.status === 'live'))
+    const wins = final.filter(r => r.performance.correct === true)
+    const avg = (arr, key) => arr.length ? +(arr.reduce((s, r) => s + r.performance[key], 0) / arr.length).toFixed(1) : null
     const summary = {
       total: results.length,
-      scored: scored.length,
+      scored: final.length,          // finalized = counted toward win rate
+      live: live.length,             // still inside 24h window
       wins: wins.length,
-      winRate: scored.length ? +((wins.length / scored.length) * 100).toFixed(1) : null,
-      avgPips: scored.length ? +(scored.reduce((s, r) => s + r.performance.pips, 0) / scored.length).toFixed(1) : null,
-      avgMfePips: scored.length ? +(scored.reduce((s, r) => s + r.performance.mfePips, 0) / scored.length).toFixed(1) : null,
-      avgMaePips: scored.length ? +(scored.reduce((s, r) => s + r.performance.maePips, 0) / scored.length).toFixed(1) : null
+      winRate: final.length ? +((wins.length / final.length) * 100).toFixed(1) : null,
+      avgPips: avg(withPips, 'pips'),
+      avgMfePips: avg(withPips, 'mfePips'),
+      avgMaePips: avg(withPips, 'maePips')
     }
     const payload = { success: true, days, summary, history: results }
     setCache(cacheKey, payload)

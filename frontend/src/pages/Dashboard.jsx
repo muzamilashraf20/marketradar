@@ -789,24 +789,31 @@ export default function Dashboard() {
               </button>
             </div>
             {/* ── Accuracy Summary Banner ── */}
-            {biasSummary && biasSummary.scored > 0 && (
-              <div className="flex items-stretch divide-x divide-white/5 border-b border-white/5 bg-white/[0.02]">
-                <div className="flex-1 px-3 py-2.5 text-center">
-                  <div className={`text-base font-bold ${biasSummary.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {biasSummary.winRate != null ? `${biasSummary.winRate}%` : '—'}
+            {biasSummary && (biasSummary.scored > 0 || biasSummary.live > 0) && (
+              <div className="border-b border-white/5 bg-white/[0.02]">
+                <div className="flex items-stretch divide-x divide-white/5">
+                  <div className="flex-1 px-3 py-2.5 text-center">
+                    <div className={`text-base font-bold ${biasSummary.winRate == null ? 'text-slate-500' : biasSummary.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {biasSummary.winRate != null ? `${biasSummary.winRate}%` : '—'}
+                    </div>
+                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Win Rate</div>
                   </div>
-                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Win Rate</div>
-                </div>
-                <div className="flex-1 px-3 py-2.5 text-center">
-                  <div className={`text-base font-bold ${(biasSummary.avgPips || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {biasSummary.avgPips != null ? `${biasSummary.avgPips > 0 ? '+' : ''}${biasSummary.avgPips}` : '—'}
+                  <div className="flex-1 px-3 py-2.5 text-center">
+                    <div className={`text-base font-bold ${biasSummary.avgPips == null ? 'text-slate-500' : biasSummary.avgPips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {biasSummary.avgPips != null ? `${biasSummary.avgPips > 0 ? '+' : ''}${biasSummary.avgPips}` : '—'}
+                    </div>
+                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Avg Pips</div>
                   </div>
-                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Avg Pips</div>
+                  <div className="flex-1 px-3 py-2.5 text-center">
+                    <div className="text-base font-bold text-cyan-400">{biasSummary.wins}/{biasSummary.scored}</div>
+                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Correct</div>
+                  </div>
                 </div>
-                <div className="flex-1 px-3 py-2.5 text-center">
-                  <div className="text-base font-bold text-cyan-400">{biasSummary.wins}/{biasSummary.scored}</div>
-                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Correct</div>
-                </div>
+                {biasSummary.live > 0 ? (
+                  <p className="text-[9px] text-amber-400/70 text-center pb-2 -mt-1">
+                    {biasSummary.live} bias{biasSummary.live > 1 ? 'es' : ''} still inside 24h window — not yet counted
+                  </p>
+                ) : null}
               </div>
             )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -845,18 +852,24 @@ export default function Dashboard() {
                       )}
                       {h.reasoning ? <p className="text-[10px] text-slate-500 line-clamp-2">{h.reasoning}</p> : null}
                       {/* ── Performance vs real market ── */}
-                      {h.performance && (h.performance.status === 'final' || h.performance.status === 'live') ? (
+                      {h.performance && (h.performance.status === 'final' || h.performance.status === 'live') && typeof h.performance.pips === 'number' ? (
                         <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 pt-2 border-t border-white/5">
-                          <span className={`text-[10px] font-bold ${h.performance.correct ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {h.performance.correct ? '✓ Correct' : '✗ Wrong'}
-                          </span>
+                          {h.performance.status === 'final' ? (
+                            <span className={`text-[10px] font-bold ${h.performance.correct ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {h.performance.correct ? '✓ Correct' : '✗ Wrong'}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-amber-400">⏳ Running</span>
+                          )}
                           <span className={`text-[10px] font-semibold ${h.performance.pips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {h.performance.pips > 0 ? '+' : ''}{h.performance.pips} pips
                           </span>
                           <span className="text-[10px] text-slate-500">MFE +{h.performance.mfePips}</span>
                           <span className="text-[10px] text-slate-500">MAE -{h.performance.maePips}</span>
-                          {h.performance.status === 'live' ? <span className="text-[9px] text-amber-400/70">live (24h running)</span> : null}
+                          {h.performance.status === 'live' ? <span className="text-[9px] text-amber-400/70">24h window open</span> : null}
                         </div>
+                      ) : h.performance && h.performance.status === 'live' ? (
+                        <p className="text-[9px] text-amber-400/70 mt-2 pt-2 border-t border-white/5">⏳ Awaiting candles — scores once 24h window closes</p>
                       ) : h.performance && h.performance.status === 'pending' ? (
                         <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score pending — refresh shortly</p>
                       ) : h.performance && h.performance.status === 'error' ? (
