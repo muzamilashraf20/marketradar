@@ -39,16 +39,19 @@ export default function Dashboard() {
   const [highImpactToday, setHighImpactToday] = useState(0)
   const [showBiasHistory, setShowBiasHistory] = useState(false)
   const [biasHistory, setBiasHistory] = useState([])
+  const [biasSummary, setBiasSummary] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
 
   const openBiasHistory = async () => {
     setShowBiasHistory(true)
     setHistoryLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/bias-history?days=7`)
+      // Performance endpoint returns the same history PLUS a real-market score per bias + summary stats
+      const res = await fetch(`${API_BASE}/api/bias-performance?days=14`)
       const data = await res.json()
       setBiasHistory(Array.isArray(data.history) ? data.history : [])
-    } catch (e) { setBiasHistory([]) }
+      setBiasSummary(data.summary || null)
+    } catch (e) { setBiasHistory([]); setBiasSummary(null) }
     setHistoryLoading(false)
   }
 
@@ -779,12 +782,33 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <History size={16} className="text-cyan-400" />
                 <h3 className="text-sm font-bold text-white">Bias History</h3>
-                <span className="text-[10px] text-slate-500">Last 7 days</span>
+                <span className="text-[10px] text-slate-500">Last 14 days</span>
               </div>
               <button onClick={() => setShowBiasHistory(false)} className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors">
                 <X size={14} className="text-slate-400" />
               </button>
             </div>
+            {/* ── Accuracy Summary Banner ── */}
+            {biasSummary && biasSummary.scored > 0 && (
+              <div className="flex items-stretch divide-x divide-white/5 border-b border-white/5 bg-white/[0.02]">
+                <div className="flex-1 px-3 py-2.5 text-center">
+                  <div className={`text-base font-bold ${biasSummary.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {biasSummary.winRate != null ? `${biasSummary.winRate}%` : '—'}
+                  </div>
+                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Win Rate</div>
+                </div>
+                <div className="flex-1 px-3 py-2.5 text-center">
+                  <div className={`text-base font-bold ${(biasSummary.avgPips || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {biasSummary.avgPips != null ? `${biasSummary.avgPips > 0 ? '+' : ''}${biasSummary.avgPips}` : '—'}
+                  </div>
+                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Avg Pips</div>
+                </div>
+                <div className="flex-1 px-3 py-2.5 text-center">
+                  <div className="text-base font-bold text-cyan-400">{biasSummary.wins}/{biasSummary.scored}</div>
+                  <div className="text-[9px] uppercase tracking-wide text-slate-500">Correct</div>
+                </div>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {historyLoading ? (
                 <div className="flex items-center justify-center py-8">
@@ -820,6 +844,24 @@ export default function Dashboard() {
                         <p className="text-[10px] text-slate-500 mb-0.5">First bias of the day</p>
                       )}
                       {h.reasoning ? <p className="text-[10px] text-slate-500 line-clamp-2">{h.reasoning}</p> : null}
+                      {/* ── Performance vs real market ── */}
+                      {h.performance && (h.performance.status === 'final' || h.performance.status === 'live') ? (
+                        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 pt-2 border-t border-white/5">
+                          <span className={`text-[10px] font-bold ${h.performance.correct ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {h.performance.correct ? '✓ Correct' : '✗ Wrong'}
+                          </span>
+                          <span className={`text-[10px] font-semibold ${h.performance.pips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {h.performance.pips > 0 ? '+' : ''}{h.performance.pips} pips
+                          </span>
+                          <span className="text-[10px] text-slate-500">MFE +{h.performance.mfePips}</span>
+                          <span className="text-[10px] text-slate-500">MAE -{h.performance.maePips}</span>
+                          {h.performance.status === 'live' ? <span className="text-[9px] text-amber-400/70">live (24h running)</span> : null}
+                        </div>
+                      ) : h.performance && h.performance.status === 'pending' ? (
+                        <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score pending — refresh shortly</p>
+                      ) : h.performance && h.performance.status === 'error' ? (
+                        <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score unavailable (market closed / no data)</p>
+                      ) : null}
                     </div>
                   )
                 })
