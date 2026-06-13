@@ -572,6 +572,34 @@ async function getLiveStrength() {
   } catch (e) { return getCached('strength') || null }
 }
 
+// Move-maturity context: how much of the typical daily range a pair has already used today.
+// Lets the AI flag "late/chase" biases vs fresh ones. Returns { text, pctADR, fromOpenPips } or null.
+async function getMoveContext(symbol, currentPrice) {
+  if (currentPrice === 'unknown') return null
+  const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
+  const pip = /JPY/i.test(symbol) ? 0.01 : /XAU/i.test(symbol) ? 0.1 : (/BTC|NAS/i.test(symbol) ? 1 : 0.0001)
+  try {
+    const r = await axios.get('https://api.twelvedata.com/time_series', {
+      params: { symbol: symbolMap[symbol] || symbol, interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+    })
+    const vals = r.data?.values
+    if (!Array.isArray(vals) || vals.length < 3) return null
+    // vals[0] = today (forming), vals[1..] = completed days
+    const completed = vals.slice(1)
+    const adr = completed.reduce((s, d) => s + (parseFloat(d.high) - parseFloat(d.low)), 0) / completed.length
+    const today = vals[0]
+    const tOpen = parseFloat(today.open), tHigh = parseFloat(today.high), tLow = parseFloat(today.low)
+    const cur = parseFloat(currentPrice)
+    const adrPips = adr / pip
+    const todayRangePips = (tHigh - tLow) / pip
+    const pctADR = adrPips ? Math.round((todayRangePips / adrPips) * 100) : 0
+    const fromOpenPips = +(((cur - tOpen) / pip)).toFixed(1)
+    const dir = fromOpenPips > 0 ? 'UP' : fromOpenPips < 0 ? 'DOWN' : 'flat'
+    const text = `Typical daily range (ADR, ~14d): ${adrPips.toFixed(0)} pips. Today's range so far: ${todayRangePips.toFixed(0)} pips (${pctADR}% of ADR). Price is ${Math.abs(fromOpenPips).toFixed(0)} pips ${dir} from today's open.`
+    return { text, pctADR, fromOpenPips, adrPips: +adrPips.toFixed(0) }
+  } catch (e) { return null }
+}
+
 // Reusable AI bias generator — used by both the /api/bias route and the Today's Bias scheduler.
 // Returns the bias object (cached for CACHE_TTL per symbol+timeframe). Throws on AI/parse failure.
 async function generateBiasFor(symbol, timeframe, force = false) {
@@ -590,6 +618,12 @@ async function generateBiasFor(symbol, timeframe, force = false) {
       const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
       if (pr.data?.price) currentPrice = pr.data.price
     } catch (e) {}
+  }
+
+  // 1b. Move-maturity context (ADR vs how much price has already moved today) — powers late-bias detection
+  let moveContext = null
+  if (currentPrice !== 'unknown' && !isForexClosed()) {
+    moveContext = await getMoveContext(symbol, currentPrice)
   }
 
   // 2. Get currency strength (live if cache cold and market open)
@@ -669,6 +703,8 @@ async function generateBiasFor(symbol, timeframe, force = false) {
     "invalidation": "specific price where this entire bias is WRONG"
   },
   "invalidationNote": "1 sentence: what happens if invalidation level is hit",
+  "entryQuality": "FRESH|EXTENDED|LATE|N/A",
+  "entryQualityNote": "1 sentence: is now a good time to look for a technical entry, or has the move already extended (chase risk)?",
   "propFirmRisk": {
     "recommendedRisk": "0.5-1%",
     "maxLots": "calculated based on 50k account",
@@ -690,7 +726,13 @@ CRITICAL RULES:
    - 40-54% = Very low conviction (conflicting data, recommend sitting out)
    Never default to 75%. Calibrate based on actual data quality.
 
-2. INVALIDATION LEVEL & STOP LOSS CONSISTENCY: The invalidation is the MOST important field — a specific price where the bias is completely wrong. For ${tf}:
+3. ENTRY QUALITY (move maturity): Use the MOVE CONTEXT data to judge whether the favorable move has already largely happened. BiasForge gives traders a fundamental DIRECTION; they confirm with their own technical setup — so warn them when the move is extended (a technical entry now would be a chase).
+   - FRESH: pair has used <40% of its ADR, or has barely moved in the bias direction → good time to hunt a technical setup. Grade unaffected.
+   - EXTENDED: ~40-70% of ADR used in the bias direction → suggest waiting for a pullback before entering. Lower the tradeGrade by ONE level (A+→A, A→B, etc.).
+   - LATE: >70% of ADR already used in the bias direction → the move is mature; a fresh entry now is a chase. Set tradeGrade to C at most, and the entryQualityNote must advise waiting for a pullback or the next session. Direction can still be correct — this is about timing, not direction.
+   - If MOVE CONTEXT is unavailable (market closed / no data), set entryQuality to "N/A".
+
+4. INVALIDATION LEVEL & STOP LOSS CONSISTENCY: The invalidation is the MOST important field — a specific price where the bias is completely wrong. For ${tf}:
    - Intraday: within 30-80 pips of entry for forex, proportional for gold/indices
    - Swing: within 100-200 pips of entry for forex
    The STOP LOSS and INVALIDATION must tell ONE coherent story — never contradict:
@@ -699,17 +741,17 @@ CRITICAL RULES:
    - For a BULLISH/BUY bias: both stopLoss and invalidation sit BELOW entry; targets sit ABOVE entry.
    - Double-check the numbers before returning: a trader must be able to use stopLoss and invalidation together as one risk plan.
 
-3. TRADE GRADE: A+ = perfect alignment all sources. A = strong. B = decent. C = marginal. D = don't trade.
+5. TRADE GRADE: A+ = perfect alignment all sources. A = strong. B = decent. C = marginal. D = don't trade. Apply the ENTRY QUALITY downgrades from rule 3.
 
-4. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text. IF THE CURRENT PRICE IS "unknown": do NOT estimate or invent any price levels from memory — set every field inside "levels" and the invalidation to the string "N/A" and focus only on direction, confidence, and reasoning.
+6. All prices must be REAL numbers relative to current price ${currentPrice}. Never use placeholder text. IF THE CURRENT PRICE IS "unknown": do NOT estimate or invent any price levels from memory — set every field inside "levels" and the invalidation to the string "N/A" and focus only on direction, confidence, and reasoning.
 
-5. Return ONLY valid JSON. No markdown, no explanation outside JSON.
+7. Return ONLY valid JSON. No markdown, no explanation outside JSON.
 
-6. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.
+8. EVENT TIMING: Every event in "UPCOMING HIGH-IMPACT EVENTS" is in the FUTURE (relative time given, e.g. "in 2h 15m"). Never describe any event as upcoming, pending, or "later today" unless it appears in that list. Events NOT in the list have already been released — treat their impact as priced in via the news/strength data.
 
-7. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.
+9. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.
 
-8. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.`
+10. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.`
 
   const prevLine = prevBias
     ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
@@ -720,8 +762,11 @@ CRITICAL RULES:
 CURRENT LIVE PRICE: ${currentPrice}
 TIMESTAMP: ${new Date().toISOString()}
 
-PREVIOUS BIAS (your own earlier analysis — apply rule 7):
+PREVIOUS BIAS (your own earlier analysis — apply rule 9):
 ${prevLine}
+
+MOVE CONTEXT (for ENTRY QUALITY — rule 3):
+${moveContext?.text || 'Not available (market closed or data unavailable) — set entryQuality to "N/A"'}
 
 CURRENCY STRENGTH DATA:
 ${strengthData || 'Not available'}
@@ -748,6 +793,23 @@ ${template}`
   const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
   const bias = JSON.parse(raw)
   bias.generatedAt = new Date().toISOString()
+
+  // ENTRY QUALITY GUARD: enforce grade downgrade for mature moves; default N/A when no move data.
+  const demote = (g, steps) => { const order = ['A+', 'A', 'B', 'C', 'D']; const i = order.indexOf(g); return i < 0 ? g : order[Math.min(i + steps, order.length - 1)] }
+  if (!moveContext) {
+    bias.entryQuality = 'N/A'
+  } else {
+    bias.moveContext = { pctADR: moveContext.pctADR, fromOpenPips: moveContext.fromOpenPips, adrPips: moveContext.adrPips }
+    const eq = String(bias.entryQuality || '').toUpperCase()
+    if (eq === 'LATE') {
+      // cap at C
+      const order = ['A+', 'A', 'B', 'C', 'D']
+      if (order.indexOf(bias.tradeGrade) < order.indexOf('C')) bias.tradeGrade = 'C'
+    } else if (eq === 'EXTENDED') {
+      bias.tradeGrade = demote(bias.tradeGrade, 1)
+    }
+  }
+
   // HARD GUARD: if live price was unavailable, never ship AI-guessed levels — suppress them.
   if (currentPrice === 'unknown') {
     bias.levels = { currentPrice: 'N/A', entry: 'N/A', target1: 'N/A', target2: 'N/A', stopLoss: 'N/A', invalidation: 'N/A' }

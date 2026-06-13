@@ -278,6 +278,30 @@ export default function BiasMatrix() {
               )}
             </div>
 
+            {/* ⏱️ ENTRY QUALITY (move maturity) */}
+            {bias.entryQuality && bias.entryQuality !== 'N/A' && (() => {
+              const eq = String(bias.entryQuality).toUpperCase()
+              const cfg = eq === 'FRESH'
+                ? { box: 'bg-emerald-500/10 border-emerald-500/20', text: 'text-emerald-400', dim: 'text-emerald-400/70', label: '🟢 FRESH', desc: 'Move is early — good time to look for your technical setup.' }
+                : eq === 'EXTENDED'
+                ? { box: 'bg-amber-500/10 border-amber-500/20', text: 'text-amber-400', dim: 'text-amber-400/70', label: '🟡 EXTENDED', desc: 'Move is partly done — consider waiting for a pullback before entering.' }
+                : { box: 'bg-red-500/10 border-red-500/20', text: 'text-red-400', dim: 'text-red-400/70', label: '🔴 LATE', desc: 'Move is mature — a fresh entry now is a chase. Wait for a pullback or the next session.' }
+              return (
+                <div className={`${cfg.box} border rounded-2xl p-4 flex items-start gap-3`}>
+                  <Activity size={20} className={`${cfg.text} shrink-0 mt-0.5`} />
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className={`text-sm font-bold ${cfg.text}`}>{cfg.label} — Entry Timing</p>
+                      {typeof bias.moveContext?.pctADR === 'number' && (
+                        <span className="text-[10px] text-slate-500">({bias.moveContext.pctADR}% of daily range used)</span>
+                      )}
+                    </div>
+                    <p className={`text-xs ${cfg.dim}`}>{bias.entryQualityNote || cfg.desc}</p>
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* ⚠️ INVALIDATION WARNING BAR */}
             {bias.levels?.invalidation && (
               <div className="bg-red-500/8 border border-red-500/20 rounded-2xl p-4 flex items-start gap-3">
