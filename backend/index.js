@@ -43,17 +43,41 @@ function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date
 // 10-min cache + stale fallback (FF rate-limits aggressively)
 // ============================================
 const FF_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'application/json' }
+const FF_FEEDS = [
+  { name: 'thisweek', url: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json' },
+  { name: 'nextweek', url: 'https://nfs.faireconomy.media/ff_calendar_nextweek.json' }
+]
+// Fetch a single FF feed with retry. Returns [] on failure (logged), never throws.
+async function fetchFFFeed(feed) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const r = await axios.get(feed.url, { headers: FF_HEADERS, timeout: 12000 })
+      const arr = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.events) ? r.data.events : null)
+      if (!arr) throw new Error('unexpected shape')
+      console.log(`📅 FF ${feed.name}: ${arr.length} events loaded`)
+      return arr
+    } catch (e) {
+      console.error(`⚠️ FF ${feed.name} attempt ${attempt} failed: ${e?.response?.status || ''} ${e?.message}`)
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1500))
+    }
+  }
+  console.error(`❌ FF ${feed.name}: ALL attempts failed — feed skipped`)
+  return []
+}
 async function getEconomicCalendar() {
   if (isCacheFresh('ff_calendar')) return getCached('ff_calendar')
-  const urls = ['https://nfs.faireconomy.media/ff_calendar_thisweek.json', 'https://nfs.faireconomy.media/ff_calendar_nextweek.json']
   try {
-    const results = await Promise.allSettled(urls.map(u => fetch(u, { headers: FF_HEADERS }).then(r => r.ok ? r.json() : Promise.reject(new Error('FF ' + r.status)))))
-    const raw = []
-    for (const r of results) if (r.status === 'fulfilled' && Array.isArray(r.value)) raw.push(...r.value)
-    if (raw.length === 0) throw new Error('FF calendar empty')
+    const arrays = await Promise.all(FF_FEEDS.map(fetchFFFeed))
+    const raw = arrays.flat()
+    if (raw.length === 0) throw new Error('FF calendar empty (all feeds failed)')
     const norm = raw.filter(e => e.date).map(e => ({ event: e.title || 'Event', country: (e.country || 'N/A').toUpperCase(), time: new Date(e.date).toISOString(), impact: e.impact || 'Low', forecast: e.forecast || '', previous: e.previous || '' }))
-    setCache('ff_calendar', norm)
-    return norm
+    // Dedupe (both feeds can overlap on week boundary) by event+country+time
+    const seen = new Set()
+    const deduped = norm.filter(e => { const k = `${e.event}|${e.country}|${e.time}`; if (seen.has(k)) return false; seen.add(k); return true })
+    const future = deduped.filter(e => new Date(e.time) >= new Date()).length
+    console.log(`📅 FF calendar merged: ${deduped.length} unique events (${future} upcoming)`)
+    setCache('ff_calendar', deduped)
+    return deduped
   } catch (err) {
     console.error('❌ FF calendar fetch failed:', err.message)
     const stale = getCached('ff_calendar')
