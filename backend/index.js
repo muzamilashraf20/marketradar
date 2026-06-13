@@ -665,7 +665,7 @@ async function generateBiasFor(symbol, timeframe, force = false) {
     "entry": "specific price or range",
     "target1": "specific price",
     "target2": "specific price",
-    "stopLoss": "specific price",
+    "stopLoss": "specific price — MUST equal the invalidation level or sit 2-5 pips beyond it (never tighter, never on the wrong side)",
     "invalidation": "specific price where this entire bias is WRONG"
   },
   "invalidationNote": "1 sentence: what happens if invalidation level is hit",
@@ -690,9 +690,14 @@ CRITICAL RULES:
    - 40-54% = Very low conviction (conflicting data, recommend sitting out)
    Never default to 75%. Calibrate based on actual data quality.
 
-2. INVALIDATION LEVEL: This is the MOST important field. It must be a specific price where the bias is completely wrong. For ${tf}:
+2. INVALIDATION LEVEL & STOP LOSS CONSISTENCY: The invalidation is the MOST important field — a specific price where the bias is completely wrong. For ${tf}:
    - Intraday: within 30-80 pips of entry for forex, proportional for gold/indices
    - Swing: within 100-200 pips of entry for forex
+   The STOP LOSS and INVALIDATION must tell ONE coherent story — never contradict:
+   - Stop Loss = invalidation level, OR 2-5 pips beyond it (small buffer against wicks). Never place the SL TIGHTER than invalidation (you'd exit before the thesis is even broken) and never BEYOND it by a wide margin (you'd hold a dead thesis).
+   - For a BEARISH/SELL bias: both stopLoss and invalidation sit ABOVE entry; targets sit BELOW entry.
+   - For a BULLISH/BUY bias: both stopLoss and invalidation sit BELOW entry; targets sit ABOVE entry.
+   - Double-check the numbers before returning: a trader must be able to use stopLoss and invalidation together as one risk plan.
 
 3. TRADE GRADE: A+ = perfect alignment all sources. A = strong. B = decent. C = marginal. D = don't trade.
 
@@ -755,6 +760,37 @@ ${template}`
     calendar: calendarData !== 'No upcoming events',
     news: newsData !== 'No recent high-impact news'
   }
+
+  // CONSISTENCY GUARD: stop loss & invalidation must tell one story.
+  // Only runs when we have real numeric levels (not N/A) and a parseable entry.
+  if (currentPrice !== 'unknown' && bias.levels) {
+    const num = (v) => {
+      if (v === null || v === undefined) return NaN
+      const m2 = String(v).match(/-?\d+(\.\d+)?/) // first number (handles "0.7992 - 0.7998" ranges)
+      return m2 ? parseFloat(m2[0]) : NaN
+    }
+    const entry = num(bias.levels.entry)
+    let sl = num(bias.levels.stopLoss)
+    const inval = num(bias.levels.invalidation)
+    const isShort = /BEAR|SELL|SHORT/i.test(bias.direction || '')
+    if (!isNaN(entry) && !isNaN(sl) && !isNaN(inval)) {
+      const pip = /JPY/i.test(symbol) ? 0.01 : /XAU/i.test(symbol) ? 0.1 : (/BTC|NAS/i.test(symbol) ? 1 : 0.0001)
+      const buffer = 3 * pip
+      // For SELL: SL & inval must be ABOVE entry. For BUY: BELOW entry.
+      const slOk = isShort ? sl > entry : sl < entry
+      const invalOk = isShort ? inval > entry : inval < entry
+      // SL should sit at the invalidation or just beyond it (further from entry), never tighter.
+      const slTighterThanInval = isShort ? sl < inval - pip : sl > inval + pip
+      if (!slOk || !invalOk || slTighterThanInval) {
+        // Re-anchor SL to invalidation + small buffer on the correct side. Keep invalidation as the thesis-break level.
+        sl = isShort ? +(inval + buffer).toFixed(5) : +(inval - buffer).toFixed(5)
+        bias.levels.stopLoss = String(sl)
+        bias.levels._slAdjusted = true
+        console.log(`🛠️ Bias ${symbol}: realigned stopLoss to invalidation+buffer (was inconsistent)`)
+      }
+    }
+  }
+
   setCache(cacheKey, bias)
   return bias
 }
