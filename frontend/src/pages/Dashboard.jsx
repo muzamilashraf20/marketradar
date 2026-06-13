@@ -435,7 +435,7 @@ export default function Dashboard() {
                 <p className="text-[10px] text-slate-500 truncate">{topEvent.country} · {topEvent.impact} Impact</p>
               </>
             ) : (
-              <p className="text-xs sm:text-sm font-bold text-amber-400">No events today</p>
+              <p className="text-xs sm:text-sm font-bold text-amber-400">{strength?.marketClosed ? 'Opens Monday' : 'No events today'}</p>
             )}
           </div>
 
@@ -574,7 +574,15 @@ export default function Dashboard() {
             )}
 
             {!eventsLoading && events.length === 0 && (
-              <p className="text-xs text-slate-500 text-center py-4">No upcoming events</p>
+              strength?.marketClosed ? (
+                <div className="text-center py-6">
+                  <Calendar size={22} className="mx-auto text-slate-600 mb-2" />
+                  <p className="text-xs text-slate-400 font-medium">Markets closed for the weekend</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Fresh events load when markets reopen Monday</p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 text-center py-4">No upcoming events right now</p>
+              )
             )}
           </div>
         </div>
