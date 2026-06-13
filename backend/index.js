@@ -79,24 +79,39 @@ function parseFMPDate(d) {
   if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s).toISOString() // already has tz
   return new Date(s.replace(' ', 'T') + 'Z').toISOString()                 // "YYYY-MM-DD HH:mm:ss" = UTC
 }
+function normFMPEvents(rows, from, to, label) {
+  const norm = rows.map(e => {
+    const ccy = (e.currency && String(e.currency).toUpperCase()) || CCY_FROM_COUNTRY[String(e.country || '').toUpperCase()] || String(e.country || '').toUpperCase()
+    const fc = e.estimate ?? e.forecast
+    return { event: e.event || 'Event', country: ccy, time: parseFMPDate(e.date), impact: normImpact(e.impact), forecast: (fc === null || fc === undefined) ? '' : String(fc), previous: (e.previous === null || e.previous === undefined) ? '' : String(e.previous) }
+  }).filter(e => e.time && MAJOR_CCY.includes(e.country))
+  console.log(`📅 FMP calendar (${label}): ${norm.length} major-currency events (${from} → ${to})`)
+  return norm
+}
 async function fetchFMPCalendar() {
-  if (!FMP_KEY) return null
+  if (!FMP_KEY) { console.log('ℹ️ FMP_API_KEY not set — skipping FMP'); return null }
   const from = new Date().toISOString().slice(0, 10)
   const to = new Date(Date.now() + 14 * 86400 * 1000).toISOString().slice(0, 10)
-  try {
-    const r = await axios.get('https://financialmodelingprep.com/stable/economic-calendar', { params: { from, to, apikey: FMP_KEY }, timeout: 12000 })
-    if (!Array.isArray(r.data) || !r.data.length) { console.error('⚠️ FMP calendar returned empty/invalid'); return null }
-    const norm = r.data.map(e => {
-      const ccy = (e.currency && String(e.currency).toUpperCase()) || CCY_FROM_COUNTRY[String(e.country || '').toUpperCase()] || String(e.country || '').toUpperCase()
-      const fc = e.estimate ?? e.forecast
-      return { event: e.event || 'Event', country: ccy, time: parseFMPDate(e.date), impact: normImpact(e.impact), forecast: (fc === null || fc === undefined) ? '' : String(fc), previous: (e.previous === null || e.previous === undefined) ? '' : String(e.previous) }
-    }).filter(e => e.time && MAJOR_CCY.includes(e.country))
-    console.log(`📅 FMP calendar: ${norm.length} major-currency events (${from} → ${to})`)
-    return norm
-  } catch (e) {
-    console.error(`⚠️ FMP calendar failed: ${e?.response?.status || ''} ${e?.message}`)
-    return null
+  // Try legacy (free-tier friendly) first, then stable. Whichever returns data wins.
+  const endpoints = [
+    { label: 'legacy', url: 'https://financialmodelingprep.com/api/v3/economic_calendar' },
+    { label: 'stable', url: 'https://financialmodelingprep.com/stable/economic-calendar' }
+  ]
+  for (const ep of endpoints) {
+    try {
+      const r = await axios.get(ep.url, { params: { from, to, apikey: FMP_KEY }, timeout: 12000 })
+      if (Array.isArray(r.data) && r.data.length) {
+        const norm = normFMPEvents(r.data, from, to, ep.label)
+        if (norm.length) return norm
+        console.error(`⚠️ FMP ${ep.label}: data returned but 0 major-currency events after filter`)
+      } else {
+        console.error(`⚠️ FMP ${ep.label}: empty/invalid response (${typeof r.data})`)
+      }
+    } catch (e) {
+      console.error(`⚠️ FMP ${ep.label} failed: ${e?.response?.status || ''} ${e?.message}`)
+    }
   }
+  return null
 }
 
 async function getEconomicCalendar() {
