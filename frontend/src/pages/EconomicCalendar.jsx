@@ -490,17 +490,58 @@ export default function EconomicCalendar() {
         {!loading && filteredEvents.length === 0 && !error && (
           <div className="text-center py-16">
             <AlertTriangle className="mx-auto w-10 h-10 text-slate-500 mb-4" />
-            {events.length > 0 && (dayFilter === 'Upcoming' || dayFilter === 'Today') ? (
-              <>
-                <p className="text-white font-semibold">No upcoming events right now</p>
-                <p className="text-slate-500 mt-1">The week's releases may have concluded — fresh events load when markets reopen. Switch to "All Events" to see the latest calendar.</p>
-              </>
-            ) : (
-              <>
-                <p className="text-white font-semibold">No events match your filters</p>
-                <p className="text-slate-500 mt-1">Try changing the filters above</p>
-              </>
-            )}
+            {(() => {
+              // How many events fall in the selected time window, ignoring impact/currency/search?
+              const dayWindowCount = events.filter(e => {
+                if (dayFilter === 'Today') return isToday(e.date)
+                if (dayFilter === 'Upcoming') return isUpcoming(e.date)
+                if (dayFilter === 'Recent') return isRecent(e.date)
+                return true
+              }).length
+              const whenLabel = dayFilter === 'Today' ? 'today' : dayFilter === 'Upcoming' ? 'upcoming' : dayFilter === 'Recent' ? 'in the last 7 days' : ''
+              const impactActive = impactFilter !== 'All'
+              const currencyActive = currencyFilter !== 'All'
+              const searchActive = !!search.trim()
+
+              // Case 1: events exist in this window, but impact/currency/search filtered them out
+              if (dayWindowCount > 0 && (impactActive || currencyActive || searchActive)) {
+                const bits = []
+                if (impactActive) bits.push(`${impactFilter}-impact`)
+                if (currencyActive) bits.push(currencyFilter)
+                const what = bits.join(' ') || 'matching'
+                return (
+                  <>
+                    <p className="text-white font-semibold">No {what} events {whenLabel}</p>
+                    <p className="text-slate-500 mt-1">There {dayWindowCount === 1 ? 'is' : 'are'} {dayWindowCount} other event{dayWindowCount === 1 ? '' : 's'} {whenLabel} — clear the {impactActive ? 'impact' : currencyActive ? 'currency' : 'search'} filter to see {dayWindowCount === 1 ? 'it' : 'them'}.</p>
+                  </>
+                )
+              }
+              // Case 2: nothing released yet for Recent
+              if (dayFilter === 'Recent') {
+                return (
+                  <>
+                    <p className="text-white font-semibold">No recent releases yet</p>
+                    <p className="text-slate-500 mt-1">Events from earlier this week will appear here once they're released.</p>
+                  </>
+                )
+              }
+              // Case 3: genuinely no events in the Today/Upcoming window
+              if ((dayFilter === 'Today' || dayFilter === 'Upcoming') && events.length > 0) {
+                return (
+                  <>
+                    <p className="text-white font-semibold">No events {dayFilter === 'Today' ? 'today' : 'upcoming right now'}</p>
+                    <p className="text-slate-500 mt-1">Switch to "All Events" to see the full calendar for this week.</p>
+                  </>
+                )
+              }
+              // Fallback
+              return (
+                <>
+                  <p className="text-white font-semibold">No events match your filters</p>
+                  <p className="text-slate-500 mt-1">Try changing the filters above</p>
+                </>
+              )
+            })()}
           </div>
         )}
 
