@@ -157,6 +157,8 @@ export default function Dashboard() {
           confidence: data.confidence,
           grade: data.tradeGrade,
           reasoning: data.reasoning,
+          movePotential: data.movePotential || null,
+          entryQuality: data.bias?.entryQuality || null,
           generatedAt: data.generatedAt || data.updatedAt || data.bias?.generatedAt || null,
           stale: !!data.stale,
         })
@@ -255,6 +257,8 @@ export default function Dashboard() {
         reason: aiBias.reasoning,
         confidence: aiBias.confidence,
         grade: aiBias.grade,
+        movePotential: aiBias.movePotential,
+        entryQuality: aiBias.entryQuality,
         generatedAt: aiBias.generatedAt,
         stale: aiBias.stale,
         ai: true,
@@ -390,6 +394,14 @@ export default function Dashboard() {
                   <p className="text-[10px] font-semibold text-cyan-400 mb-0.5">
                     {todaysBias.confidence}% confidence{todaysBias.grade && todaysBias.grade !== '-' ? ` · Grade ${todaysBias.grade}` : ''}
                   </p>
+                ) : null}
+                {todaysBias.movePotential?.note ? (
+                  <p className="text-[10px] text-amber-400/90 font-medium mb-0.5 line-clamp-1">⚡ {todaysBias.movePotential.note}</p>
+                ) : null}
+                {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
+                  <span className={`inline-block text-[9px] font-bold mb-0.5 ${todaysBias.entryQuality === 'FRESH' ? 'text-emerald-400' : todaysBias.entryQuality === 'EXTENDED' ? 'text-amber-400' : 'text-red-400'}`}>
+                    {todaysBias.entryQuality === 'FRESH' ? '🟢 FRESH entry' : todaysBias.entryQuality === 'EXTENDED' ? '🟡 EXTENDED' : '🔴 LATE — wait pullback'}
+                  </span>
                 ) : null}
                 <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
                 {todaysBias.ai && biasGeneratedLabel ? (

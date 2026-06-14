@@ -600,6 +600,87 @@ async function getMoveContext(symbol, currentPrice) {
   } catch (e) { return null }
 }
 
+// Batch: for candidate pairs, compute ADR (typical daily range) and how much of the
+// move in the bias DIRECTION has already happened today. One TwelveData call for all pairs.
+// Returns { SYMBOL: { adrPips, favorablePips, pctUsed, roomScore } }. roomScore 1=fresh, 0=exhausted.
+const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURGBP: 'EUR/GBP', EURJPY: 'EUR/JPY', GBPJPY: 'GBP/JPY', AUDJPY: 'AUD/JPY' }
+async function getPairRoomBatch(candidates) {
+  const tdSymbols = [...new Set(candidates.map(c => ROOM_SYMBOL_MAP[c.symbol]).filter(Boolean))]
+  if (!tdSymbols.length) return {}
+  try {
+    const r = await axios.get('https://api.twelvedata.com/time_series', {
+      params: { symbol: tdSymbols.join(','), interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+    })
+    const out = {}
+    for (const c of candidates) {
+      const td = ROOM_SYMBOL_MAP[c.symbol]
+      if (!td) continue
+      const d = tdSymbols.length === 1 ? r.data : r.data?.[td]
+      const vals = d?.values
+      if (!Array.isArray(vals) || vals.length < 3) continue
+      const pip = /JPY/.test(c.symbol) ? 0.01 : 0.0001
+      const completed = vals.slice(1)
+      const adr = completed.reduce((s, x) => s + (parseFloat(x.high) - parseFloat(x.low)), 0) / completed.length
+      const today = vals[0]
+      const open = parseFloat(today.open), cur = parseFloat(today.close)
+      const adrPips = adr / pip
+      const fromOpen = (cur - open) / pip // + = up
+      const favorable = c.action === 'BUY' ? Math.max(fromOpen, 0) : Math.max(-fromOpen, 0)
+      const pctUsed = adrPips ? Math.min(favorable / adrPips, 1) : 0
+      out[c.symbol] = { adrPips: +adrPips.toFixed(0), favorablePips: +favorable.toFixed(0), pctUsed: Math.round(pctUsed * 100), roomScore: +(1 - pctUsed).toFixed(2) }
+    }
+    return out
+  } catch (e) { console.error('⚠️ Pair room batch failed:', e?.message); return {} }
+}
+
+// ── STAGE 1: MOVE POTENTIAL SCORING ──
+// Picks the pair most likely to deliver a catchable move today, combining:
+// strength divergence (conviction) + room left (ADR) + upcoming catalyst + ADR size + fresh news.
+const NEWS_KW = {
+  USD: ['fed', 'dollar', 'powell', 'fomc', 'treasury', 'u.s.'], EUR: ['ecb', 'euro', 'lagarde', 'eurozone'],
+  GBP: ['boe', 'pound', 'sterling', 'bailey', 'britain'], JPY: ['boj', 'yen', 'ueda', 'japan'],
+  AUD: ['rba', 'aussie', 'australia'], CAD: ['boc', 'loonie', 'canada'],
+  CHF: ['snb', 'franc', 'swiss'], NZD: ['rbnz', 'kiwi', 'new zealand']
+}
+function scorePairPotential(candidates, room, events, newsTitles) {
+  const now = Date.now()
+  const upHigh = (events || []).filter(e => e.time && (e.impact || '').toLowerCase() === 'high' && new Date(e.time).getTime() > now)
+  const titles = (newsTitles || []).map(t => String(t).toLowerCase())
+  return candidates.map(c => {
+    const base = c.symbol.slice(0, 3), quote = c.symbol.slice(3)
+    const strengthScore = Math.max(0, Math.min(c.diff / 70, 1))            // conviction
+    const r = room[c.symbol]
+    const roomScore = r ? r.roomScore : 0.5                                // 1=fresh, 0=exhausted
+    const adrPips = r ? r.adrPips : null
+    const adrScore = adrPips ? Math.max(0.1, Math.min(adrPips / 120, 1)) : 0.5 // can it move 50-100p?
+    // catalyst: nearest upcoming high-impact event on base/quote currency
+    let eventScore = 0, nextEvent = null
+    for (const e of upHigh) {
+      const ec = (e.country || '').toUpperCase()
+      if (ec !== base && ec !== quote) continue
+      const mins = (new Date(e.time).getTime() - now) / 60000
+      const s = mins <= 240 ? 1.0 : mins <= 16 * 60 ? 0.7 : 0
+      if (s > eventScore) { eventScore = s; nextEvent = { event: e.event, country: ec, mins: Math.round(mins) } }
+    }
+    // fresh news momentum on either currency
+    let newsScore = 0
+    for (const cur of [base, quote]) {
+      const kws = NEWS_KW[cur] || []
+      if (titles.some(t => kws.some(k => t.includes(k)))) { newsScore = 1; break }
+    }
+    const potential = +(0.28 * eventScore + 0.27 * strengthScore + 0.20 * roomScore + 0.15 * adrScore + 0.10 * newsScore).toFixed(3)
+    return { ...c, base, quote, strengthScore, roomScore, adrPips, adrScore, eventScore, nextEvent, newsScore, potential }
+  }).sort((a, b) => b.potential - a.potential)
+}
+function potentialNote(p) {
+  const bits = []
+  if (p.nextEvent) bits.push(`${p.nextEvent.country} event ${p.nextEvent.mins < 60 ? p.nextEvent.mins + 'm' : Math.round(p.nextEvent.mins / 60) + 'h'} away`)
+  if (p.adrPips) bits.push(`ADR ${p.adrPips}p`)
+  if (p.roomScore != null) bits.push(`${Math.round(p.roomScore * 100)}% room left`)
+  if (p.newsScore) bits.push('active news')
+  return bits.join(' · ')
+}
+
 // Reusable AI bias generator — used by both the /api/bias route and the Today's Bias scheduler.
 // Returns the bias object (cached for CACHE_TTL per symbol+timeframe). Throws on AI/parse failure.
 async function generateBiasFor(symbol, timeframe, force = false) {
@@ -963,15 +1044,23 @@ async function computeTodaysAIBias(force = false) {
   const ranked = rankOandaPairs(strength)
   if (!ranked.length) return null
 
-  // Daily anchor: keep today's locked pair unless its signal genuinely faded (fell out of top 3)
-  let top = ranked[0]
+  // ── STAGE 1: pick the pair with the best MOVE POTENTIAL (not just strength) ──
+  const candidates = ranked.slice(0, 6)
+  let events = []; try { events = await getEconomicCalendar() } catch (e) {}
+  const newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
+  let room = {}; try { room = await getPairRoomBatch(candidates) } catch (e) {}
+  const scored = scorePairPotential(candidates, room, events, newsTitles)
+
+  // Daily anchor: keep today's locked pair unless a clearly better-potential pair emerges (it falls out of top 3)
+  let top = scored[0] || ranked[0]
   const day = utcDay()
   if (todayBiasLock?.date === day) {
-    const lockedIdx = ranked.findIndex(r => r.symbol === todayBiasLock.symbol)
-    if (lockedIdx > -1 && lockedIdx < 3) top = ranked[lockedIdx]
-    else console.log(`🔄 Today's pair switched: ${todayBiasLock.pair} fell out of top 3 → ${top.pair}`)
+    const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
+    if (lockedIdx > -1 && lockedIdx < 3) top = scored[lockedIdx]
+    else console.log(`🔄 Today's pair switched (higher move potential): ${todayBiasLock.pair} → ${top.pair}`)
   }
   todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
+  console.log(`🎯 Today's pair: ${top.pair} · potential ${top.potential ?? '?'} · ${potentialNote(top)}`)
 
   let bias
   try {
@@ -985,6 +1074,13 @@ async function computeTodaysAIBias(force = false) {
     confidence: bias.confidence || 0,
     tradeGrade: bias.tradeGrade || '-',
     reasoning: bias.reasoning || '',
+    movePotential: {
+      score: top.potential ?? null,
+      note: potentialNote(top),
+      adrPips: top.adrPips ?? null,
+      roomPct: top.roomScore != null ? Math.round(top.roomScore * 100) : null,
+      nextEvent: top.nextEvent || null
+    },
     bias, // full object for the dashboard widget
     generatedAt: bias.generatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
