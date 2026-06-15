@@ -659,8 +659,10 @@ async function getMoveContext(symbol, currentPrice) {
     const pctADR = adrPips ? Math.round((todayRangePips / adrPips) * 100) : 0
     const fromOpenPips = +(((cur - tOpen) / pip)).toFixed(1)
     const dir = fromOpenPips > 0 ? 'UP' : fromOpenPips < 0 ? 'DOWN' : 'flat'
-    const text = `Typical daily range (ADR, ~14d): ${adrPips.toFixed(0)} pips. Today's range so far: ${todayRangePips.toFixed(0)} pips (${pctADR}% of ADR). Price is ${Math.abs(fromOpenPips).toFixed(0)} pips ${dir} from today's open.`
-    return { text, pctADR, fromOpenPips, adrPips: +adrPips.toFixed(0) }
+    // Directional move as % of ADR — THIS is what determines FRESH/EXTENDED/LATE
+    const dirPct = adrPips ? Math.round((Math.abs(fromOpenPips) / adrPips) * 100) : 0
+    const text = `ADR (~14d): ${adrPips.toFixed(0)} pips. Price is ${Math.abs(fromOpenPips).toFixed(0)} pips ${dir} from today's open (${dirPct}% of ADR directionally). Total range today: ${todayRangePips.toFixed(0)} pips (${pctADR}% of ADR). IMPORTANT: Use the DIRECTIONAL move from open (${dirPct}%) to judge entry quality — if your bias direction matches the move, ${dirPct}% is used; if opposite, the move creates room for your direction.`
+    return { text, pctADR, dirPct, fromOpenPips, adrPips: +adrPips.toFixed(0) }
   } catch (e) { return null }
 }
 
@@ -1017,7 +1019,7 @@ ${template}`
   if (!moveContext) {
     bias.entryQuality = 'N/A'
   } else {
-    bias.moveContext = { pctADR: moveContext.pctADR, fromOpenPips: moveContext.fromOpenPips, adrPips: moveContext.adrPips }
+    bias.moveContext = { pctADR: moveContext.pctADR, dirPct: moveContext.dirPct, fromOpenPips: moveContext.fromOpenPips, adrPips: moveContext.adrPips }
     const eq = String(bias.entryQuality || '').toUpperCase()
     if (eq === 'LATE') {
       // cap at C
