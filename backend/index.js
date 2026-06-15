@@ -431,6 +431,28 @@ async function checkAndSendCalendarAlerts() {
   } catch (e) { console.error('Cal alert error:', e.message) }
 }
 
+// Server-side market-mover detection (mirrors MarketMovers Radar) — used to enrich breaking-news alerts
+const MOVERS_SRV = [
+  { id: 'trump', name: 'Donald Trump', emoji: '🇺🇸', kw: ['trump', 'tariff', 'tariffs', 'trade war', 'truth social', 'white house'], assets: ['USD', 'Gold', 'S&P500', 'Oil'] },
+  { id: 'powell', name: 'Jerome Powell', emoji: '🏦', kw: ['powell', 'federal reserve', 'fed chair', 'fomc', 'fed rate', 'fed policy'], assets: ['USD', 'Gold', 'Bonds'] },
+  { id: 'lagarde', name: 'Christine Lagarde', emoji: '🇪🇺', kw: ['lagarde', 'ecb', 'european central bank'], assets: ['EUR', 'EUR/USD', 'DAX'] },
+  { id: 'musk', name: 'Elon Musk', emoji: '🚀', kw: ['elon musk', 'musk', 'tesla', 'spacex', 'doge '], assets: ['TSLA', 'BTC', 'DOGE'] },
+  { id: 'bailey', name: 'Andrew Bailey', emoji: '🇬🇧', kw: ['bailey', 'bank of england', 'boe rate', 'boe governor'], assets: ['GBP', 'GBP/USD', 'FTSE'] },
+  { id: 'ueda', name: 'Kazuo Ueda', emoji: '🇯🇵', kw: ['ueda', 'bank of japan', 'boj rate', 'boj governor'], assets: ['JPY', 'USD/JPY', 'Nikkei'] },
+  { id: 'geo', name: 'Geopolitics', emoji: '🌐', kw: ['war', 'sanction', 'sanctions', 'opec', 'ceasefire', 'invasion', 'missile', 'nuclear', 'middle east', 'conflict', 'airstrike', 'embargo', 'oil supply'], assets: ['Gold', 'Oil', 'USD', 'Safe Havens'] },
+]
+function matchMoverSrv(text) { const t = (text || '').toLowerCase(); for (const m of MOVERS_SRV) { if (m.kw.some(k => t.includes(k))) return m } return null }
+function tgMoverAlert(articles) {
+  const items = articles.slice(0, 3).map(a => {
+    const m = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+    const who = m ? `${m.emoji} <b>${m.name}</b>` : '📰 <b>Market News</b>'
+    const tags = (a.marketTags && a.marketTags.length) ? a.marketTags.join(' · ') : (m ? m.assets.slice(0, 3).join(' · ') : '')
+    const line = a.oneliner ? `\n   💡 <i>${a.oneliner}</i>` : ''
+    return `${who} — Impact <b>${a.impact}/10</b>\n   ${a.title}${tags ? `\n   📊 ${tags}` : ''}${line}`
+  }).join('\n\n')
+  return `🚨 <b>MARKET MOVER ALERT</b> 🚨\n\n${items}\n\n🔗 <a href="https://www.biasforge.co/market-movers">Open MarketMovers Radar</a>`
+}
+
 async function checkAndSendNewsAlerts() {
   const eSubs = emailSubscribers.filter(s => s.active && s.preferences?.news !== false)
   const tSubs = telegramSubscribers.filter(s => s.active && s.preferences?.news !== false)
@@ -447,13 +469,18 @@ async function checkAndSendNewsAlerts() {
     computeTodaysAIBias(true).catch(() => {})
 
     if (eSubs.length > 0) {
-      const items = hi.slice(0, 3).map(a => ({ title: a.title, subtitle: `${a.source} · Impact: ${a.impact}/10`, badge: 'BREAKING', badgeColor: '#ef4444' }))
-      const html = buildAlertEmail({ type: 'news', title: `🚨 ${hi.length} High Impact News`, greeting: 'Breaking!', items })
+      const items = hi.slice(0, 3).map(a => {
+        const m = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+        const tags = (a.marketTags && a.marketTags.length) ? a.marketTags.join(' · ') : (m ? m.assets.slice(0, 3).join(' · ') : '')
+        const sub = [m ? `${m.emoji} ${m.name}` : a.source, `Impact: ${a.impact}/10`, tags].filter(Boolean).join(' · ')
+        return { title: a.title, subtitle: `${sub}${a.oneliner ? ` — ${a.oneliner}` : ''}`, badge: m ? 'MARKET MOVER' : 'BREAKING', badgeColor: '#ef4444' }
+      })
+      const html = buildAlertEmail({ type: 'news', title: `🚨 ${hi.length} Market-Moving Update${hi.length > 1 ? 's' : ''}`, greeting: 'Breaking!', items })
       for (const s of eSubs) await sendAlertEmail(s.email, `🚨 BiasForge: ${hi[0].title.slice(0, 50)}...`, html)
     }
 
     if (tSubs.length > 0) {
-      const tgTxt = tgNewsAlert(hi)
+      const tgTxt = tgMoverAlert(hi)
       for (const s of tSubs) await sendTG(s.chat_id, tgTxt)
     }
 
