@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   Radio, RefreshCw, Search, Filter, AlertTriangle,
-  TrendingUp, TrendingDown, Minus, ExternalLink, Loader2
+  TrendingUp, TrendingDown, Minus, ExternalLink, Loader2, Zap
 } from 'lucide-react'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -16,6 +16,7 @@ const MOVERS = [
   { id: 'musk', name: 'Elon Musk', avatar: '🚀', keywords: ['elon musk', 'musk', 'tesla', 'spacex', 'doge ', 'x.com', 'twitter'], color: 'bg-purple-400/10 text-purple-400 border-purple-400/20', role: 'Tesla/X CEO', affectedAssets: ['TSLA', 'BTC', 'DOGE'] },
   { id: 'bailey', name: 'Andrew Bailey', avatar: '🇬🇧', keywords: ['bailey', 'bank of england', 'boe rate', 'boe policy', 'boe governor'], color: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20', role: 'BOE Governor', affectedAssets: ['GBP', 'GBP/USD', 'FTSE'] },
   { id: 'ueda', name: 'Kazuo Ueda', avatar: '🇯🇵', keywords: ['ueda', 'bank of japan', 'boj rate', 'boj policy', 'boj governor'], color: 'bg-pink-400/10 text-pink-400 border-pink-400/20', role: 'BOJ Governor', affectedAssets: ['JPY', 'USD/JPY', 'Nikkei'] },
+  { id: 'geopolitics', name: 'Geopolitics', avatar: '🌐', keywords: ['war', 'sanction', 'sanctions', 'opec', 'ceasefire', 'invasion', 'missile', 'nuclear', 'middle east', 'conflict', 'military strike', 'airstrike', 'embargo', 'oil supply'], color: 'bg-orange-400/10 text-orange-400 border-orange-400/20', role: 'Global Events', affectedAssets: ['Gold', 'Oil', 'USD', 'Safe Havens'] },
 ]
 
 function timeAgo(dateString) {
@@ -25,6 +26,13 @@ function timeAgo(dateString) {
   if (h > 0) return `${h}h ago`
   if (m > 0) return `${m}m ago`
   return 'Just now'
+}
+
+// Fresh + high-impact = a statement moving markets RIGHT NOW
+function isBreaking(article) {
+  const score = article.impact || 0
+  const ageMin = (Date.now() - new Date(article.publishedAt)) / 60000
+  return score >= 8 && ageMin <= 120
 }
 
 function matchMover(article) {
@@ -65,7 +73,9 @@ export default function MarketMoversRadar() {
           })
           .filter(Boolean)
           .sort((a, b) => {
-            // Sort by impact then time
+            // Breaking (fresh + high-impact) first, then impact, then time
+            const ba = isBreaking(a) ? 1 : 0, bb = isBreaking(b) ? 1 : 0
+            if (bb !== ba) return bb - ba
             if ((b.impact || 0) !== (a.impact || 0)) return (b.impact || 0) - (a.impact || 0)
             return new Date(b.publishedAt) - new Date(a.publishedAt)
           })
@@ -93,6 +103,7 @@ export default function MarketMoversRadar() {
   // Stats
   const totalMatched = articles.length
   const highImpact = articles.filter(a => (a.impact || 0) >= 8).length
+  const breakingCount = articles.filter(isBreaking).length
   const moverCounts = {}
   articles.forEach(a => {
     moverCounts[a.mover.id] = (moverCounts[a.mover.id] || 0) + 1
@@ -115,6 +126,17 @@ export default function MarketMoversRadar() {
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
+
+        {/* BREAKING banner — fresh high-impact statements moving markets now */}
+        {breakingCount > 0 && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 flex items-center gap-3 animate-pulse">
+            <Zap size={16} className="text-red-400 shrink-0" />
+            <span className="text-xs font-bold text-red-400 tracking-wide">BREAKING</span>
+            <span className="text-xs text-slate-300">
+              {breakingCount} high-impact statement{breakingCount > 1 ? 's' : ''} in the last 2 hours — markets may be moving now
+            </span>
+          </div>
+        )}
 
         {/* Stats Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -241,11 +263,12 @@ export default function MarketMoversRadar() {
                 ? 'text-red-400'
                 : 'text-slate-400'
               const BiasIcon = biasIcon
+              const breaking = isBreaking(article)
 
               return (
                 <div
                   key={i}
-                  className={`bg-white/[0.03] border border-white/10 border-l-2 ${impactBorder} rounded-xl p-4 hover:border-white/15 transition-all`}
+                  className={`bg-white/[0.03] border border-white/10 border-l-2 ${impactBorder} rounded-xl p-4 hover:border-white/15 transition-all ${breaking ? 'ring-1 ring-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.12)]' : ''}`}
                 >
                   {/* Header */}
                   <div className="flex items-start justify-between gap-3 mb-3">
@@ -263,9 +286,16 @@ export default function MarketMoversRadar() {
                         </div>
                       </div>
                     </div>
-                    <span className={`text-[9px] font-bold px-2 py-1 rounded border shrink-0 ${impactBadge}`}>
-                      {impactLabel} IMPACT
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {breaking && (
+                        <span className="text-[9px] font-bold px-2 py-1 rounded border bg-red-500/15 border-red-500/30 text-red-400 flex items-center gap-1 animate-pulse">
+                          <Zap size={10} /> BREAKING
+                        </span>
+                      )}
+                      <span className={`text-[9px] font-bold px-2 py-1 rounded border ${impactBadge}`}>
+                        {impactLabel} IMPACT
+                      </span>
+                    </div>
                   </div>
 
                   {/* Title */}
