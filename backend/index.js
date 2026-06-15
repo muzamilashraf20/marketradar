@@ -462,11 +462,11 @@ async function checkAndSendNewsAlerts() {
     const hi = cached.filter(a => a.impact >= 8 && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
 
-    // ⚡ CATALYST TRIGGER: breaking high-impact news → re-evaluate Today's Bias immediately
-    // (force=true bypasses the 10-min per-symbol cache; daily pair lock still applies —
-    //  direction/confidence refresh on the locked pair, pair switches only if signal genuinely flipped)
-    console.log(`⚡ Catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → refreshing Today's Bias`)
-    computeTodaysAIBias(true).catch(() => {})
+    // ⚡ CATALYST TRIGGER: breaking high-impact news → refresh reasoning on LOCKED pair only
+    // (force=true bypasses the per-symbol cache; sessionOpen=false keeps the pair locked —
+    //  only direction/confidence/reasoning refresh, NO pair re-pick)
+    console.log(`⚡ Catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → refreshing Today's Bias (locked pair only)`)
+    computeTodaysAIBias(true, false).catch(() => {})
 
     if (eSubs.length > 0) {
       const items = hi.slice(0, 3).map(a => {
@@ -1065,29 +1065,57 @@ async function saveTodayBiasState(result) {
 
 // Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
 // force=true bypasses the per-symbol cache (used on breaking-news catalysts)
-async function computeTodaysAIBias(force = false) {
+// sessionOpen=true allows full pair re-pick (used ONLY at session opens: Sydney/Tokyo/London/NY)
+// Without sessionOpen, a locked pair is KEPT and only its reasoning/confidence is refreshed.
+async function computeTodaysAIBias(force = false, sessionOpen = false) {
   if (isForexClosed()) return null
-  const strength = await getLiveStrength()
-  const ranked = rankOandaPairs(strength)
-  if (!ranked.length) return null
 
-  // ── STAGE 1: pick the pair with the best MOVE POTENTIAL (not just strength) ──
-  const candidates = ranked.slice(0, 6)
-  let events = []; try { events = await getEconomicCalendar() } catch (e) {}
-  const newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
-  let room = {}; try { room = await getPairRoomBatch(candidates) } catch (e) {}
-  const scored = scorePairPotential(candidates, room, events, newsTitles)
-
-  // Daily anchor: keep today's locked pair unless a clearly better-potential pair emerges (it falls out of top 3)
-  let top = scored[0] || ranked[0]
   const day = utcDay()
-  if (todayBiasLock?.date === day) {
-    const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
-    if (lockedIdx > -1 && lockedIdx < 3) top = scored[lockedIdx]
-    else console.log(`🔄 Today's pair switched (higher move potential): ${todayBiasLock.pair} → ${top.pair}`)
+
+  // ── LOCK-ONLY REFRESH: if pair is locked today and this is NOT a session open, just refresh reasoning ──
+  let top
+  if (todayBiasLock?.date === day && !sessionOpen) {
+    console.log(`🔒 Pair locked: ${todayBiasLock.pair} — refreshing reasoning only (sessionOpen=${sessionOpen}, force=${force})`)
+    // Skip all ranking/scoring — go straight to generateBiasFor on the locked pair
+    top = { symbol: todayBiasLock.symbol, pair: todayBiasLock.pair }
+    // Still fetch room data for the locked pair so potentialNote is accurate
+    let room = {}; try { room = await getPairRoomBatch([top]) } catch (e) {}
+    const r = room[top.symbol]
+    top.roomScore = r ? r.roomScore : null
+    top.adrPips = r ? r.adrPips : null
+    top.potential = null // not re-scored, just refreshed
+    console.log(`🎯 Today's pair (locked): ${top.pair}`)
+  } else {
+    // ── FULL RE-PICK: either session open or first bias of the day ──
+    const strength = await getLiveStrength()
+    const ranked = rankOandaPairs(strength)
+    if (!ranked.length) return null
+    const candidates = ranked.slice(0, 6)
+    let events = []; try { events = await getEconomicCalendar() } catch (e) {}
+    const newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
+    let room = {}; try { room = await getPairRoomBatch(candidates) } catch (e) {}
+    const scored = scorePairPotential(candidates, room, events, newsTitles)
+    top = scored[0] || ranked[0]
+
+    // Hysteresis: if switching from a locked pair, challenger must beat it by a margin
+    if (todayBiasLock?.date === day) {
+      const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
+      if (lockedIdx > -1) {
+        const lockedScore = scored[lockedIdx].potential || 0
+        const topScore = top.potential || 0
+        // Challenger must beat locked pair by 15%+ to justify a switch
+        if (top.symbol !== todayBiasLock.symbol && (topScore - lockedScore) < 0.15) {
+          top = scored[lockedIdx]
+          console.log(`🔒 Hysteresis: keeping ${top.pair} (challenger margin too small: ${(topScore - lockedScore).toFixed(3)})`)
+        } else if (top.symbol !== todayBiasLock.symbol) {
+          console.log(`🔄 Session re-pick: ${todayBiasLock.pair} → ${top.pair} (margin: +${(topScore - lockedScore).toFixed(3)})`)
+        }
+      }
+    }
+
+    todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
+    console.log(`🎯 Today's pair${sessionOpen ? ' (session open)' : ''}: ${top.pair} · potential ${top.potential ?? '?'} · ${potentialNote(top)}`)
   }
-  todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
-  console.log(`🎯 Today's pair: ${top.pair} · potential ${top.potential ?? '?'} · ${potentialNote(top)}`)
 
   let bias
   try {
@@ -1919,8 +1947,8 @@ app.get('/api/earnings', async (req, res) => {
       else if (hourIn('Europe/London') === 8) session = 'London'
       else if (hourIn('America/New_York') === 8) session = 'New York'
       if (!session) return
-      // Compute fresh AI bias (this also fires a change-alert internally if direction flipped)
-      const result = await computeTodaysAIBias()
+      // Compute fresh AI bias — sessionOpen=true allows pair re-pick at session boundaries
+      const result = await computeTodaysAIBias(false, true)
       if (!result) return
       const msg = `🔔 <b>${session} Session Open!</b>\n\n` +
         `📊 <b>Today's Bias: ${result.direction.toUpperCase()} ${result.pair}</b>\n` +
