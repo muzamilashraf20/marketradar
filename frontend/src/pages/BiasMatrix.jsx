@@ -364,10 +364,6 @@ export default function BiasMatrix() {
                 <div className="space-y-2.5">
                   {[
                     { label: 'Current Price', value: bias.levels?.currentPrice, color: 'text-white' },
-                    { label: 'Entry Zone', value: bias.levels?.entry, color: 'text-cyan-400' },
-                    { label: 'Stop Loss', value: bias.levels?.stopLoss, color: 'text-orange-400' },
-                    { label: 'Target 1', value: bias.levels?.target1, color: 'text-emerald-400' },
-                    { label: 'Target 2', value: bias.levels?.target2, color: 'text-emerald-300' },
                     { label: '🚫 Invalidation', value: bias.levels?.invalidation, color: 'text-red-400' },
                   ].filter(l => l.value).map(level => (
                     <div key={level.label} className={`flex items-center justify-between py-2 border-b border-white/5 last:border-0 ${level.label.includes('Invalidation') ? 'bg-red-500/5 -mx-2 px-2 rounded-lg' : ''}`}>
