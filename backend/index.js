@@ -1130,17 +1130,21 @@ const utcDay = () => new Date().toISOString().slice(0, 10)
 
 async function loadTodayBiasState() {
   try {
-    const { data } = await supabase.from('app_state').select('value').eq('key', 'today_bias_state').single()
+    const { data, error } = await supabase.from('app_state').select('value').eq('key', 'today_bias_state').single()
+    if (error) { console.log(`⚠️ loadTodayBiasState: Supabase error — ${error.message}`); return }
     const v = data?.value
-    if (v?.lock?.date === utcDay()) {
+    const today = utcDay()
+    if (v?.lock?.date === today) {
       todayBiasLock = v.lock
       if (v.result) {
         setCache('today_bias', v.result)
         lastTodaysBiasKey = `${v.result.direction} ${v.result.pair}`.toUpperCase()
       }
-      console.log(`✅ Restored today's bias state: ${v.lock.pair}`)
+      console.log(`✅ Restored today's bias state: ${v.lock.pair} (lock date=${v.lock.date}, today=${today})`)
+    } else {
+      console.log(`📅 Bias state found but date mismatch: lockDate=${v?.lock?.date || 'none'}, today=${today} — starting fresh (AI will pick)`)
     }
-  } catch (e) { /* table may not exist yet — non-fatal */ }
+  } catch (e) { console.log(`⚠️ loadTodayBiasState failed: ${e?.message} — starting without lock`) }
 }
 async function saveTodayBiasState(result) {
   try {
@@ -1163,7 +1167,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
   // ── LOCK-ONLY REFRESH: if pair is locked today and this is NOT a session open, just refresh reasoning ──
   let top
   if (todayBiasLock?.date === day && !sessionOpen) {
-    console.log(`🔒 Pair locked: ${todayBiasLock.pair} — refreshing reasoning only (sessionOpen=${sessionOpen}, force=${force})`)
+    console.log(`🔒 LOCK-ONLY PATH: pair=${todayBiasLock.pair}, lockDate=${todayBiasLock.date}, today=${day}, sessionOpen=${sessionOpen}, force=${force}`)
     // Skip all ranking/scoring — go straight to generateBiasFor on the locked pair
     top = { symbol: todayBiasLock.symbol, pair: todayBiasLock.pair }
     // Still fetch room data for the locked pair so potentialNote is accurate
@@ -1175,6 +1179,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     console.log(`🎯 Today's pair (locked): ${top.pair}`)
   } else {
     // ── FULL RE-PICK (AI-powered): session open or first bias of the day ──
+    console.log(`🔄 FULL RE-PICK: sessionOpen=${sessionOpen}, lock=${todayBiasLock?.pair || 'none'}, lockDate=${todayBiasLock?.date || 'none'}, today=${day}`)
     const strength = await getLiveStrength()
     const ranked = rankOandaPairs(strength)
     if (!ranked.length) return null
@@ -1213,12 +1218,15 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
 
     // ── AI SELECTION: let Sonnet pick the best tradeable pair ──
     let aiPick = null
+    console.log(`🤖 Attempting AI pair selection with ${candidates.length} candidates: ${candidates.map(c => c.symbol).join(', ')}`)
     try {
       aiPick = await selectBestPairAI(candidates, room, strengthData, calendarData, newsData, cotSummary)
       console.log(`🤖 AI selected: ${aiPick.symbol} ${aiPick.direction} — "${(aiPick.selectionReasoning || '').slice(0, 100)}..."`)
     } catch (e) {
       console.error('⚠️ AI pair selection failed, falling back to formula:', e?.message)
+      console.error('⚠️ Full error:', e?.stack || e)
     }
+    console.log(`🤖 AI pick result: ${aiPick ? JSON.stringify({symbol: aiPick.symbol, direction: aiPick.direction}) : 'NULL — using formula fallback'}`)
 
     if (aiPick?.symbol) {
       // AI picked — find the candidate and attach room data
