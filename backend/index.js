@@ -388,6 +388,15 @@ app.get('/api/telegram/link', (req, res) => { res.json({ url: 'https://t.me/Bias
 const sentAlerts = new Map()
 const sentNewsAlerts = new Set()
 
+// ── TIER 2 MARKET-SHAKER TRACKING ──
+// Tier 1 (impact 7-8): refresh locked pair reasoning only
+// Tier 2 (impact 9-10 OR geopolitics/central-bank surprise): full re-pick allowed
+let lastTier2OverrideAt = 0                   // timestamp of last Tier 2 override
+const tier2Stories = new Set()                 // dedupe: story keys that already triggered Tier 2 today
+let tier2Day = ''                              // reset dedupe at day boundary
+const TIER2_COOLDOWN = 60 * 60 * 1000         // 60 min minimum between Tier 2 overrides
+const TIER2_MOVER_IDS = ['geo', 'powell', 'lagarde', 'bailey', 'ueda'] // central banks + geopolitics = market-shakers
+
 async function checkAndSendCalendarAlerts() {
   const emailSubs = emailSubscribers.filter(s => s.active)
   const tgSubs = telegramSubscribers.filter(s => s.active)
@@ -462,11 +471,41 @@ async function checkAndSendNewsAlerts() {
     const hi = cached.filter(a => a.impact >= 8 && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
 
-    // ⚡ CATALYST TRIGGER: breaking high-impact news → refresh reasoning on LOCKED pair only
-    // (force=true bypasses the per-symbol cache; sessionOpen=false keeps the pair locked —
-    //  only direction/confidence/reasoning refresh, NO pair re-pick)
-    console.log(`⚡ Catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → refreshing Today's Bias (locked pair only)`)
-    computeTodaysAIBias(true, false).catch(() => {})
+    // ⚡ CATALYST CLASSIFICATION: Tier 1 (refresh only) vs Tier 2 (market-shaker → full re-pick)
+    // Reset dedupe at day boundary
+    const today = utcDay()
+    if (tier2Day !== today) { tier2Stories.clear(); tier2Day = today }
+
+    // Tier 2 candidates: impact 9+ OR (impact 8+ AND matches geopolitics/central-bank mover)
+    const tier2Candidates = hi.filter(a => {
+      if (a.impact >= 9) return true
+      const mover = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+      return a.impact >= 8 && mover && TIER2_MOVER_IDS.includes(mover.id)
+    })
+
+    // Check Tier 2 eligibility: has candidates + cooldown passed + story not already triggered
+    const tier2Eligible = tier2Candidates.length > 0
+      && (Date.now() - lastTier2OverrideAt) > TIER2_COOLDOWN
+      && tier2Candidates.some(a => {
+        const mover = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+        const storyKey = mover ? mover.id : a.title.split(' ').slice(0, 5).join(' ').toLowerCase()
+        return !tier2Stories.has(storyKey)
+      })
+
+    if (tier2Eligible) {
+      // 🔴 TIER 2 — MARKET-SHAKER: full re-pick allowed (same as session open)
+      const trigger = tier2Candidates[0]
+      const mover = matchMoverSrv(`${trigger.title} ${trigger.summary || ''}`)
+      const storyKey = mover ? mover.id : trigger.title.split(' ').slice(0, 5).join(' ').toLowerCase()
+      tier2Stories.add(storyKey)
+      lastTier2OverrideAt = Date.now()
+      console.log(`🔴 TIER 2 MARKET-SHAKER: "${trigger.title.slice(0, 70)}" (impact ${trigger.impact}${mover ? ', ' + mover.name : ''}) → FULL re-pick`)
+      computeTodaysAIBias(true, true).catch(() => {})
+    } else {
+      // ⚡ TIER 1 — normal catalyst: locked pair reasoning refresh only, NO pair switch
+      console.log(`⚡ Tier 1 catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → locked pair refresh only`)
+      computeTodaysAIBias(true, false).catch(() => {})
+    }
 
     if (eSubs.length > 0) {
       const items = hi.slice(0, 3).map(a => {
