@@ -630,7 +630,7 @@ async function getMoveContext(symbol, currentPrice) {
 // Batch: for candidate pairs, compute ADR (typical daily range) and how much of the
 // move in the bias DIRECTION has already happened today. One TwelveData call for all pairs.
 // Returns { SYMBOL: { adrPips, favorablePips, pctUsed, roomScore } }. roomScore 1=fresh, 0=exhausted.
-const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURGBP: 'EUR/GBP', EURJPY: 'EUR/JPY', GBPJPY: 'GBP/JPY', AUDJPY: 'AUD/JPY' }
+const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURGBP: 'EUR/GBP', EURJPY: 'EUR/JPY', GBPJPY: 'GBP/JPY', AUDJPY: 'AUD/JPY', XAUUSD: 'XAU/USD' }
 async function getPairRoomBatch(candidates) {
   const tdSymbols = [...new Set(candidates.map(c => ROOM_SYMBOL_MAP[c.symbol]).filter(Boolean))]
   if (!tdSymbols.length) return {}
@@ -645,7 +645,7 @@ async function getPairRoomBatch(candidates) {
       const d = tdSymbols.length === 1 ? r.data : r.data?.[td]
       const vals = d?.values
       if (!Array.isArray(vals) || vals.length < 3) continue
-      const pip = /JPY/.test(c.symbol) ? 0.01 : 0.0001
+      const pip = /JPY/.test(c.symbol) ? 0.01 : /XAU/.test(c.symbol) ? 0.1 : 0.0001
       const completed = vals.slice(1)
       const adr = completed.reduce((s, x) => s + (parseFloat(x.high) - parseFloat(x.low)), 0) / completed.length
       const today = vals[0]
@@ -667,7 +667,8 @@ const NEWS_KW = {
   USD: ['fed', 'dollar', 'powell', 'fomc', 'treasury', 'u.s.'], EUR: ['ecb', 'euro', 'lagarde', 'eurozone'],
   GBP: ['boe', 'pound', 'sterling', 'bailey', 'britain'], JPY: ['boj', 'yen', 'ueda', 'japan'],
   AUD: ['rba', 'aussie', 'australia'], CAD: ['boc', 'loonie', 'canada'],
-  CHF: ['snb', 'franc', 'swiss'], NZD: ['rbnz', 'kiwi', 'new zealand']
+  CHF: ['snb', 'franc', 'swiss'], NZD: ['rbnz', 'kiwi', 'new zealand'],
+  XAU: ['gold', 'safe haven', 'precious', 'bullion', 'xau', 'haven demand', 'risk aversion']
 }
 function scorePairPotential(candidates, room, events, newsTitles) {
   const now = Date.now()
@@ -709,6 +710,84 @@ function potentialNote(p) {
 }
 
 // Reusable AI bias generator — used by both the /api/bias route and the Today's Bias scheduler.
+
+// ── STEP 2: AI-powered pair selection ──
+// Builds candidates list including XAUUSD (gold), which can't come from currency-strength diff
+function buildCandidatesWithGold(ranked, strength) {
+  const candidates = ranked.slice(0, 8) // take top 8 FX pairs (wider net for AI)
+  if (!candidates.some(c => c.symbol === 'XAUUSD')) {
+    const usdStr = strength?.currencies?.find(c => c.currency === 'USD')?.strength ?? 50
+    // Gold is roughly inverse-USD + safe-haven; preliminary direction for room calc only
+    const goldAction = usdStr < 50 ? 'BUY' : 'SELL'
+    const goldDiff = Math.abs(50 - usdStr)
+    candidates.push({ symbol: 'XAUUSD', pair: 'XAUUSD', action: goldAction, diff: goldDiff, isGold: true })
+  }
+  return candidates
+}
+
+// AI selects the best tradeable pair from all candidates (replaces formula-only scorePairPotential for session picks)
+async function selectBestPairAI(candidates, room, strengthData, calendarData, newsData, cotSummary) {
+  const candidateSummaries = candidates.map(c => {
+    const r = room[c.symbol]
+    const roomInfo = r
+      ? `ADR ${r.adrPips}p, ${r.pctUsed}% used in ${c.action} direction (${Math.round(r.roomScore * 100)}% room left)`
+      : 'room data N/A'
+    const tag = c.isGold ? ' [GOLD — use USD inverse + risk/geopolitics, NOT currency strength diff]' : ''
+    return `${c.symbol}: preliminary ${c.action} (strength diff ${c.diff})${tag} | ${roomInfo}`
+  }).join('\n')
+
+  const prompt = `You are selecting the SINGLE BEST tradeable pair for this trading session.
+
+CANDIDATES (${candidates.length} pairs, with preliminary direction and ADR room):
+${candidateSummaries}
+
+CURRENCY STRENGTH (8 majors, 0=weakest 100=strongest):
+${strengthData || 'Not available'}
+
+UPCOMING HIGH-IMPACT EVENTS (next 24h):
+${calendarData || 'None'}
+
+RECENT HIGH-IMPACT NEWS:
+${newsData || 'None'}
+
+INSTITUTIONAL POSITIONING (COT — weekly CFTC):
+${cotSummary || 'Not available'}
+
+SELECTION CRITERIA (ranked by priority):
+1. TRADEABILITY: The move must be ABOUT TO happen. >70% ADR used = LATE, do NOT pick unless ALL others are worse. <40% used = FRESH = ideal.
+2. CONVICTION: Strong fundamental edge — strength divergence + news/catalyst alignment + COT all pointing same way.
+3. CATALYST TIMING: Upcoming high-impact event or fresh breaking news that will DRIVE the move in the next hours.
+4. ADR ROOM: Enough pips remaining for a worthwhile move (at least 30% room for FX, proportional for gold).
+
+RULES:
+- Pick exactly ONE winner. Direction must be BUY or SELL.
+- For XAUUSD (Gold): driven by USD weakness (bullish gold), risk-off sentiment (bullish gold), geopolitics. NOT based on currency strength diff — use the USD score as inverse signal plus news/COT context.
+- You may OVERRIDE the preliminary direction if your analysis says otherwise.
+- Provide 2-3 runner-ups with 1-line reasoning each.
+- Return ONLY valid JSON. No markdown, no explanation outside JSON.
+
+{
+  "symbol": "EURUSD",
+  "direction": "BUY",
+  "selectionReasoning": "2-3 sentences: why this pair RIGHT NOW over all others — what edge + what catalyst + why not late",
+  "runnerUps": [
+    { "symbol": "GBPUSD", "direction": "BUY", "oneliner": "..." },
+    { "symbol": "XAUUSD", "direction": "SELL", "oneliner": "..." }
+  ]
+}`
+
+  const m = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 512,
+    system: 'You are an elite institutional macro strategist for BiasForge.ai. Your job: select the single best tradeable pair for this session. Prioritize TRADEABILITY (fresh move, not late) over raw strength. Return ONLY valid JSON.',
+    messages: [{ role: 'user', content: prompt }]
+  })
+  trackAI('pair-selection', 'claude-sonnet-4-6', m.usage)
+  const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
+  return JSON.parse(raw)
+}
+
+// Reusable AI bias generator (single pair) — used by /api/bias, Today's Bias lock-refresh, and post-selection deep analysis.
 // Returns the bias object (cached for CACHE_TTL per symbol+timeframe). Throws on AI/parse failure.
 async function generateBiasFor(symbol, timeframe, force = false) {
   const tf = timeframe || 'intraday'
@@ -1086,35 +1165,92 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     top.potential = null // not re-scored, just refreshed
     console.log(`🎯 Today's pair (locked): ${top.pair}`)
   } else {
-    // ── FULL RE-PICK: either session open or first bias of the day ──
+    // ── FULL RE-PICK (AI-powered): session open or first bias of the day ──
     const strength = await getLiveStrength()
     const ranked = rankOandaPairs(strength)
     if (!ranked.length) return null
-    const candidates = ranked.slice(0, 6)
+
+    // Build candidates: top FX pairs + XAUUSD (gold)
+    const candidates = buildCandidatesWithGold(ranked, strength)
     let events = []; try { events = await getEconomicCalendar() } catch (e) {}
     const newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
     let room = {}; try { room = await getPairRoomBatch(candidates) } catch (e) {}
-    const scored = scorePairPotential(candidates, room, events, newsTitles)
-    top = scored[0] || ranked[0]
 
-    // Hysteresis: if switching from a locked pair, challenger must beat it by a margin
-    if (todayBiasLock?.date === day) {
-      const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
-      if (lockedIdx > -1) {
-        const lockedScore = scored[lockedIdx].potential || 0
-        const topScore = top.potential || 0
-        // Challenger must beat locked pair by 15%+ to justify a switch
-        if (top.symbol !== todayBiasLock.symbol && (topScore - lockedScore) < 0.15) {
-          top = scored[lockedIdx]
-          console.log(`🔒 Hysteresis: keeping ${top.pair} (challenger margin too small: ${(topScore - lockedScore).toFixed(3)})`)
-        } else if (top.symbol !== todayBiasLock.symbol) {
-          console.log(`🔄 Session re-pick: ${todayBiasLock.pair} → ${top.pair} (margin: +${(topScore - lockedScore).toFixed(3)})`)
+    // Gather shared context for AI selection prompt
+    let strengthData = ''
+    if (strength?.currencies) {
+      strengthData = strength.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
+    }
+    let calendarData = 'No upcoming events'
+    try {
+      const now = new Date()
+      const ahead = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+      const calEvents = (events).filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) > now && new Date(e.time) < ahead).slice(0, 8).map(e => {
+        const mins = Math.round((new Date(e.time) - now) / 60000)
+        const rel = mins < 60 ? `in ${mins}min` : mins < 1440 ? `in ${Math.floor(mins / 60)}h ${mins % 60}m` : `in ${Math.floor(mins / 1440)}d`
+        return `${e.event} (${e.country}) ${rel}`
+      })
+      if (calEvents.length > 0) calendarData = calEvents.join(' | ')
+    } catch (e) {}
+    let newsData = 'No recent high-impact news'
+    if (newsTitles.length > 0) newsData = newsTitles.slice(0, 5).join(' | ')
+    let cotSummary = 'Not available'
+    try {
+      const cot = await getCOTData()
+      if (cot?.data?.length) {
+        cotSummary = cot.data.map(c => `${c.currency}: ${c.bias} (net ${c.netPosition > 0 ? '+' : ''}${c.netPosition.toLocaleString()})`).join(' | ')
+      }
+    } catch (e) {}
+
+    // ── AI SELECTION: let Sonnet pick the best tradeable pair ──
+    let aiPick = null
+    try {
+      aiPick = await selectBestPairAI(candidates, room, strengthData, calendarData, newsData, cotSummary)
+      console.log(`🤖 AI selected: ${aiPick.symbol} ${aiPick.direction} — "${(aiPick.selectionReasoning || '').slice(0, 100)}..."`)
+    } catch (e) {
+      console.error('⚠️ AI pair selection failed, falling back to formula:', e?.message)
+    }
+
+    if (aiPick?.symbol) {
+      // AI picked — find the candidate and attach room data
+      const picked = candidates.find(c => c.symbol === aiPick.symbol) || candidates[0]
+      const r = room[picked.symbol]
+      top = {
+        ...picked,
+        action: aiPick.direction === 'BUY' ? 'BUY' : 'SELL',
+        roomScore: r?.roomScore ?? null,
+        adrPips: r?.adrPips ?? null,
+        potential: null,
+        aiSelected: true,
+        selectionReasoning: aiPick.selectionReasoning,
+        runnerUps: aiPick.runnerUps
+      }
+      // Log runner-ups for debugging
+      if (aiPick.runnerUps?.length) {
+        console.log(`   Runner-ups: ${aiPick.runnerUps.map(r => `${r.symbol} ${r.direction}`).join(', ')}`)
+      }
+    } else {
+      // Fallback: formula scoring (if AI call failed)
+      const scored = scorePairPotential(candidates, room, events, newsTitles)
+      top = scored[0] || ranked[0]
+      console.log('⚠️ Using formula fallback for pair selection')
+
+      // Hysteresis only for formula fallback (AI handles its own judgment)
+      if (todayBiasLock?.date === day) {
+        const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
+        if (lockedIdx > -1) {
+          const lockedScore = scored[lockedIdx].potential || 0
+          const topScore = top.potential || 0
+          if (top.symbol !== todayBiasLock.symbol && (topScore - lockedScore) < 0.15) {
+            top = scored[lockedIdx]
+            console.log(`🔒 Hysteresis: keeping ${top.pair} (challenger margin too small: ${(topScore - lockedScore).toFixed(3)})`)
+          }
         }
       }
     }
 
     todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
-    console.log(`🎯 Today's pair${sessionOpen ? ' (session open)' : ''}: ${top.pair} · potential ${top.potential ?? '?'} · ${potentialNote(top)}`)
+    console.log(`🎯 Today's pair${sessionOpen ? ' (session open)' : ''}: ${top.pair} · ${top.aiSelected ? 'AI-selected' : 'formula'} · ${potentialNote(top)}`)
   }
 
   let bias
@@ -1137,6 +1273,9 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       nextEvent: top.nextEvent || null
     },
     bias, // full object for the dashboard widget
+    selectionMethod: top.aiSelected ? 'ai' : 'formula',
+    selectionReasoning: top.selectionReasoning || null,
+    runnerUps: top.runnerUps || null,
     generatedAt: bias.generatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
