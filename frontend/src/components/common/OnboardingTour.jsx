@@ -15,7 +15,7 @@ const STEPS = [
   {
     icon: <Zap size={32} className="text-cyan-400" />,
     title: 'AI Bias Engine',
-    description: 'Generate institutional-grade directional bias for any major pair. Full reasoning, invalidation levels, and confidence scores — powered by Claude AI.',
+    description: 'Generate institutional-grade directional bias for any major pair. Full reasoning, invalidation levels, and confidence scores — powered by BiasForge AI.',
     tip: 'Go to Bias Matrix from the sidebar, pick a pair, and hit "Generate AI Bias".',
     path: '/bias',
   },

@@ -112,7 +112,7 @@ Return ONLY a valid JSON object (no markdown, no explanation):
         {loading && (
           <div className="p-8 text-center">
             <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-slate-400 text-sm">Claude is analyzing market impact...</p>
+            <p className="text-slate-400 text-sm">BiasForge AI is analyzing market impact...</p>
           </div>
         )}
         {error && <div className="p-6"><div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-300 text-sm">{error}</div></div>}
