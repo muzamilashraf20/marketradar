@@ -768,8 +768,31 @@ function buildCandidatesWithGold(ranked, strength) {
 const BIAS_CANDIDATES = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY','AUDJPY','XAUUSD']
   .map(s => ({ symbol: s, pair: s }))
 
+// Build cross-asset context from existing price/room data (no extra API calls)
+function buildCrossAssetContext(room) {
+  const lines = []
+  const g = (sym) => room[sym] || {}
+  // USD direction proxy (from major USD pairs' fromOpen movement)
+  const eurusd = g('EURUSD'), gbpusd = g('GBPUSD'), usdjpy = g('USDJPY'), audusd = g('AUDUSD')
+  const usdBearish = [eurusd, gbpusd, audusd].filter(r => r.fromOpenPips > 0).length + (usdjpy.fromOpenPips < 0 ? 1 : 0)
+  const usdBullish = [eurusd, gbpusd, audusd].filter(r => r.fromOpenPips < 0).length + (usdjpy.fromOpenPips > 0 ? 1 : 0)
+  if (usdBearish >= 3) lines.push('DXY PROXY: USD WEAKENING today (3+ pairs confirming dollar selling)')
+  else if (usdBullish >= 3) lines.push('DXY PROXY: USD STRENGTHENING today (3+ pairs confirming dollar buying)')
+  else lines.push('DXY PROXY: USD MIXED (no clear direction across pairs)')
+  // Risk sentiment (AUDJPY = classic risk barometer, Gold = safe haven)
+  const audjpy = g('AUDJPY'), gold = g('XAUUSD')
+  if (audjpy.fromOpenPips > 3 && gold.fromOpenPips < 0) lines.push('RISK SENTIMENT: RISK-ON (AUDJPY rising + gold falling)')
+  else if (audjpy.fromOpenPips < -3 && gold.fromOpenPips > 0) lines.push('RISK SENTIMENT: RISK-OFF (AUDJPY falling + gold rising — safe haven demand)')
+  else if (gold.fromOpenPips > 5) lines.push('RISK SENTIMENT: CAUTIOUS (gold bid, possible safe-haven flows)')
+  else lines.push('RISK SENTIMENT: NEUTRAL (no strong risk-on/off signal)')
+  // JPY sentiment (important for yen crosses)
+  if (usdjpy.fromOpenPips < -5) lines.push('JPY: STRENGTHENING today (USDJPY falling — possible safe-haven or BOJ impact)')
+  else if (usdjpy.fromOpenPips > 5) lines.push('JPY: WEAKENING today (USDJPY rising)')
+  return lines.join('\n')
+}
+
 // AI selects the best tradeable pair using MACRO FUNDAMENTALS (not currency strength)
-async function selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases) {
+async function selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases, crossAssetContext) {
   const candidateLines = candidates.map(c => {
     const r = room[c.symbol]
     const roomInfo = r
@@ -798,6 +821,9 @@ ${recentReleases || 'No recent release data'}
 
 4. INSTITUTIONAL POSITIONING (CFTC COT — weekly):
 ${cotSummary || 'Not available'}
+
+5. CROSS-ASSET CONTEXT (calculated from today's price action):
+${crossAssetContext || 'Not available'}
 
 ──────────────────────────────
 HOW TO SELECT
@@ -1222,7 +1248,10 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
           { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
           { name: 'Reuters', url: 'https://feeds.reuters.com/reuters/topNews' },
           { name: 'Fox Business', url: 'https://feeds.foxbusiness.com/foxbusiness/markets' },
-          { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' }
+          { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' },
+          { name: 'MarketWatch', url: 'https://feeds.marketwatch.com/marketwatch/topstories' },
+          { name: 'FXStreet', url: 'https://www.fxstreet.com/rss/news' },
+          { name: 'DailyFX', url: 'https://www.dailyfx.com/feeds/market-news' }
         ]
         const results = await Promise.allSettled(feeds.map(f => rssParser.parseURL(f.url).then(p => p.items.slice(0, 8).map(i => ({ source: f.name, title: i.title || '', summary: i.contentSnippet || '' })))))
         let articles = []; results.forEach(r => { if (r.status === 'fulfilled') articles.push(...r.value) })
@@ -1261,18 +1290,22 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       try { room = await getPairRoomBatch(candidates) } catch (e2) { console.log(`⚠️ Room retry also failed — AI will work without room data`) }
     }
 
+    // ── 5. CROSS-ASSET CONTEXT (from existing price data) ──
+    const crossAssetContext = buildCrossAssetContext(room)
+
     // ── LOG: what data AI is receiving ──
     console.log(`📊 AI FUNDAMENTAL DATA:`)
     console.log(`   News: ${newsTitles.length} high-impact headlines`)
     console.log(`   Calendar: ${calendarData.split('\n').length} upcoming | ${recentReleases === 'No recent release data' ? 0 : recentReleases.split('\n').length} recent releases`)
     console.log(`   COT: ${cotSummary !== 'Not available' ? 'YES' : 'NO'}`)
+    console.log(`   Cross-asset: ${crossAssetContext.split('\n').length} signals`)
     console.log(`   Room: ${Object.keys(room).length}/12 pairs`)
 
     // ── AI FUNDAMENTAL SELECTION ──
     let aiPick = null
     console.log(`🤖 AI fundamental selection: ${candidates.length} candidates`)
     try {
-      aiPick = await selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases)
+      aiPick = await selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases, crossAssetContext)
       console.log(`🤖 AI selected: ${aiPick.symbol} ${aiPick.direction} [${aiPick.conviction || '?'}] — "${(aiPick.selectionReasoning || '').slice(0, 120)}..."`)
       console.log(`   Primary driver: ${aiPick.primaryDriver || '?'} | Flip condition: ${aiPick.whatWouldFlipIt || '?'}`)
       if (aiPick.runnerUps?.length) console.log(`   Runner-ups: ${aiPick.runnerUps.map(r => `${r.symbol} ${r.direction}`).join(', ')}`)
@@ -1302,8 +1335,6 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       top = withRoom[0] || candidates[0]
       top.action = 'NEUTRAL'
       console.log('⚠️ AI failed — fallback to most room available: ' + top.symbol)
-    }
-      }
     }
 
     todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair, selectedBy: top.aiSelected ? 'ai' : 'formula' }
