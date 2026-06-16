@@ -764,61 +764,79 @@ function buildCandidatesWithGold(ranked, strength) {
   return candidates
 }
 
-// AI selects the best tradeable pair from all candidates (replaces formula-only scorePairPotential for session picks)
-async function selectBestPairAI(candidates, room, strengthData, calendarData, newsData, cotSummary) {
-  const candidateSummaries = candidates.map(c => {
+// Fixed candidate list — all major pairs + gold (no strength-based pre-filter)
+const BIAS_CANDIDATES = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','EURGBP','EURJPY','GBPJPY','AUDJPY','XAUUSD']
+  .map(s => ({ symbol: s, pair: s }))
+
+// AI selects the best tradeable pair using MACRO FUNDAMENTALS (not currency strength)
+async function selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases) {
+  const candidateLines = candidates.map(c => {
     const r = room[c.symbol]
     const roomInfo = r
-      ? `ADR ${r.adrPips}p, ${r.pctUsed}% used in ${c.action} direction (${Math.round(r.roomScore * 100)}% room left)`
+      ? `ADR ${r.adrPips}p, ${r.pctUsed}% of ADR used today (${Math.round(r.roomScore * 100)}% room left)`
       : 'room data N/A'
-    const tag = c.isGold ? ' [GOLD — use USD inverse + risk/geopolitics, NOT currency strength diff]' : ''
-    return `${c.symbol}: preliminary ${c.action} (strength diff ${c.diff})${tag} | ${roomInfo}`
+    return `${c.symbol} | ${roomInfo}`
   }).join('\n')
 
-  const prompt = `You are selecting the SINGLE BEST tradeable pair for this trading session.
+  const prompt = `You are an institutional macro strategist. Select the SINGLE BEST tradeable pair for this session using ONLY fundamental analysis.
 
-CANDIDATES (${candidates.length} pairs, with preliminary direction and ADR room):
-${candidateSummaries}
+AVAILABLE PAIRS:
+${candidateLines}
 
-CURRENCY STRENGTH (8 majors, 0=weakest 100=strongest):
-${strengthData || 'Not available'}
+──────────────────────────────
+MACRO FUNDAMENTAL DATA
+──────────────────────────────
 
-UPCOMING HIGH-IMPACT EVENTS (next 24h):
-${calendarData || 'None'}
+1. BREAKING & RECENT NEWS (scored by impact):
+${newsData || 'No recent news available'}
 
-RECENT HIGH-IMPACT NEWS:
-${newsData || 'None'}
+2. UPCOMING HIGH-IMPACT EVENTS (next 24-48h):
+${calendarData || 'No upcoming events'}
 
-INSTITUTIONAL POSITIONING (COT — weekly CFTC):
+3. RECENT ECONOMIC RELEASES (past 7 days, high-impact):
+${recentReleases || 'No recent release data'}
+
+4. INSTITUTIONAL POSITIONING (CFTC COT — weekly):
 ${cotSummary || 'Not available'}
 
-SELECTION CRITERIA (ranked by priority):
-1. TRADEABILITY: The move must be ABOUT TO happen. >70% ADR used = LATE, do NOT pick unless ALL others are worse. <40% used = FRESH = ideal.
-2. CONVICTION: Strong fundamental edge — strength divergence + news/catalyst alignment + COT all pointing same way.
-3. CATALYST TIMING: Upcoming high-impact event or fresh breaking news that will DRIVE the move in the next hours.
-4. ADR ROOM: Enough pips remaining for a worthwhile move (at least 30% room for FX, proportional for gold).
+──────────────────────────────
+HOW TO SELECT
+──────────────────────────────
 
-RULES:
-- Pick exactly ONE winner. Direction must be BUY or SELL.
-- For XAUUSD (Gold): driven by USD weakness (bullish gold), risk-off sentiment (bullish gold), geopolitics. NOT based on currency strength diff — use the USD score as inverse signal plus news/COT context.
-- You may OVERRIDE the preliminary direction if your analysis says otherwise.
-- Provide 2-3 runner-ups with 1-line reasoning each.
-- Return ONLY valid JSON. No markdown, no explanation outside JSON.
+THINK LIKE A MACRO TRADER:
+- What is the DOMINANT macro theme right now? (risk-on/off, central bank divergence, geopolitics, data surprises)
+- Which currency pair is MOST affected by this theme?
+- Is the move FRESH (room to run) or EXHAUSTED (already happened)?
+- Do NEWS + COT + UPCOMING EVENTS all point the same direction? (convergence = high conviction)
+- For XAUUSD: driven by real rates, USD direction, risk sentiment, safe-haven demand
 
+DO NOT:
+- Pick based on currency strength scores or momentum indicators
+- Pick a pair just because it has the "biggest number" — pick because the FUNDAMENTAL CASE is strongest
+- Pick a pair where the move already happened (>70% ADR used = late)
+
+CONVICTION GUIDE:
+- Strong: 3+ fundamental factors align (news + COT + event + theme)
+- Moderate: 2 factors align
+- Developing: 1 factor, needs confirmation
+
+Return ONLY valid JSON:
 {
-  "symbol": "EURUSD",
-  "direction": "BUY",
-  "selectionReasoning": "2-3 sentences: why this pair RIGHT NOW over all others — what edge + what catalyst + why not late",
+  "symbol": "USDJPY",
+  "direction": "SELL",
+  "selectionReasoning": "2-3 sentences: the MACRO CASE for this pair — what fundamental drivers, what catalyst, why NOW",
+  "conviction": "strong|moderate|developing",
+  "primaryDriver": "e.g. BOJ rate hike / Fed dovish pivot / risk-off",
+  "whatWouldFlipIt": "e.g. if BOJ signals no more hikes / if US data beats",
   "runnerUps": [
-    { "symbol": "GBPUSD", "direction": "BUY", "oneliner": "..." },
-    { "symbol": "XAUUSD", "direction": "SELL", "oneliner": "..." }
+    { "symbol": "EURUSD", "direction": "BUY", "oneliner": "..." }
   ]
 }`
 
   const m = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 512,
-    system: 'You are an elite institutional macro strategist for BiasForge.ai. Your job: select the single best tradeable pair for this session. Prioritize TRADEABILITY (fresh move, not late) over raw strength. Return ONLY valid JSON.',
+    max_tokens: 600,
+    system: 'You are an elite macro fundamental strategist for BiasForge.ai. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.',
     messages: [{ role: 'user', content: prompt }]
   })
   trackAI('pair-selection', 'claude-sonnet-4-6', m.usage)
@@ -852,16 +870,8 @@ async function generateBiasFor(symbol, timeframe, force = false) {
     moveContext = await getMoveContext(symbol, currentPrice)
   }
 
-  // 2. Get currency strength (live if cache cold and market open)
-  let strengthData = ''
-  try {
-    const strength = await getLiveStrength()
-    if (strength?.currencies) {
-      strengthData = strength.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
-    } else if (isForexClosed()) {
-      strengthData = 'Forex market is currently closed (weekend) — no live currency strength available.'
-    }
-  } catch (e) {}
+  // Currency strength intentionally NOT included — bias engine is 100% fundamental
+  // (Currency Strength is a separate standalone feature on its own page)
 
   // 3. Get upcoming calendar events (3 days ahead) — with relative time so the AI never calls a past event "upcoming"
   let calendarData = 'No upcoming events'
@@ -988,9 +998,6 @@ ${prevLine}
 MOVE CONTEXT (for ENTRY QUALITY — rule 3):
 ${moveContext?.text || 'Not available (market closed or data unavailable) — set entryQuality to "N/A"'}
 
-CURRENCY STRENGTH DATA:
-${strengthData || 'Not available'}
-
 UPCOMING HIGH-IMPACT EVENTS (next 3 days):
 ${calendarData}
 
@@ -1038,7 +1045,6 @@ ${template}`
   }
   bias.dataSources = {
     price: currentPrice !== 'unknown',
-    strength: !!strengthData,
     calendar: calendarData !== 'No upcoming events',
     news: newsData !== 'No recent high-impact news'
   }
@@ -1178,17 +1184,37 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     top.potential = null // not re-scored, just refreshed
     console.log(`🎯 Today's pair (locked): ${top.pair}`)
   } else {
-    // ── FULL RE-PICK (AI-powered): session open or first bias of the day ──
-    console.log(`🔄 FULL RE-PICK: sessionOpen=${sessionOpen}, lock=${todayBiasLock?.pair || 'none'}, lockDate=${todayBiasLock?.date || 'none'}, today=${day}`)
-    const strength = await getLiveStrength()
-    const ranked = rankOandaPairs(strength)
-    if (!ranked.length) return null
+    // ── FULL RE-PICK (FUNDAMENTAL-DRIVEN): session open or first bias of the day ──
+    console.log(`🔄 FULL RE-PICK (fundamentals): sessionOpen=${sessionOpen}, lock=${todayBiasLock?.pair || 'none'}, lockDate=${todayBiasLock?.date || 'none'}, today=${day}`)
 
-    // Build candidates: top FX pairs + XAUUSD (gold)
-    const candidates = buildCandidatesWithGold(ranked, strength)
+    // Fixed candidate list — all major pairs + gold
+    const candidates = BIAS_CANDIDATES
+
+    // ── 1. CALENDAR: upcoming + recent releases ──
     let events = []; try { events = await getEconomicCalendar() } catch (e) {}
-    // ── Pre-warm news cache if empty (news only populates when a user hits /api/news) ──
-    let newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
+    let calendarData = 'No upcoming events'
+    let recentReleases = 'No recent release data'
+    try {
+      const now = new Date()
+      const ahead48h = new Date(now.getTime() + 48 * 60 * 60 * 1000)
+      const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      // Upcoming high-impact
+      const upcoming = events.filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) > now && new Date(e.time) < ahead48h).slice(0, 10).map(e => {
+        const mins = Math.round((new Date(e.time) - now) / 60000)
+        const rel = mins < 60 ? `in ${mins}min` : mins < 1440 ? `in ${Math.floor(mins / 60)}h ${mins % 60}m` : `in ${Math.floor(mins / 1440)}d`
+        return `${e.event} (${e.country}) ${rel}${e.forecast ? ' | Forecast: ' + e.forecast : ''}${e.previous ? ' | Previous: ' + e.previous : ''}`
+      })
+      if (upcoming.length > 0) calendarData = upcoming.join('\n')
+      // Recent high-impact releases (past 7 days) — for economic surprise context
+      const recent = events.filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) < now && new Date(e.time) > weekAgo).slice(0, 10).map(e => {
+        const daysAgo = Math.round((now - new Date(e.time)) / (24 * 60 * 60 * 1000))
+        return `${e.event} (${e.country}) ${daysAgo}d ago${e.forecast ? ' | Forecast: ' + e.forecast : ''}${e.previous ? ' | Previous: ' + e.previous : ''}`
+      })
+      if (recent.length > 0) recentReleases = recent.join('\n')
+    } catch (e) {}
+
+    // ── 2. NEWS: pre-warm if empty ──
+    let newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => `[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`) : [] })()
     if (!newsTitles.length) {
       console.log('📰 News cache empty — fetching for AI selection...')
       try {
@@ -1201,7 +1227,6 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
         const results = await Promise.allSettled(feeds.map(f => rssParser.parseURL(f.url).then(p => p.items.slice(0, 8).map(i => ({ source: f.name, title: i.title || '', summary: i.contentSnippet || '' })))))
         let articles = []; results.forEach(r => { if (r.status === 'fulfilled') articles.push(...r.value) })
         if (articles.length) {
-          // Quick Haiku scoring for AI context
           const titles = articles.slice(0, 20).map((a, n) => `${n + 1}.[${a.source}]${a.title}`).join('\n')
           try {
             const m = await anthropic.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 4096, system: 'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]', messages: [{ role: 'user', content: `Score:\n${titles}` }] })
@@ -1210,71 +1235,52 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
             articles = articles.slice(0, 20).map((a, i) => { const sc = s.find(x => x.index === i + 1); return { ...a, impact: sc?.impact || 5, category: sc?.category || 'General', bias: sc?.bias || 'neutral', marketTags: sc?.marketTags || [], oneliner: sc?.oneliner || '' } })
             articles.sort((a, b) => b.impact - a.impact)
             setCache('latest_news', articles)
-            newsTitles = articles.filter(a => a.impact >= 7).map(a => a.title)
+            newsTitles = articles.filter(a => a.impact >= 7).map(a => `[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`)
             console.log(`📰 Fetched & scored ${articles.length} articles, ${newsTitles.length} high-impact`)
-          } catch (e) {
-            // Even without scoring, use raw titles for AI context
-            newsTitles = articles.slice(0, 10).map(a => a.title)
-            console.log(`📰 Scoring failed, using ${newsTitles.length} raw titles`)
-          }
+          } catch (e) { newsTitles = articles.slice(0, 10).map(a => a.title); console.log(`📰 Scoring failed, using ${newsTitles.length} raw titles`) }
         }
       } catch (e) { console.log('📰 News pre-fetch failed:', e?.message) }
     }
-    let room = {}
-    try { room = await getPairRoomBatch(candidates) } catch (e) {
-      console.log(`⚠️ Room batch failed (${e?.message}) — retrying in 3s...`)
-      await new Promise(r => setTimeout(r, 3000))
-      try { room = await getPairRoomBatch(candidates) } catch (e2) {
-        console.log(`⚠️ Room retry also failed — AI will work without room data`)
-      }
-    }
-
-    // Gather shared context for AI selection prompt
-    let strengthData = ''
-    if (strength?.currencies) {
-      strengthData = strength.currencies.map(c => `${c.currency}: ${c.strength}/100 (${c.label})`).join(', ')
-    }
-    let calendarData = 'No upcoming events'
-    try {
-      const now = new Date()
-      const ahead = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-      const calEvents = (events).filter(e => e.impact?.toLowerCase?.() === 'high' && new Date(e.time) > now && new Date(e.time) < ahead).slice(0, 8).map(e => {
-        const mins = Math.round((new Date(e.time) - now) / 60000)
-        const rel = mins < 60 ? `in ${mins}min` : mins < 1440 ? `in ${Math.floor(mins / 60)}h ${mins % 60}m` : `in ${Math.floor(mins / 1440)}d`
-        return `${e.event} (${e.country}) ${rel}`
-      })
-      if (calEvents.length > 0) calendarData = calEvents.join(' | ')
-    } catch (e) {}
     let newsData = 'No recent high-impact news'
-    if (newsTitles.length > 0) newsData = newsTitles.slice(0, 5).join(' | ')
+    if (newsTitles.length > 0) newsData = newsTitles.slice(0, 8).join('\n')
+
+    // ── 3. COT ──
     let cotSummary = 'Not available'
     try {
       const cot = await getCOTData()
       if (cot?.data?.length) {
-        cotSummary = cot.data.map(c => `${c.currency}: ${c.bias} (net ${c.netPosition > 0 ? '+' : ''}${c.netPosition.toLocaleString()})`).join(' | ')
+        cotSummary = cot.data.map(c => `${c.currency}: ${c.bias} (net ${c.netPosition > 0 ? '+' : ''}${c.netPosition.toLocaleString()}, change ${c.weeklyChange > 0 ? '+' : ''}${c.weeklyChange?.toLocaleString() || '?'})`).join('\n')
       }
     } catch (e) {}
 
-    // ── AI SELECTION: let Sonnet pick the best tradeable pair ──
-    // DEBUG: log what data the AI is actually receiving
-    console.log(`🤖 AI data check → strength: ${strengthData ? 'YES (' + strengthData.slice(0, 60) + '...)' : 'EMPTY'}`)
-    console.log(`🤖 AI data check → news: ${newsData}`)
-    console.log(`🤖 AI data check → calendar: ${calendarData}`)
-    console.log(`🤖 AI data check → COT: ${cotSummary.slice(0, 80)}${cotSummary.length > 80 ? '...' : ''}`)
-    console.log(`🤖 AI data check → room: ${Object.keys(room).length} pairs (${Object.keys(room).join(', ') || 'NONE — 429?'})`)
-    let aiPick = null
-    console.log(`🤖 Attempting AI pair selection with ${candidates.length} candidates: ${candidates.map(c => c.symbol).join(', ')}`)
-    try {
-      aiPick = await selectBestPairAI(candidates, room, strengthData, calendarData, newsData, cotSummary)
-      console.log(`🤖 AI selected: ${aiPick.symbol} ${aiPick.direction} — "${(aiPick.selectionReasoning || '').slice(0, 100)}..."`)
-    } catch (e) {
-      console.error('⚠️ AI pair selection failed, falling back to formula:', e?.message)
-      console.error('⚠️ Full error:', e?.stack || e)
+    // ── 4. ROOM DATA (with retry for TwelveData 429) ──
+    let room = {}
+    try { room = await getPairRoomBatch(candidates) } catch (e) {
+      console.log(`⚠️ Room batch failed (${e?.message}) — retrying in 3s...`)
+      await new Promise(r => setTimeout(r, 3000))
+      try { room = await getPairRoomBatch(candidates) } catch (e2) { console.log(`⚠️ Room retry also failed — AI will work without room data`) }
     }
-    console.log(`🤖 AI pick result: ${aiPick ? JSON.stringify({symbol: aiPick.symbol, direction: aiPick.direction}) : 'NULL — using formula fallback'}`)
+
+    // ── LOG: what data AI is receiving ──
+    console.log(`📊 AI FUNDAMENTAL DATA:`)
+    console.log(`   News: ${newsTitles.length} high-impact headlines`)
+    console.log(`   Calendar: ${calendarData.split('\n').length} upcoming | ${recentReleases === 'No recent release data' ? 0 : recentReleases.split('\n').length} recent releases`)
+    console.log(`   COT: ${cotSummary !== 'Not available' ? 'YES' : 'NO'}`)
+    console.log(`   Room: ${Object.keys(room).length}/12 pairs`)
+
+    // ── AI FUNDAMENTAL SELECTION ──
+    let aiPick = null
+    console.log(`🤖 AI fundamental selection: ${candidates.length} candidates`)
+    try {
+      aiPick = await selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases)
+      console.log(`🤖 AI selected: ${aiPick.symbol} ${aiPick.direction} [${aiPick.conviction || '?'}] — "${(aiPick.selectionReasoning || '').slice(0, 120)}..."`)
+      console.log(`   Primary driver: ${aiPick.primaryDriver || '?'} | Flip condition: ${aiPick.whatWouldFlipIt || '?'}`)
+      if (aiPick.runnerUps?.length) console.log(`   Runner-ups: ${aiPick.runnerUps.map(r => `${r.symbol} ${r.direction}`).join(', ')}`)
+    } catch (e) {
+      console.error('⚠️ AI fundamental selection failed:', e?.message)
+    }
 
     if (aiPick?.symbol) {
-      // AI picked — find the candidate and attach room data
       const picked = candidates.find(c => c.symbol === aiPick.symbol) || candidates[0]
       const r = room[picked.symbol]
       top = {
@@ -1285,29 +1291,18 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
         potential: null,
         aiSelected: true,
         selectionReasoning: aiPick.selectionReasoning,
-        runnerUps: aiPick.runnerUps
-      }
-      // Log runner-ups for debugging
-      if (aiPick.runnerUps?.length) {
-        console.log(`   Runner-ups: ${aiPick.runnerUps.map(r => `${r.symbol} ${r.direction}`).join(', ')}`)
+        runnerUps: aiPick.runnerUps,
+        conviction: aiPick.conviction,
+        primaryDriver: aiPick.primaryDriver,
+        whatWouldFlipIt: aiPick.whatWouldFlipIt
       }
     } else {
-      // Fallback: formula scoring (if AI call failed)
-      const scored = scorePairPotential(candidates, room, events, newsTitles)
-      top = scored[0] || ranked[0]
-      console.log('⚠️ Using formula fallback for pair selection')
-
-      // Hysteresis only for formula fallback (AI handles its own judgment)
-      if (todayBiasLock?.date === day) {
-        const lockedIdx = scored.findIndex(r => r.symbol === todayBiasLock.symbol)
-        if (lockedIdx > -1) {
-          const lockedScore = scored[lockedIdx].potential || 0
-          const topScore = top.potential || 0
-          if (top.symbol !== todayBiasLock.symbol && (topScore - lockedScore) < 0.15) {
-            top = scored[lockedIdx]
-            console.log(`🔒 Hysteresis: keeping ${top.pair} (challenger margin too small: ${(topScore - lockedScore).toFixed(3)})`)
-          }
-        }
+      // Fallback: if AI fails, pick the pair with most room left (safest default)
+      const withRoom = candidates.filter(c => room[c.symbol]).sort((a, b) => (room[b.symbol]?.roomScore || 0) - (room[a.symbol]?.roomScore || 0))
+      top = withRoom[0] || candidates[0]
+      top.action = 'NEUTRAL'
+      console.log('⚠️ AI failed — fallback to most room available: ' + top.symbol)
+    }
       }
     }
 
@@ -1338,6 +1333,9 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     selectionMethod: top.aiSelected ? 'ai' : 'formula',
     selectionReasoning: top.selectionReasoning || null,
     runnerUps: top.runnerUps || null,
+    conviction: top.conviction || null,
+    primaryDriver: top.primaryDriver || null,
+    whatWouldFlipIt: top.whatWouldFlipIt || null,
     generatedAt: bias.generatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
