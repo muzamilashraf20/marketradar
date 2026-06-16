@@ -1167,7 +1167,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
   // ── LOCK-ONLY REFRESH: if pair is locked today and this is NOT a session open, just refresh reasoning ──
   let top
   if (todayBiasLock?.date === day && !sessionOpen) {
-    console.log(`🔒 LOCK-ONLY PATH: pair=${todayBiasLock.pair}, lockDate=${todayBiasLock.date}, today=${day}, sessionOpen=${sessionOpen}, force=${force}`)
+    console.log(`🔒 LOCK-ONLY PATH: pair=${todayBiasLock.pair} (${todayBiasLock.selectedBy || 'formula'}), lockDate=${todayBiasLock.date}, today=${day}, sessionOpen=${sessionOpen}, force=${force}`)
     // Skip all ranking/scoring — go straight to generateBiasFor on the locked pair
     top = { symbol: todayBiasLock.symbol, pair: todayBiasLock.pair }
     // Still fetch room data for the locked pair so potentialNote is accurate
@@ -1266,7 +1266,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       }
     }
 
-    todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair }
+    todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair, selectedBy: top.aiSelected ? 'ai' : 'formula' }
     console.log(`🎯 Today's pair${sessionOpen ? ' (session open)' : ''}: ${top.pair} · ${top.aiSelected ? 'AI-selected' : 'formula'} · ${potentialNote(top)}`)
   }
 
@@ -2091,7 +2091,8 @@ app.get('/api/earnings', async (req, res) => {
 // ============================================
 // 🚀 START
 // ============================================
-// 🧠 Session bias alert — every hour, computes Today's AI Bias at session opens
+// 🧠 Session bias alert — checks every 5 min for session opens (lightweight hour check + duplicate guard)
+  let lastSessionFired = ''
   setInterval(async () => {
     try {
       if (isForexClosed()) return
@@ -2103,7 +2104,12 @@ app.get('/api/earnings', async (req, res) => {
       else if (hourIn('Europe/London') === 8) session = 'London'
       else if (hourIn('America/New_York') === 8) session = 'New York'
       if (!session) return
-      // Compute fresh AI bias — sessionOpen=true allows pair re-pick at session boundaries
+      // Duplicate guard: only fire once per session per day
+      const sessionKey = `${utcDay()}-${session}`
+      if (lastSessionFired === sessionKey) return
+      lastSessionFired = sessionKey
+      console.log(`🧠 Session open detected: ${session} — triggering AI pair selection (sessionOpen=true)`)
+      // Compute fresh AI bias — sessionOpen=true allows full pair re-pick
       const result = await computeTodaysAIBias(false, true)
       if (!result) return
       const msg = `🔔 <b>${session} Session Open!</b>\n\n` +
@@ -2116,8 +2122,8 @@ app.get('/api/earnings', async (req, res) => {
       }
       console.log(`🧠 Session AI bias alert sent: ${session} — ${result.direction} ${result.pair} (${result.confidence}%)`)
     } catch (e) { console.error('Session alert error:', e.message) }
-  }, 60 * 60 * 1000)
-  console.log('🧠 Session AI bias alerts (hourly, DST-safe)')
+  }, 5 * 60 * 1000)   // ← every 5 min instead of 60 min (lightweight: just an hour comparison)
+  console.log('🧠 Session AI bias alerts (every 5min, DST-safe)')
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()

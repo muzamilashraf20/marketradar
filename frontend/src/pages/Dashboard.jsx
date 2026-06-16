@@ -161,6 +161,8 @@ export default function Dashboard() {
           entryQuality: data.bias?.entryQuality || null,
           generatedAt: data.generatedAt || data.updatedAt || data.bias?.generatedAt || null,
           stale: !!data.stale,
+          selectionMethod: data.selectionMethod || 'formula',
+          selectionReasoning: data.selectionReasoning || null,
         })
       } else {
         setAiBias(null)
@@ -331,7 +333,7 @@ export default function Dashboard() {
                 }`}>
                   {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
                 </p>
-                <p className="text-[10px] text-slate-500 truncate">Top Bias from Strength</p>
+                <p className="text-[10px] text-slate-500 truncate">{todaysBias?.selectionMethod === 'ai' ? '🤖 AI Selected Pair' : 'Top Bias from Strength'}</p>
               </div>
             </div>
             {/* Prop Firm Status */}
@@ -358,6 +360,9 @@ export default function Dashboard() {
           }`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
+              {todaysBias?.selectionMethod === 'ai' && (
+                <span className="text-[9px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded">🤖 AI PICKED</span>
+              )}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={openBiasHistory}
@@ -404,6 +409,9 @@ export default function Dashboard() {
                   </span>
                 ) : null}
                 <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
+                {todaysBias.selectionReasoning && (
+                  <p className="text-[10px] text-cyan-400/70 line-clamp-2 mt-0.5">🎯 {todaysBias.selectionReasoning}</p>
+                )}
                 {todaysBias.ai && biasGeneratedLabel ? (
                   biasIsStale ? (
                     <button
