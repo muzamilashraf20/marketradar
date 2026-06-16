@@ -769,26 +769,60 @@ const BIAS_CANDIDATES = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','
   .map(s => ({ symbol: s, pair: s }))
 
 // Build cross-asset context from existing price/room data (no extra API calls)
-function buildCrossAssetContext(room) {
+function buildCrossAssetContext(room, liveAssets) {
   const lines = []
+  // ── Real cross-asset data (if available) ──
+  if (liveAssets) {
+    if (liveAssets.DXY) lines.push(`DXY (US Dollar Index): ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}%)`)
+    if (liveAssets.VIX) lines.push(`VIX (Fear Index): ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'LOW/CALM'}`)
+    if (liveAssets.SPY) lines.push(`S&P 500 proxy (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}%)`)
+    if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% — ${liveAssets.TLT.change > 0 ? 'yields falling, risk-off' : 'yields rising, risk-on'})`)
+  }
+  // ── Proxy signals from FX price action (always available) ──
   const g = (sym) => room[sym] || {}
-  // USD direction proxy (from major USD pairs' fromOpen movement)
   const eurusd = g('EURUSD'), gbpusd = g('GBPUSD'), usdjpy = g('USDJPY'), audusd = g('AUDUSD')
   const usdBearish = [eurusd, gbpusd, audusd].filter(r => r.fromOpenPips > 0).length + (usdjpy.fromOpenPips < 0 ? 1 : 0)
   const usdBullish = [eurusd, gbpusd, audusd].filter(r => r.fromOpenPips < 0).length + (usdjpy.fromOpenPips > 0 ? 1 : 0)
-  if (usdBearish >= 3) lines.push('DXY PROXY: USD WEAKENING today (3+ pairs confirming dollar selling)')
-  else if (usdBullish >= 3) lines.push('DXY PROXY: USD STRENGTHENING today (3+ pairs confirming dollar buying)')
-  else lines.push('DXY PROXY: USD MIXED (no clear direction across pairs)')
-  // Risk sentiment (AUDJPY = classic risk barometer, Gold = safe haven)
+  if (!liveAssets?.DXY) {
+    if (usdBearish >= 3) lines.push('DXY PROXY (from FX): USD WEAKENING (3+ pairs confirming)')
+    else if (usdBullish >= 3) lines.push('DXY PROXY (from FX): USD STRENGTHENING (3+ pairs confirming)')
+    else lines.push('DXY PROXY (from FX): USD MIXED')
+  }
   const audjpy = g('AUDJPY'), gold = g('XAUUSD')
-  if (audjpy.fromOpenPips > 3 && gold.fromOpenPips < 0) lines.push('RISK SENTIMENT: RISK-ON (AUDJPY rising + gold falling)')
-  else if (audjpy.fromOpenPips < -3 && gold.fromOpenPips > 0) lines.push('RISK SENTIMENT: RISK-OFF (AUDJPY falling + gold rising — safe haven demand)')
-  else if (gold.fromOpenPips > 5) lines.push('RISK SENTIMENT: CAUTIOUS (gold bid, possible safe-haven flows)')
-  else lines.push('RISK SENTIMENT: NEUTRAL (no strong risk-on/off signal)')
-  // JPY sentiment (important for yen crosses)
-  if (usdjpy.fromOpenPips < -5) lines.push('JPY: STRENGTHENING today (USDJPY falling — possible safe-haven or BOJ impact)')
+  if (audjpy.fromOpenPips > 3 && gold.fromOpenPips < 0) lines.push('RISK SENTIMENT (from FX): RISK-ON (AUDJPY up + gold down)')
+  else if (audjpy.fromOpenPips < -3 && gold.fromOpenPips > 0) lines.push('RISK SENTIMENT (from FX): RISK-OFF (AUDJPY down + gold up)')
+  else lines.push('RISK SENTIMENT (from FX): NEUTRAL')
+  if (usdjpy.fromOpenPips < -5) lines.push('JPY: STRENGTHENING today (USDJPY falling)')
   else if (usdjpy.fromOpenPips > 5) lines.push('JPY: WEAKENING today (USDJPY rising)')
   return lines.join('\n')
+}
+
+// Fetch real cross-asset data (DXY, VIX, SPY, TLT) from TwelveData — 30min cache
+async function fetchCrossAssetLive() {
+  if (isCacheFreshFor('cross_asset_live', 30 * 60 * 1000)) return getCached('cross_asset_live')
+  const key = process.env.TWELVEDATA_API_KEY
+  if (!key) return null
+  try {
+    const symbols = 'DXY,VIX,SPY,TLT'
+    const r = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 })
+    const result = {}
+    for (const sym of symbols.split(',')) {
+      const d = r.data[sym] || r.data
+      if (d && d.close && !d.code) {
+        result[sym] = {
+          price: parseFloat(d.close),
+          change: parseFloat(d.percent_change || 0),
+          prev: parseFloat(d.previous_close || d.close)
+        }
+      }
+    }
+    if (Object.keys(result).length > 0) {
+      setCache('cross_asset_live', result)
+      console.log(`📈 Cross-asset live: ${Object.keys(result).join(', ')}`)
+      return result
+    }
+  } catch (e) { console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`) }
+  return null
 }
 
 // AI selects the best tradeable pair using MACRO FUNDAMENTALS (not currency strength)
@@ -1290,8 +1324,10 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       try { room = await getPairRoomBatch(candidates) } catch (e2) { console.log(`⚠️ Room retry also failed — AI will work without room data`) }
     }
 
-    // ── 5. CROSS-ASSET CONTEXT (from existing price data) ──
-    const crossAssetContext = buildCrossAssetContext(room)
+    // ── 5. CROSS-ASSET CONTEXT (real data + FX proxies) ──
+    let liveAssets = null
+    try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
+    const crossAssetContext = buildCrossAssetContext(room, liveAssets)
 
     // ── LOG: what data AI is receiving ──
     console.log(`📊 AI FUNDAMENTAL DATA:`)
