@@ -1187,8 +1187,47 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     // Build candidates: top FX pairs + XAUUSD (gold)
     const candidates = buildCandidatesWithGold(ranked, strength)
     let events = []; try { events = await getEconomicCalendar() } catch (e) {}
-    const newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
-    let room = {}; try { room = await getPairRoomBatch(candidates) } catch (e) {}
+    // ── Pre-warm news cache if empty (news only populates when a user hits /api/news) ──
+    let newsTitles = (() => { const n = getCached('latest_news'); return Array.isArray(n) ? n.filter(a => (a.impact || 0) >= 7).map(a => a.title) : [] })()
+    if (!newsTitles.length) {
+      console.log('📰 News cache empty — fetching for AI selection...')
+      try {
+        const feeds = [
+          { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
+          { name: 'Reuters', url: 'https://feeds.reuters.com/reuters/topNews' },
+          { name: 'Fox Business', url: 'https://feeds.foxbusiness.com/foxbusiness/markets' },
+          { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' }
+        ]
+        const results = await Promise.allSettled(feeds.map(f => rssParser.parseURL(f.url).then(p => p.items.slice(0, 8).map(i => ({ source: f.name, title: i.title || '', summary: i.contentSnippet || '' })))))
+        let articles = []; results.forEach(r => { if (r.status === 'fulfilled') articles.push(...r.value) })
+        if (articles.length) {
+          // Quick Haiku scoring for AI context
+          const titles = articles.slice(0, 20).map((a, n) => `${n + 1}.[${a.source}]${a.title}`).join('\n')
+          try {
+            const m = await anthropic.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 4096, system: 'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]', messages: [{ role: 'user', content: `Score:\n${titles}` }] })
+            trackAI('news-scoring', 'claude-haiku-4-5-20251001', m.usage)
+            const s = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
+            articles = articles.slice(0, 20).map((a, i) => { const sc = s.find(x => x.index === i + 1); return { ...a, impact: sc?.impact || 5, category: sc?.category || 'General', bias: sc?.bias || 'neutral', marketTags: sc?.marketTags || [], oneliner: sc?.oneliner || '' } })
+            articles.sort((a, b) => b.impact - a.impact)
+            setCache('latest_news', articles)
+            newsTitles = articles.filter(a => a.impact >= 7).map(a => a.title)
+            console.log(`📰 Fetched & scored ${articles.length} articles, ${newsTitles.length} high-impact`)
+          } catch (e) {
+            // Even without scoring, use raw titles for AI context
+            newsTitles = articles.slice(0, 10).map(a => a.title)
+            console.log(`📰 Scoring failed, using ${newsTitles.length} raw titles`)
+          }
+        }
+      } catch (e) { console.log('📰 News pre-fetch failed:', e?.message) }
+    }
+    let room = {}
+    try { room = await getPairRoomBatch(candidates) } catch (e) {
+      console.log(`⚠️ Room batch failed (${e?.message}) — retrying in 3s...`)
+      await new Promise(r => setTimeout(r, 3000))
+      try { room = await getPairRoomBatch(candidates) } catch (e2) {
+        console.log(`⚠️ Room retry also failed — AI will work without room data`)
+      }
+    }
 
     // Gather shared context for AI selection prompt
     let strengthData = ''
@@ -1217,6 +1256,12 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     } catch (e) {}
 
     // ── AI SELECTION: let Sonnet pick the best tradeable pair ──
+    // DEBUG: log what data the AI is actually receiving
+    console.log(`🤖 AI data check → strength: ${strengthData ? 'YES (' + strengthData.slice(0, 60) + '...)' : 'EMPTY'}`)
+    console.log(`🤖 AI data check → news: ${newsData}`)
+    console.log(`🤖 AI data check → calendar: ${calendarData}`)
+    console.log(`🤖 AI data check → COT: ${cotSummary.slice(0, 80)}${cotSummary.length > 80 ? '...' : ''}`)
+    console.log(`🤖 AI data check → room: ${Object.keys(room).length} pairs (${Object.keys(room).join(', ') || 'NONE — 429?'})`)
     let aiPick = null
     console.log(`🤖 Attempting AI pair selection with ${candidates.length} candidates: ${candidates.map(c => c.symbol).join(', ')}`)
     try {
