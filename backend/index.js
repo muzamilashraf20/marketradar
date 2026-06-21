@@ -895,12 +895,15 @@ Return ONLY valid JSON:
 
   const m = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 600,
+    max_tokens: 1500,
     system: 'You are an elite macro fundamental strategist for BiasForge.ai. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.',
     messages: [{ role: 'user', content: prompt }]
   })
   trackAI('pair-selection', 'claude-sonnet-4-6', m.usage)
-  const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
+  let raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
+  // Robustness: agar koi prose JSON ke around aa jaye to outermost { ... } slice kar lo
+  const jStart = raw.indexOf('{'), jEnd = raw.lastIndexOf('}')
+  if (jStart !== -1 && jEnd > jStart) raw = raw.slice(jStart, jEnd + 1)
   return JSON.parse(raw)
 }
 
