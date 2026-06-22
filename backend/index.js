@@ -769,7 +769,7 @@ const BIAS_CANDIDATES = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','
   .map(s => ({ symbol: s, pair: s }))
 
 // Build cross-asset context from existing price/room data (no extra API calls)
-function buildCrossAssetContext(room, liveAssets) {
+function buildCrossAssetContext(room, liveAssets, yields) {
   const lines = []
   // ── Real cross-asset data (if available) ──
   if (liveAssets) {
@@ -777,6 +777,17 @@ function buildCrossAssetContext(room, liveAssets) {
     if (liveAssets.VIX) lines.push(`VIX (Fear Index): ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'LOW/CALM'}`)
     if (liveAssets.SPY) lines.push(`S&P 500 proxy (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}%)`)
     if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% — ${liveAssets.TLT.change > 0 ? 'yields falling, risk-off' : 'yields rising, risk-on'})`)
+  }
+  // ── US Treasury yields (FRED) — real-time USD rate-expectations driver ──
+  if (yields) {
+    if (yields.y2) {
+      const bps = Math.round(yields.y2.change * 100)
+      lines.push(`US 2Y yield: ${yields.y2.value}% (${bps > 0 ? '+' : ''}${bps}bps today — ${bps > 0 ? 'rising → USD-supportive (hawkish repricing)' : bps < 0 ? 'falling → USD-negative (dovish repricing)' : 'flat'})`)
+    }
+    if (yields.y10) {
+      const bps = Math.round(yields.y10.change * 100)
+      lines.push(`US 10Y yield: ${yields.y10.value}% (${bps > 0 ? '+' : ''}${bps}bps today)`)
+    }
   }
   // ── Proxy signals from FX price action (always available) ──
   const g = (sym) => room[sym] || {}
@@ -823,6 +834,32 @@ async function fetchCrossAssetLive() {
     }
   } catch (e) { console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`) }
   return null
+}
+
+// Fetch US Treasury yields (2yr + 10yr) from FRED — 6h cache. Real-time USD rate-expectations read.
+async function fetchYields() {
+  if (isCacheFreshFor('yields_fred', 6 * 60 * 60 * 1000)) return getCached('yields_fred')
+  const key = process.env.FRED_API_KEY
+  if (!key) return null
+  const getSeries = async (id) => {
+    try {
+      const r = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${key}&file_type=json&sort_order=desc&limit=8`, { timeout: 10000 })
+      const vals = (r.data?.observations || [])
+        .map(o => ({ date: o.date, v: parseFloat(o.value) }))
+        .filter(o => !isNaN(o.v))   // FRED uses "." for holidays / missing days
+      if (!vals.length) return null
+      const latest = vals[0], prev = vals[1] || vals[0]
+      return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date } // change in percentage points
+    } catch (e) { return null }
+  }
+  try {
+    const [y2, y10] = await Promise.all([getSeries('DGS2'), getSeries('DGS10')])
+    if (!y2 && !y10) return null
+    const result = { y2, y10 }
+    setCache('yields_fred', result)
+    console.log(`🏦 Yields (FRED): 2yr ${y2?.value ?? 'n/a'}% · 10yr ${y10?.value ?? 'n/a'}%`)
+    return result
+  } catch (e) { console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
 }
 
 // AI selects the best tradeable pair using MACRO FUNDAMENTALS (not currency strength)
@@ -1336,7 +1373,9 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     // ── 5. CROSS-ASSET CONTEXT (real data + FX proxies) ──
     let liveAssets = null
     try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
-    const crossAssetContext = buildCrossAssetContext(room, liveAssets)
+    let yields = null
+    try { yields = await fetchYields() } catch (e) {}
+    const crossAssetContext = buildCrossAssetContext(room, liveAssets, yields)
 
     // ── LOG: what data AI is receiving ──
     console.log(`📊 AI FUNDAMENTAL DATA:`)
