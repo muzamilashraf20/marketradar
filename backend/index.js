@@ -1063,6 +1063,42 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   const baseCur = symbol.substring(0, 3)
   const quoteCur = symbol.substring(3, 6)
 
+  // 5b. Fresh macro signals: cross-asset + US yields + US actuals (cached — now feeds DIRECTION, not just selection)
+  let macroContext = 'Not available'
+  try {
+    let liveAssets = null, yields = null
+    try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
+    try { yields = await fetchYields() } catch (e) {}
+    const lines = []
+    if (liveAssets?.DXY) lines.push(`DXY: ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}%)`)
+    if (liveAssets?.VIX) lines.push(`VIX: ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'CALM'}`)
+    if (liveAssets?.SPY) lines.push(`S&P (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}% — ${liveAssets.SPY.change >= 0 ? 'risk-on' : 'risk-off'})`)
+    if (liveAssets?.TLT) lines.push(`US Bonds (TLT): ${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% (${liveAssets.TLT.change > 0 ? 'yields falling' : 'yields rising'})`)
+    if (yields?.y2) { const b = Math.round(yields.y2.change * 100); lines.push(`US 2Y yield: ${yields.y2.value}% (${b > 0 ? '+' : ''}${b}bps — ${b > 0 ? 'USD-supportive' : b < 0 ? 'USD-negative' : 'flat'})`) }
+    if (yields?.y10) { const b = Math.round(yields.y10.change * 100); lines.push(`US 10Y yield: ${yields.y10.value}% (${b > 0 ? '+' : ''}${b}bps)`) }
+    if (lines.length) macroContext = lines.join('\n')
+  } catch (e) {}
+  let usActuals = 'Not available'
+  try { const a = await fetchUSActuals(); if (a) usActuals = a } catch (e) {}
+
+  // 5b. Fresh macro signals: cross-asset + US yields + US actuals (cached — now feeds DIRECTION, not just selection)
+  let macroContext = 'Not available'
+  try {
+    let liveAssets = null, yields = null
+    try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
+    try { yields = await fetchYields() } catch (e) {}
+    const lines = []
+    if (liveAssets?.DXY) lines.push(`DXY: ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}%)`)
+    if (liveAssets?.VIX) lines.push(`VIX: ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'CALM'}`)
+    if (liveAssets?.SPY) lines.push(`S&P (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}% — ${liveAssets.SPY.change >= 0 ? 'risk-on' : 'risk-off'})`)
+    if (liveAssets?.TLT) lines.push(`US Bonds (TLT): ${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% (${liveAssets.TLT.change > 0 ? 'yields falling' : 'yields rising'})`)
+    if (yields?.y2) { const b = Math.round(yields.y2.change * 100); lines.push(`US 2Y yield: ${yields.y2.value}% (${b > 0 ? '+' : ''}${b}bps — ${b > 0 ? 'USD-supportive' : b < 0 ? 'USD-negative' : 'flat'})`) }
+    if (yields?.y10) { const b = Math.round(yields.y10.change * 100); lines.push(`US 10Y yield: ${yields.y10.value}% (${b > 0 ? '+' : ''}${b}bps)`) }
+    if (lines.length) macroContext = lines.join('\n')
+  } catch (e) {}
+  let usActuals = 'Not available'
+  try { const a = await fetchUSActuals(); if (a) usActuals = a } catch (e) {}
+
   // 6. Institutional positioning (COT) for the pair's currencies — weekly CFTC data
   let cotData = 'Not available'
   try {
@@ -1138,7 +1174,9 @@ CRITICAL RULES:
 
 9. BIAS CONTINUITY: If a PREVIOUS BIAS is provided and the current price has NOT crossed its invalidation level, strongly default to MAINTAINING the same direction — adjust confidence up or down instead of flipping. Only flip direction if (a) price has crossed the previous invalidation level, or (b) a major new catalyst has clearly reversed the macro picture. If you do flip, your reasoning MUST explicitly state what changed since the previous analysis (e.g. "Flipping from Bearish: price broke invalidation at 0.8030 after..."). Intraday noise and pullbacks are NOT reasons to flip. Whipsaw flip-flopping destroys trader trust.
 
-10. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.`
+10. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.
+
+11. SIGNAL WEIGHTING (intraday direction): Lead with FRESH signals — breaking news, today's CROSS-ASSET flows (DXY, risk-on/off via VIX/SPY), and the US 2Y yield move (rising 2Y = USD-supportive, falling = USD-negative). These drive TODAY'S direction. The US ECONOMIC ACTUALS set the macro backdrop (is inflation hot? labor tight?) and shape conviction. COT is the LAGGING confirm only (per rule 10). If COT conflicts with fresh cross-asset/yield flows, TRUST THE FRESH FLOWS for intraday direction and lower conviction rather than siding with stale positioning.`
 
   const prevLine = prevBias
     ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
@@ -1163,6 +1201,12 @@ ${newsData}
 
 INSTITUTIONAL POSITIONING (COT — weekly CFTC report, ${baseCur}/${quoteCur} relevant only):
 ${cotData}
+
+CROSS-ASSET & US YIELDS (today's flows — FRESH intraday direction signal):
+${macroContext}
+
+RECENT US ECONOMIC ACTUALS (official FRED data — the current macro reality):
+${usActuals}
 
 Combine ALL data sources above for your analysis. Return JSON matching this structure:
 ${template}`
@@ -1368,15 +1412,6 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
         return `${e.event} (${e.country}) ${daysAgo}d ago${e.forecast ? ' | Forecast: ' + e.forecast : ''}${e.previous ? ' | Previous: ' + e.previous : ''}`
       })
       if (recent.length > 0) recentReleases = recent.join('\n')
-    } catch (e) {}
-
-    // Append real US economic ACTUALS from FRED (free) — the actual values the FF feed lacks
-    try {
-      const usActuals = await fetchUSActuals()
-      if (usActuals) {
-        recentReleases = (recentReleases === 'No recent release data' ? '' : recentReleases + '\n\n')
-          + 'US ECONOMIC ACTUALS (official, FRED):\n' + usActuals
-      }
     } catch (e) {}
 
     // ── 2. NEWS: pre-warm if empty ──
