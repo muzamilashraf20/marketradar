@@ -1063,23 +1063,7 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   const baseCur = symbol.substring(0, 3)
   const quoteCur = symbol.substring(3, 6)
 
-  // 5b. Fresh macro signals: cross-asset + US yields + US actuals (cached — now feeds DIRECTION, not just selection)
-  let macroContext = 'Not available'
-  try {
-    let liveAssets = null, yields = null
-    try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
-    try { yields = await fetchYields() } catch (e) {}
-    const lines = []
-    if (liveAssets?.DXY) lines.push(`DXY: ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}%)`)
-    if (liveAssets?.VIX) lines.push(`VIX: ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'CALM'}`)
-    if (liveAssets?.SPY) lines.push(`S&P (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}% — ${liveAssets.SPY.change >= 0 ? 'risk-on' : 'risk-off'})`)
-    if (liveAssets?.TLT) lines.push(`US Bonds (TLT): ${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% (${liveAssets.TLT.change > 0 ? 'yields falling' : 'yields rising'})`)
-    if (yields?.y2) { const b = Math.round(yields.y2.change * 100); lines.push(`US 2Y yield: ${yields.y2.value}% (${b > 0 ? '+' : ''}${b}bps — ${b > 0 ? 'USD-supportive' : b < 0 ? 'USD-negative' : 'flat'})`) }
-    if (yields?.y10) { const b = Math.round(yields.y10.change * 100); lines.push(`US 10Y yield: ${yields.y10.value}% (${b > 0 ? '+' : ''}${b}bps)`) }
-    if (lines.length) macroContext = lines.join('\n')
-  } catch (e) {}
-  let usActuals = 'Not available'
-  try { const a = await fetchUSActuals(); if (a) usActuals = a } catch (e) {}
+  
 
   // 5b. Fresh macro signals: cross-asset + US yields + US actuals (cached — now feeds DIRECTION, not just selection)
   let macroContext = 'Not available'
