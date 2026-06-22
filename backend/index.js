@@ -862,6 +862,57 @@ async function fetchYields() {
   } catch (e) { console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
 }
 
+// Fetch latest US economic ACTUALS from FRED (free) — fills the surprise gap the FF feed lacks. 12h cache.
+async function fetchUSActuals() {
+  if (isCacheFreshFor('us_actuals_fred', 12 * 60 * 60 * 1000)) return getCached('us_actuals_fred')
+  const key = process.env.FRED_API_KEY
+  if (!key) return null
+  const SERIES = [
+    { id: 'CPIAUCSL', label: 'CPI',                 kind: 'yoy' },
+    { id: 'CPILFESL', label: 'Core CPI',            kind: 'yoy' },
+    { id: 'PCEPILFE', label: 'Core PCE (Fed gauge)', kind: 'yoy' },
+    { id: 'PAYEMS',   label: 'Nonfarm Payrolls',    kind: 'mom_diff' },
+    { id: 'UNRATE',   label: 'Unemployment',        kind: 'level' },
+    { id: 'RSAFS',    label: 'Retail Sales',        kind: 'mom_pct' },
+  ]
+  const fetchOne = async (s) => {
+    try {
+      const r = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${s.id}&api_key=${key}&file_type=json&sort_order=desc&limit=14`, { timeout: 10000 })
+      const vals = (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
+      if (!vals.length) return null
+      const latest = vals[0]
+      if (s.kind === 'yoy') {
+        if (!vals[12]) return null
+        const cur = +((latest.v / vals[12].v - 1) * 100).toFixed(1)
+        const prev = (vals[1] && vals[13]) ? +((vals[1].v / vals[13].v - 1) * 100).toFixed(1) : null
+        return `US ${s.label}: ${cur}% YoY${prev !== null ? ` (prev ${prev}% → ${cur > prev ? 'hotter' : cur < prev ? 'cooler' : 'flat'})` : ''} [${latest.date}]`
+      }
+      if (s.kind === 'mom_diff') {
+        if (!vals[1]) return null
+        const cur = Math.round(latest.v - vals[1].v)          // PAYEMS in thousands → jobs added
+        const prev = vals[2] ? Math.round(vals[1].v - vals[2].v) : null
+        return `US ${s.label}: ${cur >= 0 ? '+' : ''}${cur}k jobs${prev !== null ? ` (prev ${prev >= 0 ? '+' : ''}${prev}k)` : ''} [${latest.date}]`
+      }
+      if (s.kind === 'mom_pct') {
+        if (!vals[1]) return null
+        const cur = +((latest.v / vals[1].v - 1) * 100).toFixed(1)
+        const prev = vals[2] ? +((vals[1].v / vals[2].v - 1) * 100).toFixed(1) : null
+        return `US ${s.label}: ${cur >= 0 ? '+' : ''}${cur}% MoM${prev !== null ? ` (prev ${prev >= 0 ? '+' : ''}${prev}%)` : ''} [${latest.date}]`
+      }
+      const prevL = vals[1] ? +vals[1].v.toFixed(1) : null    // level (unemployment)
+      return `US ${s.label}: ${(+latest.v.toFixed(1))}%${prevL !== null ? ` (prev ${prevL}%)` : ''} [${latest.date}]`
+    } catch (e) { return null }
+  }
+  try {
+    const lines = (await Promise.all(SERIES.map(fetchOne))).filter(Boolean)
+    if (!lines.length) return null
+    const block = lines.join('\n')
+    setCache('us_actuals_fred', block)
+    console.log(`📑 US actuals (FRED): ${lines.length} series loaded`)
+    return block
+  } catch (e) { console.log(`📑 US actuals fetch failed: ${e?.message}`); return null }
+}
+
 // AI selects the best tradeable pair using MACRO FUNDAMENTALS (not currency strength)
 async function selectBestPairAI(candidates, room, calendarData, newsData, cotSummary, recentReleases, crossAssetContext) {
   const candidateLines = candidates.map(c => {
@@ -1317,6 +1368,15 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
         return `${e.event} (${e.country}) ${daysAgo}d ago${e.forecast ? ' | Forecast: ' + e.forecast : ''}${e.previous ? ' | Previous: ' + e.previous : ''}`
       })
       if (recent.length > 0) recentReleases = recent.join('\n')
+    } catch (e) {}
+
+    // Append real US economic ACTUALS from FRED (free) — the actual values the FF feed lacks
+    try {
+      const usActuals = await fetchUSActuals()
+      if (usActuals) {
+        recentReleases = (recentReleases === 'No recent release data' ? '' : recentReleases + '\n\n')
+          + 'US ECONOMIC ACTUALS (official, FRED):\n' + usActuals
+      }
     } catch (e) {}
 
     // ── 2. NEWS: pre-warm if empty ──
