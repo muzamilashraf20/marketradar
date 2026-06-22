@@ -863,22 +863,28 @@ ${crossAssetContext || 'Not available'}
 HOW TO SELECT
 ──────────────────────────────
 
+SIGNAL PRIORITY (most → least predictive for an intraday pick):
+1. FRESH catalysts — breaking/recent news, an imminent or just-released high-impact event, a clear cross-asset move TODAY (DXY, risk-on/off). These DRIVE intraday direction.
+2. Upcoming high-impact event risk — shapes timing & conviction (don't take a strong directional pick right into a coin-flip event).
+3. COT positioning — WEEKLY and LAGGING (released Fridays). It only shows where institutions are POSITIONED, not which way price moves today. Use it ONLY to CONFIRM a fresh-catalyst pick or adjust conviction — NEVER as the primary or sole reason to pick a pair.
+
 THINK LIKE A MACRO TRADER:
-- What is the DOMINANT macro theme right now? (risk-on/off, central bank divergence, geopolitics, data surprises)
-- Which currency pair is MOST affected by this theme?
-- Is the move FRESH (room to run) or EXHAUSTED (already happened)?
-- Do NEWS + COT + UPCOMING EVENTS all point the same direction? (convergence = high conviction)
+- What is the DOMINANT macro theme driving FRESH flows right now? (news catalyst, central bank divergence, geopolitics, a cross-asset move today)
+- Which pair is MOST affected by that fresh theme — and is there an actual NEW driver, or just stale structural positioning?
+- Is the move FRESH (room to run) or already EXHAUSTED (>70% ADR used = late, do not chase)?
+- Does COT CONFIRM the fresh-catalyst direction, or conflict with it? (confirm = more conviction; conflict = lower conviction)
 - For XAUUSD: driven by real rates, USD direction, risk sentiment, safe-haven demand
 
 DO NOT:
 - Pick based on currency strength scores or momentum indicators
-- Pick a pair just because it has the "biggest number" — pick because the FUNDAMENTAL CASE is strongest
+- Pick a pair whose ONLY edge is COT positioning — a pair needs a FRESH catalyst (news / event / cross-asset) to be selected; COT alone is NOT enough
+- Pick a pair just because it has the "biggest number" — pick because the FRESH FUNDAMENTAL CASE is strongest
 - Pick a pair where the move already happened (>70% ADR used = late)
 
 CONVICTION GUIDE:
-- Strong: 3+ fundamental factors align (news + COT + event + theme)
-- Moderate: 2 factors align
-- Developing: 1 factor, needs confirmation
+- Strong: a clear FRESH catalyst (news/event/cross-asset) AND COT confirms AND the move is not exhausted
+- Moderate: a fresh catalyst present, but COT neutral/conflicting or the move partly extended
+- Developing: only a weak or single fresh signal — needs confirmation (COT alone NEVER qualifies as "strong")
 
 Return ONLY valid JSON:
 {
