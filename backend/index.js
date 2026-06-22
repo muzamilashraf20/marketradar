@@ -1416,17 +1416,21 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
   const newKey = `${result.direction} ${result.pair}`.toUpperCase()
   if (newKey !== lastTodaysBiasKey) {
     // 📜 Bias History: record every new bias (first of day + every pair/direction change)
-    saveBiasHistory(result, lastTodaysBiasKey || null).catch(() => {})
-    if (lastTodaysBiasKey) notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
+    const saved = await saveBiasHistory(result, lastTodaysBiasKey || null)
+    if (saved) {
+      if (lastTodaysBiasKey) notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
+      lastTodaysBiasKey = newKey   // advance ONLY after confirmed save — failed insert retries next cycle
+    } else {
+      console.warn(`⚠️ Bias change ${lastTodaysBiasKey || 'first of day'} → ${newKey} NOT saved — will retry next cycle`)
+    }
   }
-  lastTodaysBiasKey = newKey
   return result
 }
 
 // Save a Today's Bias snapshot to history whenever it changes
 async function saveBiasHistory(result, previousKey) {
   try {
-    await supabase.from('bias_history').insert({
+    const { error } = await supabase.from('bias_history').insert({
       pair: result.pair,
       direction: result.direction,
       confidence: result.confidence,
@@ -1436,8 +1440,10 @@ async function saveBiasHistory(result, previousKey) {
       invalidation: result.bias?.levels?.invalidation || null,
       generated_at: result.generatedAt || new Date().toISOString(),
     })
+    if (error) throw error   // supabase-js DB errors ko return karta hai, throw nahi — check zaroori
     console.log(`📜 Bias history saved: ${result.direction} ${result.pair} (was: ${previousKey || 'first of day'})`)
-  } catch (e) { console.error('Bias history save error:', e?.message) }
+    return true
+  } catch (e) { console.error('Bias history save error:', e?.message); return false }
 }
 
 // Telegram + Email alert when Today's AI Bias flips direction/pair
