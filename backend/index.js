@@ -25,6 +25,7 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const TG_API = TG_TOKEN ? `https://api.telegram.org/bot${TG_TOKEN}` : null
+const TG_CHANNEL = process.env.TG_CHANNEL || '@biasforgeofficial'  // public broadcast channel
 
 // ============================================
 // 🔄 CACHE SYSTEM
@@ -1581,6 +1582,23 @@ async function notifyTodaysBiasChange(result, oldKey) {
     `🧠 ${result.reasoning}\n\n` +
     `🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
   for (const sub of telegramSubscribers.filter(s => s.active)) sendTG(sub.chat_id, msg).catch(() => {})
+
+  // 📢 Public channel broadcast — only post decent-conviction biases (Grade C or better), skip weak D/N
+  try {
+    const grade = (result.tradeGrade || '').toUpperCase()
+    const postable = ['A+', 'A', 'B', 'C'].includes(grade)
+    if (postable) {
+      const arrow = dirUp.includes('BULL') || dirUp.includes('BUY') ? '🟢' : dirUp.includes('BEAR') || dirUp.includes('SELL') ? '🔴' : '⚪'
+      const inval = result.bias?.levels?.invalidation && result.bias.levels.invalidation !== 'N/A' ? `\n⚠️ Invalidation: <b>${result.bias.levels.invalidation}</b>` : ''
+      const channelMsg = `${arrow} <b>${dirUp} ${result.pair}</b>\\n` +
+        `Confidence: <b>${result.confidence}%</b> · Grade <b>${result.tradeGrade}</b>\\n\\n` +
+        `🧠 ${result.reasoning}${inval}\\n\\n` +
+        `Direction only — you manage your entries.\\n` +
+        `🧭 Full tool: biasforge.co`
+      sendTG(TG_CHANNEL, channelMsg).catch(() => {})
+    }
+  } catch (e) { console.error('Channel post error:', e?.message) }
+
   try {
     const { data: emailSubs } = await supabase.from('email_subscribers').select('email').eq('active', true)
     if (emailSubs?.length) {
