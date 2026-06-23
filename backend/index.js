@@ -674,10 +674,14 @@ const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY
 async function getPairRoomBatch(candidates) {
   const tdSymbols = [...new Set(candidates.map(c => ROOM_SYMBOL_MAP[c.symbol]).filter(Boolean))]
   if (!tdSymbols.length) return {}
+  // 12-min cache keyed by the set of symbols — daily ADR barely moves intraday, saves heavy TwelveData calls (429 fix)
+  const roomCacheKey = `room_${tdSymbols.slice().sort().join('_')}`
+  if (isCacheFreshFor(roomCacheKey, 12 * 60 * 1000)) return getCached(roomCacheKey)
   try {
     const r = await axios.get('https://api.twelvedata.com/time_series', {
       params: { symbol: tdSymbols.join(','), interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
     })
+    if (r.data?.code === 429) { const st = getCached(roomCacheKey); if (st) return st }
     const out = {}
     for (const c of candidates) {
       const td = ROOM_SYMBOL_MAP[c.symbol]
@@ -696,8 +700,9 @@ async function getPairRoomBatch(candidates) {
       const pctUsed = adrPips ? Math.min(favorable / adrPips, 1) : 0
       out[c.symbol] = { adrPips: +adrPips.toFixed(0), favorablePips: +favorable.toFixed(0), pctUsed: Math.round(pctUsed * 100), roomScore: +(1 - pctUsed).toFixed(2) }
     }
+    setCache(roomCacheKey, out)
     return out
-  } catch (e) { console.error('⚠️ Pair room batch failed:', e?.message); return {} }
+  } catch (e) { console.error('⚠️ Pair room batch failed:', e?.message); const st = getCached(roomCacheKey); return st || {} }
 }
 
 // ── STAGE 1: MOVE POTENTIAL SCORING ──
