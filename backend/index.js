@@ -973,6 +973,7 @@ THINK LIKE A MACRO TRADER:
   • FALLING yields / dovish Fed / rate-CUT expectations = BULLISH gold.
   • Safe-haven demand (geopolitics, risk-off) = BULLISH gold, BUT this is often OVERWHELMED by a strong-dollar/hawkish-Fed regime — do NOT let a geopolitical headline override a dominant USD-strength trend.
   • A single-day TLT bounce is NOT "yields falling" — check the FRED 2Y/10Y yield direction and DXY for the true regime. If DXY is strong and rates are repricing hawkish, gold is BEARISH regardless of one day's TLT tick.
+  • The 2Y yield (Fed-policy-sensitive) and DXY matter MORE for gold than the 10Y. A FALLING 10Y does NOT make gold bullish if the 2Y is rising and the Fed is hawkish — short-end rates + the dollar dominate gold's direction. Do not call gold bullish off a falling 10Y alone.
 
 DO NOT:
 - Pick based on currency strength scores or momentum indicators
