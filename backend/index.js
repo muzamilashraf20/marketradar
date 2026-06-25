@@ -779,10 +779,10 @@ function buildCrossAssetContext(room, liveAssets, yields) {
   const lines = []
   // ── Real cross-asset data (if available) ──
   if (liveAssets) {
-    if (liveAssets.DXY) lines.push(`DXY (US Dollar Index): ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}%)`)
+    if (liveAssets.DXY) lines.push(`DXY (US Dollar Index): ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}% — ${liveAssets.DXY.change > 0 ? 'USD STRENGTHENING → bearish for gold/XAU & risk currencies' : liveAssets.DXY.change < 0 ? 'USD WEAKENING → bullish for gold/XAU & risk currencies' : 'flat'}${liveAssets.DXY.price > 100 ? ' | DXY ABOVE 100 = strong-dollar regime, structural headwind for gold' : ''})`)
     if (liveAssets.VIX) lines.push(`VIX (Fear Index): ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'LOW/CALM'}`)
     if (liveAssets.SPY) lines.push(`S&P 500 proxy (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}%)`)
-    if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% — ${liveAssets.TLT.change > 0 ? 'yields falling, risk-off' : 'yields rising, risk-on'})`)
+    if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% intraday — NOTE: single-day TLT move is noise; trust FRED 2Y/10Y yields below for true rate direction, not this)`)
   }
   // ── US Treasury yields (FRED) — real-time USD rate-expectations driver ──
   if (yields) {
@@ -967,7 +967,12 @@ THINK LIKE A MACRO TRADER:
 - Which pair is MOST affected by that fresh theme — and is there an actual NEW driver, or just stale structural positioning?
 - Is the move FRESH (room to run) or already EXHAUSTED (>70% ADR used = late, do not chase)?
 - Does COT CONFIRM the fresh-catalyst direction, or conflict with it? (confirm = more conviction; conflict = lower conviction)
-- For XAUUSD: driven by real rates, USD direction, risk sentiment, safe-haven demand
+- For XAUUSD (gold), apply these directional rules EXPLICITLY:
+  • STRONG USD / rising DXY (especially DXY > 100) = BEARISH gold. This usually DOMINATES — a hawkish Fed + strong dollar will crush gold even if other factors look supportive.
+  • RISING real yields / hawkish Fed repricing / rate-HIKE expectations = BEARISH gold (higher opportunity cost of holding non-yielding gold).
+  • FALLING yields / dovish Fed / rate-CUT expectations = BULLISH gold.
+  • Safe-haven demand (geopolitics, risk-off) = BULLISH gold, BUT this is often OVERWHELMED by a strong-dollar/hawkish-Fed regime — do NOT let a geopolitical headline override a dominant USD-strength trend.
+  • A single-day TLT bounce is NOT "yields falling" — check the FRED 2Y/10Y yield direction and DXY for the true regime. If DXY is strong and rates are repricing hawkish, gold is BEARISH regardless of one day's TLT tick.
 
 DO NOT:
 - Pick based on currency strength scores or momentum indicators
