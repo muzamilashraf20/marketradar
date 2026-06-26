@@ -1,14 +1,25 @@
 import {
   TrendingUp, Newspaper, Calendar, ShieldCheck,
-  BookOpen, Zap, BarChart3, PieChart, DollarSign
+  BookOpen, Zap, BarChart3, PieChart, DollarSign,
+  LineChart, Globe, Activity
 } from 'lucide-react'
+
+// The 5 data sources that power every AI bias — shown inline in the flagship card
+const biasSources = [
+  { icon: <LineChart size={13} className="text-cyan-400" />, label: 'Live Price' },
+  { icon: <Globe size={13} className="text-cyan-400" />, label: 'Currency Strength' },
+  { icon: <Calendar size={13} className="text-cyan-400" />, label: 'Economic Calendar' },
+  { icon: <Newspaper size={13} className="text-cyan-400" />, label: 'News Scoring' },
+  { icon: <BarChart3 size={13} className="text-cyan-400" />, label: 'COT Positioning' },
+]
 
 const features = [
   {
-    icon: <TrendingUp size={22} className="text-cyan-400" />,
+    icon: <Activity size={22} className="text-cyan-400" />,
     title: 'AI Trading Bias',
-    description: 'Direction forged from 5 live data sources — price, economic calendar, breaking news, COT, and cross-asset flows — with full AI reasoning, confidence score, and invalidation levels.',
+    description: 'Direction forged from 5 live data sources with full AI reasoning, confidence score, and invalidation levels.',
     exclusive: false,
+    flagship: true,
   },
   {
     icon: <Newspaper size={22} className="text-cyan-400" />,
@@ -41,7 +52,7 @@ const features = [
     exclusive: false,
   },
   {
-    icon: <BarChart3 size={22} className="text-cyan-400" />,
+    icon: <TrendingUp size={22} className="text-cyan-400" />,
     title: 'Swing Bias',
     description: 'Multi-day swing structure with central bank cycle context and intermarket analysis.',
     exclusive: false,
@@ -74,8 +85,26 @@ export default function FeaturesGrid() {
             Everything You Need to Trade Fundamentals
           </h2>
           <p className="text-lg text-slate-400 max-w-2xl mx-auto">
-            9 powerful tools working together — every bias forged from 5 live data sources.
+            9 powerful tools working together. Every bias forged from{' '}
+            <span className="text-cyan-400 font-bold">5 live data sources</span> — not guesswork.
           </p>
+        </div>
+
+        {/* 5-source engine callout banner */}
+        <div className="flex flex-wrap items-center justify-center gap-2 mb-10 px-4 py-4 rounded-2xl bg-cyan-500/5 border border-cyan-500/15">
+          <span className="text-xs font-bold text-cyan-400 uppercase tracking-widest mr-1 shrink-0">
+            5-Source Engine:
+          </span>
+          {biasSources.map((s, i) => (
+            <span key={s.label} className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900/60 border border-cyan-500/20 text-xs font-medium text-slate-300">
+              {s.icon}
+              {s.label}
+              {i < biasSources.length - 1 && (
+                <span className="ml-1 text-cyan-500/30 hidden sm:inline">·</span>
+              )}
+            </span>
+          ))}
+          <span className="text-xs text-slate-500 ml-1 shrink-0">= One clear bias</span>
         </div>
 
         {/* Grid */}
@@ -112,6 +141,21 @@ export default function FeaturesGrid() {
               <p className="text-sm text-slate-400 leading-relaxed">
                 {feature.description}
               </p>
+
+              {/* Flagship: inline 5-source chips */}
+              {feature.flagship && (
+                <div className="mt-4 flex flex-wrap gap-1.5">
+                  {biasSources.map((s) => (
+                    <span
+                      key={s.label}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-[11px] font-medium text-cyan-300"
+                    >
+                      {s.icon}
+                      {s.label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

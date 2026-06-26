@@ -1,4 +1,4 @@
-import { Newspaper, Calendar, Mic, Activity, TrendingUp, Shield, GraduationCap, ShieldCheck, Eye, ArrowRight, LineChart, BarChart3, Globe } from 'lucide-react'
+import { Newspaper, Calendar, Mic, Activity, TrendingUp, Shield, GraduationCap, ShieldCheck, Eye, ArrowRight, LineChart, BarChart3, Globe, DollarSign } from 'lucide-react'
 
 const benefits = [
   {
@@ -19,11 +19,36 @@ const benefits = [
 ]
 
 const dataSources = [
-  { icon: <LineChart size={18} className="text-cyan-400" />, label: 'Live Price Action' },
-  { icon: <Calendar size={18} className="text-cyan-400" />, label: 'Economic Calendar' },
-  { icon: <Newspaper size={18} className="text-cyan-400" />, label: 'Breaking News' },
-  { icon: <BarChart3 size={18} className="text-cyan-400" />, label: 'COT Positioning' },
-  { icon: <Globe size={18} className="text-cyan-400" />, label: 'Cross-Asset Flows' },
+  {
+    num: '01',
+    icon: <LineChart size={20} className="text-cyan-400" />,
+    label: 'Live Price Action',
+    desc: 'Real-time price structure & momentum',
+  },
+  {
+    num: '02',
+    icon: <DollarSign size={20} className="text-cyan-400" />,
+    label: 'Currency Strength',
+    desc: 'Cross-pair relative strength index',
+  },
+  {
+    num: '03',
+    icon: <Calendar size={20} className="text-cyan-400" />,
+    label: 'Economic Calendar',
+    desc: 'High-impact event pre-analysis',
+  },
+  {
+    num: '04',
+    icon: <Newspaper size={20} className="text-cyan-400" />,
+    label: 'Breaking News Scoring',
+    desc: 'AI-scored market-moving headlines',
+  },
+  {
+    num: '05',
+    icon: <BarChart3 size={20} className="text-cyan-400" />,
+    label: 'CFTC/COT Positioning',
+    desc: 'Institutional net-long/short positioning',
+  },
 ]
 
 export default function SolutionSection() {
@@ -44,12 +69,12 @@ export default function SolutionSection() {
             BiasForge Changes Everything
           </h2>
           <p className="text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
-            We fuse 5 live data sources — price, central bank signals, economic events, breaking news, and institutional positioning — then forge a clear trading bias with full reasoning.
+            We fuse <span className="text-cyan-400 font-bold">5 live data sources</span> — price, currency strength, economic events, breaking news, and institutional positioning — then forge a clear trading bias with full reasoning.
           </p>
         </div>
 
         {/* Flow Diagram */}
-        <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-12">
+        <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-16">
 
           {/* Block 1 — Raw Chaos */}
           <div className="bg-slate-900/50 border border-slate-700/50 rounded-2xl p-6 w-full md:w-64 hover:border-slate-600/70 transition-colors duration-300">
@@ -97,19 +122,33 @@ export default function SolutionSection() {
 
         </div>
 
-        {/* 5 Live Data Sources strip */}
+        {/* 5 Live Data Sources — prominent card grid */}
         <div className="mb-20">
-          <p className="text-center text-xs uppercase tracking-widest text-cyan-400 font-semibold mb-6">
-            Every bias is forged from 5 live data sources
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-3">
+          <div className="text-center mb-8">
+            <p className="text-xs uppercase tracking-widest text-cyan-400 font-semibold mb-2">
+              Built From 5 Data Sources
+            </p>
+            <h3 className="text-2xl font-black text-white">
+              One Bias. Five Inputs. Zero Guesswork.
+            </h3>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {dataSources.map((source) => (
               <div
                 key={source.label}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900/40 border border-cyan-500/15 hover:border-cyan-500/40 transition-colors duration-300"
+                className="group flex flex-col gap-3 p-4 rounded-2xl bg-slate-900/40 border border-cyan-500/15 hover:border-cyan-500/40 hover:bg-slate-900/70 transition-all duration-300 cursor-default"
               >
-                {source.icon}
-                <span className="text-sm font-medium text-slate-300">{source.label}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black text-cyan-500/50 tabular-nums">{source.num}</span>
+                  <div className="p-1.5 rounded-lg bg-cyan-500/10 group-hover:bg-cyan-500/15 transition-colors">
+                    {source.icon}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-white leading-snug mb-1">{source.label}</p>
+                  <p className="text-xs text-slate-500 leading-relaxed">{source.desc}</p>
+                </div>
               </div>
             ))}
           </div>

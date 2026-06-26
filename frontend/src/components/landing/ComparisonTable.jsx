@@ -4,52 +4,57 @@ const rows = [
   {
     feature: 'Monthly Price',
     biasforge: { text: '$40/month', type: 'good' },
-    others: { text: '$49–99/month', type: 'neutral' },
+    mrktedge: { text: '$49–99/month', type: 'neutral' },
   },
   {
     feature: '7-Day Free Trial',
-    biasforge: { text: 'Yes, Forever', type: 'good', icon: 'check' },
-    others: { text: 'No', type: 'bad', icon: 'x' },
+    biasforge: { text: 'Yes, always free', type: 'good', icon: 'check' },
+    mrktedge: { text: 'No', type: 'bad', icon: 'x' },
+  },
+  {
+    feature: '5-Source Macro Bias Engine',
+    biasforge: { text: 'Price + Strength + Calendar + News + COT', type: 'good', icon: 'check', badge: 'EXCLUSIVE' },
+    mrktedge: { text: 'Not Available', type: 'bad', icon: 'x' },
   },
   {
     feature: 'Prop Firm Risk Management',
     biasforge: { text: 'Built-in', type: 'good', icon: 'check', badge: 'EXCLUSIVE' },
-    others: { text: 'Not Available', type: 'bad', icon: 'x' },
+    mrktedge: { text: 'Not Available', type: 'bad', icon: 'x' },
   },
   {
     feature: 'FOMC/NFP/CPI Playbooks',
     biasforge: { text: 'Pre-built', type: 'good', icon: 'check', badge: 'EXCLUSIVE' },
-    others: { text: 'Not Included', type: 'bad', icon: 'x' },
+    mrktedge: { text: 'Not Included', type: 'bad', icon: 'x' },
   },
   {
     feature: 'AI Reasoning Visible',
     biasforge: { text: 'Full Transparency', type: 'good', icon: 'check' },
-    others: { text: 'Limited', type: 'warn', icon: 'warn' },
+    mrktedge: { text: 'Limited', type: 'warn', icon: 'warn' },
   },
   {
-    feature: 'Data Sources Per Bias',
-    biasforge: { text: '5 Live Sources', type: 'good', icon: 'check' },
-    others: { text: 'Not Disclosed', type: 'warn', icon: 'warn' },
+    feature: 'CFTC/COT Institutional Data',
+    biasforge: { text: 'Included in bias', type: 'good', icon: 'check' },
+    mrktedge: { text: 'Not Disclosed', type: 'warn', icon: 'warn' },
   },
   {
     feature: 'Fundamental + Technical',
     biasforge: { text: 'AI Confluence Score', type: 'good', icon: 'check' },
-    others: { text: 'Fundamental Only', type: 'bad', icon: 'x' },
+    mrktedge: { text: 'Fundamental Only', type: 'bad', icon: 'x' },
   },
   {
     feature: 'Real-time Updates',
     biasforge: { text: 'Every 60 seconds', type: 'good', icon: 'check' },
-    others: { text: 'Variable', type: 'warn', icon: 'warn' },
+    mrktedge: { text: 'Variable', type: 'warn', icon: 'warn' },
   },
   {
     feature: 'Asset Coverage',
     biasforge: { text: 'Forex, Indices, Crypto, Commodities', type: 'good', icon: 'check' },
-    others: { text: 'Similar', type: 'neutral', icon: 'check' },
+    mrktedge: { text: 'Similar', type: 'neutral', icon: 'check' },
   },
   {
     feature: 'Customer Support',
     biasforge: { text: 'Discord + Email', type: 'good', icon: 'check' },
-    others: { text: 'Email Only', type: 'neutral' },
+    mrktedge: { text: 'Email Only', type: 'neutral' },
   },
 ]
 
@@ -91,7 +96,7 @@ export default function ComparisonTable() {
             See The Difference
           </p>
           <h2 className="text-4xl lg:text-5xl font-black text-white mb-4 leading-tight">
-            BiasForge vs Other Platforms
+            BiasForge vs mrktedge.ai
           </h2>
           <p className="text-lg text-slate-400">
             Why serious traders are switching to BiasForge.
@@ -114,7 +119,7 @@ export default function ComparisonTable() {
                   <div className="text-[10px] text-cyan-500/60 font-medium mt-0.5">RECOMMENDED</div>
                 </th>
                 <th className="bg-slate-900/30 px-6 py-4 text-center w-[30%]">
-                  <span className="text-slate-500 font-semibold text-sm">Other Platforms</span>
+                  <span className="text-slate-500 font-semibold text-sm">mrktedge.ai</span>
                 </th>
               </tr>
             </thead>
@@ -133,7 +138,7 @@ export default function ComparisonTable() {
                     <CellText cell={row.biasforge} />
                   </td>
                   <td className="bg-slate-900/20 px-6 py-4 text-center">
-                    <CellText cell={row.others} />
+                    <CellText cell={row.mrktedge} />
                   </td>
                 </tr>
               ))}
@@ -146,7 +151,7 @@ export default function ComparisonTable() {
           <p className="text-slate-300 font-semibold text-base">
             Try BiasForge free for 7 days
           </p>
-          
+
           <a href="#pricing" className="px-8 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-600 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20">
             Start 7-Day Free Trial
           </a>
