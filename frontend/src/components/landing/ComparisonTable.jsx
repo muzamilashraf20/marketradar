@@ -27,6 +27,11 @@ const rows = [
     others: { text: 'Limited', type: 'warn', icon: 'warn' },
   },
   {
+    feature: 'Data Sources Per Bias',
+    biasforge: { text: '5 Live Sources', type: 'good', icon: 'check' },
+    others: { text: 'Not Disclosed', type: 'warn', icon: 'warn' },
+  },
+  {
     feature: 'Fundamental + Technical',
     biasforge: { text: 'AI Confluence Score', type: 'good', icon: 'check' },
     others: { text: 'Fundamental Only', type: 'bad', icon: 'x' },

@@ -7,7 +7,7 @@ const features = [
   {
     icon: <TrendingUp size={22} className="text-cyan-400" />,
     title: 'AI Trading Bias',
-    description: 'Session and structural bias with full AI reasoning, confidence score, and invalidation levels.',
+    description: 'Direction forged from 5 live data sources — price, economic calendar, breaking news, COT, and cross-asset flows — with full AI reasoning, confidence score, and invalidation levels.',
     exclusive: false,
   },
   {
@@ -74,7 +74,7 @@ export default function FeaturesGrid() {
             Everything You Need to Trade Fundamentals
           </h2>
           <p className="text-lg text-slate-400 max-w-2xl mx-auto">
-            9 powerful tools working together to give you an unfair edge.
+            9 powerful tools working together — every bias forged from 5 live data sources.
           </p>
         </div>
 

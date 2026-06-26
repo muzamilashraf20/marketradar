@@ -1,4 +1,4 @@
-import { Newspaper, Calendar, Mic, Activity, TrendingUp, Shield, GraduationCap, ShieldCheck, Eye, ArrowRight } from 'lucide-react'
+import { Newspaper, Calendar, Mic, Activity, TrendingUp, Shield, GraduationCap, ShieldCheck, Eye, ArrowRight, LineChart, BarChart3, Globe } from 'lucide-react'
 
 const benefits = [
   {
@@ -16,6 +16,14 @@ const benefits = [
     title: 'Full Transparency',
     text: 'See the full AI reasoning behind every bias call. Know the why, not just the direction.',
   },
+]
+
+const dataSources = [
+  { icon: <LineChart size={18} className="text-cyan-400" />, label: 'Live Price Action' },
+  { icon: <Calendar size={18} className="text-cyan-400" />, label: 'Economic Calendar' },
+  { icon: <Newspaper size={18} className="text-cyan-400" />, label: 'Breaking News' },
+  { icon: <BarChart3 size={18} className="text-cyan-400" />, label: 'COT Positioning' },
+  { icon: <Globe size={18} className="text-cyan-400" />, label: 'Cross-Asset Flows' },
 ]
 
 export default function SolutionSection() {
@@ -36,12 +44,12 @@ export default function SolutionSection() {
             BiasForge Changes Everything
           </h2>
           <p className="text-lg text-slate-300 max-w-2xl mx-auto leading-relaxed">
-            We analyze macro data, central bank signals, economic events, and breaking news — then forge a clear trading bias with full reasoning.
+            We fuse 5 live data sources — price, central bank signals, economic events, breaking news, and institutional positioning — then forge a clear trading bias with full reasoning.
           </p>
         </div>
 
         {/* Flow Diagram */}
-        <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-20">
+        <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-12">
 
           {/* Block 1 — Raw Chaos */}
           <div className="bg-slate-900/50 border border-slate-700/50 rounded-2xl p-6 w-full md:w-64 hover:border-slate-600/70 transition-colors duration-300">
@@ -87,6 +95,24 @@ export default function SolutionSection() {
             </p>
           </div>
 
+        </div>
+
+        {/* 5 Live Data Sources strip */}
+        <div className="mb-20">
+          <p className="text-center text-xs uppercase tracking-widest text-cyan-400 font-semibold mb-6">
+            Every bias is forged from 5 live data sources
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            {dataSources.map((source) => (
+              <div
+                key={source.label}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900/40 border border-cyan-500/15 hover:border-cyan-500/40 transition-colors duration-300"
+              >
+                {source.icon}
+                <span className="text-sm font-medium text-slate-300">{source.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Benefits Grid */}
