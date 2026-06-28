@@ -1,8 +1,25 @@
-import { ArrowRight, Play, Activity, TrendingUp, AlertTriangle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowRight, Play, TrendingUp, LineChart, Globe, Calendar, Newspaper, BarChart3 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import RevealSection from './RevealSection';
+
+const biasSources = [
+  { icon: <LineChart size={13} className="text-cyan-400 shrink-0" />, label: 'Live Price' },
+  { icon: <Globe size={13} className="text-cyan-400 shrink-0" />, label: 'Currency Strength' },
+  { icon: <Calendar size={13} className="text-cyan-400 shrink-0" />, label: 'Economic Calendar' },
+  { icon: <Newspaper size={13} className="text-cyan-400 shrink-0" />, label: 'News Scoring' },
+  { icon: <BarChart3 size={13} className="text-cyan-400 shrink-0" />, label: 'COT Positioning' },
+]
 
 export default function HeroSection() {
   const navigate = useNavigate();
+  // Confidence bar fills from 0 → 72% on mount
+  const [barWidth, setBarWidth] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => setBarWidth(62), 150);
+    return () => clearTimeout(t);
+  }, []);
 
   const scrollToSection = (id) => {
     const el = document.getElementById(id);
@@ -16,10 +33,14 @@ export default function HeroSection() {
       <div className="absolute top-1/2 right-1/4 w-[300px] h-[250px] bg-emerald-500/10 blur-[100px] rounded-full pointer-events-none" />
 
       <div className="max-w-6xl mx-auto w-full grid lg:grid-cols-2 gap-12 items-center relative z-10">
-        {/* LEFT SIDE - Text */}
+
+        {/* LEFT SIDE — Text */}
+        <RevealSection delay={0}>
         <div className="flex flex-col items-center text-center lg:items-start lg:text-left">
+
+          {/* Badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-cyan-400 text-xs font-medium mb-5">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-cyan-400" />
             Built for every serious trader
           </div>
 
@@ -28,15 +49,30 @@ export default function HeroSection() {
             Trade with <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">clarity.</span>
           </h1>
 
-          <p className="text-slate-400 text-sm sm:text-base lg:text-lg mb-6 max-w-xl leading-relaxed">
-            BiasForge turns macro data, news, and central bank signals into clear trading bias, 
-            risk levels, and scenarios — so you stop guessing and start trading with confidence.
+          <p className="text-slate-300 text-sm sm:text-base lg:text-lg mb-5 max-w-xl leading-relaxed">
+            BiasForge turns macro data, news, and central bank signals into a clear daily trading bias
+            with reasoning, scenarios, and risk levels — so you stop guessing and trade with direction.
           </p>
 
+          {/* 5-source pill strip */}
+          <div className="flex flex-wrap items-center gap-2 mb-6 w-full justify-center lg:justify-start">
+            <span className="text-xs font-semibold text-slate-500 shrink-0">Bias built from →</span>
+            {biasSources.map((s) => (
+              <span
+                key={s.label}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-xs font-medium text-slate-300"
+              >
+                {s.icon}
+                {s.label}
+              </span>
+            ))}
+          </div>
+
+          {/* CTA buttons */}
           <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
             <button
               onClick={() => navigate('/login')}
-              className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-base hover:opacity-90 transition-all flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 hover:scale-[1.02]"
+              className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-base transition-all flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 hover:shadow-xl hover:shadow-cyan-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
               Start 7-Day Free Trial
               <ArrowRight size={18} strokeWidth={2.5} />
@@ -44,7 +80,7 @@ export default function HeroSection() {
 
             <button
               onClick={() => scrollToSection('how-it-works')}
-              className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-medium hover:bg-white/10 transition-all flex items-center justify-center gap-2"
+              className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm font-medium hover:bg-white/10 transition-all flex items-center justify-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
               <Play size={18} className="text-cyan-400" />
               See How It Works
@@ -52,77 +88,74 @@ export default function HeroSection() {
           </div>
 
           <p className="mt-4 text-xs sm:text-sm text-slate-500">
-            No credit card required · Compatible with all major prop firms
+            No credit card required · 7-day free trial · Cancel anytime
           </p>
         </div>
+        </RevealSection>
 
-        {/* RIGHT SIDE - Fake Dashboard Card */}
-        <div className="relative w-full max-w-md mx-auto">
+        {/* RIGHT SIDE — Static bias demo card */}
+        <RevealSection delay={150}>
+        <div className="w-full max-w-md mx-auto">
           <div className="rounded-2xl bg-gradient-to-b from-slate-800 to-[#020617] border border-slate-700/60 p-1 shadow-2xl shadow-cyan-900/40">
             <div className="bg-[#020617] rounded-xl p-5 border border-white/5">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/10">
+
+              {/* Card header */}
+              <div className="flex items-start justify-between mb-4 pb-3 border-b border-white/10">
                 <div>
-                  <p className="text-xs text-slate-500 mb-1">Daily AI Bias</p>
-                  <p className="text-base font-semibold text-white flex items-center gap-2">
-                    EUR/USD
-                    <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
-                      Live
-                    </span>
-                  </p>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Daily AI Bias</p>
+                  <p className="text-[11px] font-black text-emerald-400 tracking-widest uppercase">BUY</p>
+                  <p className="text-xl font-black text-white tracking-tight">XAUUSD</p>
                 </div>
-                <div className="text-right">
-                  <div className="flex items-center justify-end gap-1 text-emerald-400 font-semibold text-sm">
-                    <TrendingUp size={16} /> Bullish
-                  </div>
-                  <p className="text-[11px] text-slate-400">Confidence: 78%</p>
+                <div className="flex flex-col items-end gap-1.5">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-black tracking-wide">
+                    <TrendingUp size={12} strokeWidth={2.5} />
+                    BULLISH
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[10px] text-slate-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Updated 2h ago
+                  </span>
                 </div>
               </div>
 
-              {/* Reasoning */}
+              {/* Confidence + Grade */}
               <div className="mb-4">
-                <p className="text-[11px] text-slate-500 font-mono mb-1">AI REASONING</p>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-slate-400">Confidence</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white">62%</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 font-bold">
+                      Grade C
+                    </span>
+                  </div>
+                </div>
+                <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-1000 ease-out"
+                    style={{ width: `${barWidth}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* AI Reasoning */}
+              <div className="mb-3">
+                <p className="text-[10px] text-slate-500 font-mono mb-1.5 uppercase tracking-widest">AI Reasoning</p>
                 <div className="bg-slate-900/60 rounded-lg p-3 border border-slate-700/60 text-[11px] text-slate-200 leading-relaxed">
-                  ECB remains hawkish while US CPI misses forecast. 
-                  Rate differentials and risk-on flows support upside 
-                  continuation toward 1.0950 as long as 1.0820 holds.
+                  Macro favors USD strength; gold pressured by firm yields.
                 </div>
               </div>
 
-              {/* Two small cards */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Activity size={14} className="text-emerald-400" />
-                    <p className="text-[11px] text-slate-300">Prop Firm Risk</p>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-1">Recommended risk</p>
-                  <p className="text-sm font-semibold text-white">0.5% per trade</p>
-                </div>
-
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <AlertTriangle size={14} className="text-amber-300" />
-                    <p className="text-[11px] text-slate-300">Invalidation</p>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-1">Bias breaks if</p>
-                  <p className="text-sm font-semibold text-white">Price below 1.0820</p>
-                </div>
+              {/* Entry quality */}
+              <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                FRESH entry
               </div>
-            </div>
-          </div>
 
-          {/* Small floating stat card */}
-          <div className="absolute -bottom-6 -right-4 bg-[#020617] border border-cyan-500/40 rounded-xl px-3 py-2 shadow-xl shadow-cyan-500/30 flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-cyan-500/20 flex items-center justify-center">
-              <Activity size={16} className="text-cyan-400" />
-            </div>
-            <div>
-              <p className="text-[11px] text-slate-400">Signals processed</p>
-              <p className="text-xs font-semibold text-white">12,450 / min</p>
             </div>
           </div>
         </div>
+        </RevealSection>
+
       </div>
     </section>
   );

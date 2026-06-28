@@ -4,6 +4,7 @@ import SocialProofBar from '../components/landing/SocialProofBar'
 import ProblemSection from '../components/landing/ProblemSection'
 import SolutionSection from '../components/landing/SolutionSection'
 import HowItWorks from '../components/landing/HowItWorks'
+import AIEngineSection from '../components/landing/AIEngineSection'
 import FeaturesGrid from '../components/landing/FeaturesGrid'
 import PropFirmSection from '../components/landing/PropFirmSection'
 import ComparisonTable from '../components/landing/ComparisonTable'
@@ -22,6 +23,7 @@ export default function LandingPage() {
       <ProblemSection />
       <SolutionSection />
       <HowItWorks />
+      <AIEngineSection />
       <FeaturesGrid />
       <PropFirmSection />
       <ComparisonTable />

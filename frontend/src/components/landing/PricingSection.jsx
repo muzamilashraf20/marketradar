@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, Lock, RefreshCw, CreditCard, Shield, Loader2, Zap } from 'lucide-react'
+import { Check, Lock, RefreshCw, CreditCard, Shield, Zap } from 'lucide-react'
+import RevealSection from './RevealSection'
 
 const proFeatures = [
   { text: 'Unlimited AI bias (all major pairs)' },
@@ -46,12 +47,13 @@ export default function PricingSection() {
           <h2 className="text-4xl lg:text-5xl font-black text-white mb-4 leading-tight">
             Try 7 Days Free. Then Choose.
           </h2>
-          <p className="text-lg text-slate-400 max-w-2xl mx-auto">
+          <p className="text-lg text-slate-300 max-w-2xl mx-auto">
             Full access for 7 days. No credit card required. Cancel anytime.
           </p>
         </div>
 
         {/* Cards */}
+        <RevealSection delay={100}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
 
           {/* Pro Monthly */}
@@ -75,9 +77,10 @@ export default function PricingSection() {
                 </li>
               ))}
             </ul>
+            {/* Removed stray `block` — keeping flex items-center justify-center */}
             <button
               onClick={() => navigate('/login')}
-              className="block text-center px-6 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
+              className="px-6 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
               <Zap size={16} />
               Start 7-Day Free Trial
@@ -109,7 +112,7 @@ export default function PricingSection() {
             </ul>
             <button
               onClick={() => navigate('/login')}
-              className="block text-center px-6 py-4 rounded-xl border border-emerald-500/40 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/10 transition-all duration-200 flex items-center justify-center gap-2"
+              className="px-6 py-4 rounded-xl border border-emerald-500/40 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/10 transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
               Start 7-Day Free Trial
             </button>
@@ -117,6 +120,8 @@ export default function PricingSection() {
           </div>
 
         </div>
+
+        </RevealSection>
 
         {/* Trust Signals */}
         <div className="flex flex-wrap justify-center gap-6 mt-12">

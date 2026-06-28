@@ -1,4 +1,5 @@
 import { CheckCircle, ShieldCheck, AlertTriangle, TrendingUp } from 'lucide-react'
+import RevealSection from './RevealSection'
 
 const benefits = [
   {
@@ -22,6 +23,7 @@ const benefits = [
 export default function PropFirmSection() {
   return (
     <section id="propfirm" className="bg-gradient-to-b from-[#020617] to-[#030712] py-24 px-6">
+      <RevealSection>
       <div className="max-w-6xl mx-auto">
 
         {/* Header */}
@@ -139,6 +141,7 @@ export default function PropFirmSection() {
         </div>
 
       </div>
+      </RevealSection>
     </section>
   )
 }
