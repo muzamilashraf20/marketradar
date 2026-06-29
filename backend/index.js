@@ -838,7 +838,14 @@ async function fetchCrossAssetLive() {
       console.log(`📈 Cross-asset live: ${Object.keys(result).join(', ')}`)
       return result
     }
-  } catch (e) { console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`) }
+  } catch (e) {
+    const stale = getCached('cross_asset_live')
+    if (e?.response?.status === 429 && stale) {
+      console.log(`📈 Cross-asset 429 — returning stale cache`)
+      return stale
+    }
+    console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`)
+  }
   return null
 }
 
@@ -1273,6 +1280,7 @@ app.post('/api/bias', aiRateLimiter, async (req, res) => {
 // 📌 TODAY'S AI BIAS (auto-computed + change alerts) — session opens + pre-event
 // ============================================
 let lastTodaysBiasKey = ''
+let lastChannelPostKey = ''  // "{DIRECTION} {PAIR} {GRADE}" — persisted per-day so restarts don't re-post
 const TODAY_BIAS_TTL = 45 * 60 * 1000 // 45 min — keeps Anthropic cost bounded under dashboard traffic
 
 // ── 💰 AI cost tracking — logs every Anthropic call's token usage and estimated cost ──
@@ -1356,6 +1364,24 @@ async function saveTodayBiasState(result) {
       { onConflict: 'key' }
     )
   } catch (e) { console.error('today_bias persist error:', e?.message) }
+}
+
+async function loadChannelPostState() {
+  try {
+    const { data } = await supabase.from('app_state').select('value').eq('key', 'channel_post_state').single()
+    if (data?.value?.key && data.value.date === utcDay()) {
+      lastChannelPostKey = data.value.key
+      console.log(`✅ Restored channel post state: ${lastChannelPostKey}`)
+    }
+  } catch (e) { console.log(`⚠️ loadChannelPostState failed: ${e?.message}`) }
+}
+async function saveChannelPostState(key) {
+  try {
+    await supabase.from('app_state').upsert(
+      { key: 'channel_post_state', value: { key, date: utcDay() }, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    )
+  } catch (e) { console.error('channel post state persist error:', e?.message) }
 }
 
 // Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
@@ -1456,12 +1482,18 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     // ── 4. ROOM DATA (with retry for TwelveData 429) ──
     let room = {}
     try { room = await getPairRoomBatch(candidates) } catch (e) {
-      console.log(`⚠️ Room batch failed (${e?.message}) — retrying in 3s...`)
-      await new Promise(r => setTimeout(r, 3000))
+      const retryWait = 8000 + Math.floor(Math.random() * 2000)
+      console.log(`⚠️ Room batch failed (${e?.message}) — retrying in ${retryWait}ms...`)
+      await new Promise(r => setTimeout(r, retryWait))
       try { room = await getPairRoomBatch(candidates) } catch (e2) { console.log(`⚠️ Room retry also failed — AI will work without room data`) }
     }
 
     // ── 5. CROSS-ASSET CONTEXT (real data + FX proxies) ──
+    // Stagger: if cross-asset cache is cold, wait briefly so the room batch call
+    // (which just ran) doesn't share TwelveData's per-minute window.
+    if (!isCacheFreshFor('cross_asset_live', 30 * 60 * 1000)) {
+      await new Promise(r => setTimeout(r, 2000 + Math.floor(Math.random() * 1000)))
+    }
     let liveAssets = null
     try { liveAssets = await fetchCrossAssetLive() } catch (e) {}
     let yields = null
@@ -1560,6 +1592,35 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
       console.warn(`⚠️ Bias change ${lastTodaysBiasKey || 'first of day'} → ${newKey} NOT saved — will retry next cycle`)
     }
   }
+
+  // 📢 Channel post — fires whenever bias changes (pair OR direction OR grade) AND grade is C+
+  // Tracked separately from subscriber DMs; persisted so restarts never cause duplicate posts.
+  const channelGrade = (result.tradeGrade || '').toUpperCase()
+  const channelKey = `${newKey} ${channelGrade}`
+  if (['A+', 'A', 'B', 'C'].includes(channelGrade) && channelKey !== lastChannelPostKey) {
+    const dirUp = result.direction.toUpperCase()
+    const arrow = /BULL|BUY/.test(dirUp) ? '🟢' : /BEAR|SELL/.test(dirUp) ? '🔴' : '⚪'
+    const inval = result.bias?.levels?.invalidation && result.bias.levels.invalidation !== 'N/A'
+      ? `\n⚠️ Invalidation: <b>${result.bias.levels.invalidation}</b>` : ''
+    const channelMsg = `${arrow} <b>${dirUp} ${result.pair}</b>\n` +
+      `Confidence: <b>${result.confidence}%</b> · Grade <b>${result.tradeGrade}</b>\n\n` +
+      `🧠 ${result.reasoning}${inval}\n\n` +
+      `Direction only — you manage your entries.\n` +
+      `🧭 Full tool: biasforge.co`
+    try {
+      const ok = await sendTG(TG_CHANNEL, channelMsg)
+      if (ok) {
+        lastChannelPostKey = channelKey
+        saveChannelPostState(channelKey).catch(() => {})
+        console.log(`📢 Channel post sent: ${channelKey}`)
+      } else {
+        console.error(`❌ Channel post failed (bot returned not-ok): ${channelKey}`)
+      }
+    } catch (e) {
+      console.error(`❌ Channel post error: ${e?.message}`)
+    }
+  }
+
   return result
 }
 
@@ -1593,22 +1654,6 @@ async function notifyTodaysBiasChange(result, oldKey) {
     `🧠 ${result.reasoning}\n\n` +
     `🔗 <a href="https://www.biasforge.co/bias">Open AI Bias Engine</a>`
   for (const sub of telegramSubscribers.filter(s => s.active)) sendTG(sub.chat_id, msg).catch(() => {})
-
-  // 📢 Public channel broadcast — only post decent-conviction biases (Grade C or better), skip weak D/N
-  try {
-    const grade = (result.tradeGrade || '').toUpperCase()
-    const postable = ['A+', 'A', 'B', 'C'].includes(grade)
-    if (postable) {
-      const arrow = dirUp.includes('BULL') || dirUp.includes('BUY') ? '🟢' : dirUp.includes('BEAR') || dirUp.includes('SELL') ? '🔴' : '⚪'
-      const inval = result.bias?.levels?.invalidation && result.bias.levels.invalidation !== 'N/A' ? `\n⚠️ Invalidation: <b>${result.bias.levels.invalidation}</b>` : ''
-      const channelMsg = `${arrow} <b>${dirUp} ${result.pair}</b>\\n` +
-        `Confidence: <b>${result.confidence}%</b> · Grade <b>${result.tradeGrade}</b>\\n\\n` +
-        `🧠 ${result.reasoning}${inval}\\n\\n` +
-        `Direction only — you manage your entries.\\n` +
-        `🧭 Full tool: biasforge.co`
-      sendTG(TG_CHANNEL, channelMsg).catch(() => {})
-    }
-  } catch (e) { console.error('Channel post error:', e?.message) }
 
   try {
     const { data: emailSubs } = await supabase.from('email_subscribers').select('email').eq('active', true)
@@ -2401,6 +2446,7 @@ app.listen(5000, () => {
   loadSubscribers()
   loadTelegramSubscribers()
   loadTodayBiasState()
+  loadChannelPostState()
   setInterval(checkAndSendCalendarAlerts, 5 * 60 * 1000)
   console.log('⏰ Calendar cron (5min)')
   setInterval(checkAndSendNewsAlerts, 10 * 60 * 1000)
