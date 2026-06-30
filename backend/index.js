@@ -1596,7 +1596,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
   // 📢 Channel post — fires whenever bias changes (pair OR direction OR grade) AND grade is C+
   // Tracked separately from subscriber DMs; persisted so restarts never cause duplicate posts.
   const channelGrade = (result.tradeGrade || '').toUpperCase()
-  const channelKey = `${newKey} ${channelGrade}`
+  const channelKey = newKey  // "DIRECTION PAIR" only — grade/confidence changes don't re-post
   if (['A+', 'A', 'B', 'C'].includes(channelGrade) && channelKey !== lastChannelPostKey) {
     const dirUp = result.direction.toUpperCase()
     const arrow = /BULL|BUY/.test(dirUp) ? '🟢' : /BEAR|SELL/.test(dirUp) ? '🔴' : '⚪'
