@@ -1060,7 +1060,10 @@ async function generateBiasFor(symbol, timeframe, force = false) {
       .map(e => {
         const mins = Math.round((new Date(e.time) - now) / 60000)
         const rel = mins < 60 ? `in ${mins}min` : mins < 1440 ? `in ${Math.floor(mins / 60)}h ${mins % 60}m` : `in ${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`
-        return `${e.event} (${e.country}) ${rel} [${e.time}] - Impact: HIGH`
+        const fcPrev = (e.forecast || e.previous)
+          ? ` — forecast: ${e.forecast || 'N/A'}, previous: ${e.previous || 'N/A'}`
+          : ''
+        return `${e.event} (${e.country}) ${rel}${fcPrev} [${e.time}] - Impact: HIGH`
       })
     if (events.length > 0) calendarData = events.join(' | ')
   } catch (e) {}
@@ -1224,6 +1227,35 @@ ${template}`
   const raw = m.content[0].text.trim().replace(/```json|```/g, '').trim()
   const bias = JSON.parse(raw)
   bias.generatedAt = new Date().toISOString()
+
+  // INVALIDATION-SIDE GUARD: AI sometimes places invalidation on the WRONG side of price
+  // (bearish with invalidation BELOW price, or bullish ABOVE), or too close so intraday noise
+  // trips it. Both break the continuity rule (price never "crosses" a wrong-side level, so the
+  // bias gets stuck). Verify direction + minimum distance; correct if needed.
+  if (currentPrice !== 'unknown' && bias.levels && bias.levels.invalidation && bias.levels.invalidation !== 'N/A') {
+    const invPip = /JPY/i.test(symbol) ? 0.01 : /XAU/i.test(symbol) ? 0.1 : (/BTC|NAS/i.test(symbol) ? 1 : 0.0001)
+    const invPrice = parseFloat(currentPrice)
+    const invLevel = parseFloat(bias.levels.invalidation)
+    const invDir = String(bias.direction || '').toLowerCase()
+    const invBear = invDir.includes('bear')
+    const invBull = invDir.includes('bull')
+    const invAdr = moveContext && moveContext.adrPips ? moveContext.adrPips : 60
+    const invBufferPips = Math.max(30, Math.min(invAdr * 0.5, 120))
+    const invBuffer = invBufferPips * invPip
+    if (!isNaN(invPrice) && !isNaN(invLevel) && (invBear || invBull)) {
+      const invDist = Math.abs(invLevel - invPrice) / invPip
+      let invFixed = null
+      if (invBear && invLevel <= invPrice) invFixed = invPrice + invBuffer
+      else if (invBull && invLevel >= invPrice) invFixed = invPrice - invBuffer
+      else if (invDist < invBufferPips) invFixed = invBear ? invPrice + invBuffer : invPrice - invBuffer
+      if (invFixed !== null) {
+        const invDec = invPip === 0.0001 ? 5 : invPip === 0.01 ? 3 : invPip === 0.1 ? 2 : 2
+        bias.levels.invalidation = invFixed.toFixed(invDec)
+        bias.invalidationCorrected = true
+        console.log(`⚠️ Invalidation corrected for ${symbol} (${bias.direction}): AI gave wrong-side/tight level, moved to ${bias.levels.invalidation}`)
+      }
+    }
+  }
 
   // ENTRY QUALITY GUARD: enforce grade downgrade for mature moves; default N/A when no move data.
   const demote = (g, steps) => { const order = ['A+', 'A', 'B', 'C', 'D']; const i = order.indexOf(g); return i < 0 ? g : order[Math.min(i + steps, order.length - 1)] }
