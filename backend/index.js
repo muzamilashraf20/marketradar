@@ -1021,7 +1021,14 @@ Return ONLY valid JSON:
   const m = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
-    system: 'You are an elite macro fundamental strategist for BiasForge. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.',
+    system: `You are an elite macro fundamental strategist for BiasForge. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.
+
+ANTI-HALLUCINATION: Only cite specific numbers, statistics, or historical claims that are EXPLICITLY present in the data provided to you (price, calendar forecast/previous, news, COT, cross-asset values). NEVER invent or estimate specific figures — especially:
+- Historical superlatives like 'X-year low/high', 'weakest since...', 'highest in decades' UNLESS that exact claim appears verbatim in the provided news/data.
+- Precise statistics (participation rates, GDP figures, historical averages) that are not in the data you received.
+If you want to describe a move as significant, use qualitative language ('sharply weaker', 'notable miss vs forecast') instead of fabricated precise historical claims. When in doubt, describe what the DATA shows, not what you recall from training. A single fabricated number destroys trader trust — accuracy over drama.
+
+NEVER reference internal rule numbers (e.g. 'rule 9', 'rule 8') in your user-facing reasoning output. Rules guide your analysis but must stay invisible to the reader.`,
     messages: [{ role: 'user', content: prompt }]
   })
   trackAI('pair-selection', 'claude-sonnet-4-6', m.usage)
@@ -1194,7 +1201,14 @@ CRITICAL RULES:
 
 10. COT POSITIONING: The COT data shows weekly institutional positioning (released Fridays, lags by days). Weight it HEAVILY for swing timeframe, LIGHTLY for intraday (it cannot capture today's flows). When institutional positioning aligns with your direction, mention it in keyDrivers; when it conflicts, acknowledge the tension in reasoning.
 
-11. SIGNAL WEIGHTING (intraday direction): Lead with FRESH signals — breaking news, today's CROSS-ASSET flows (DXY, risk-on/off via VIX/SPY), and the US 2Y yield move (rising 2Y = USD-supportive, falling = USD-negative). These drive TODAY'S direction. The US ECONOMIC ACTUALS set the macro backdrop (is inflation hot? labor tight?) and shape conviction. COT is the LAGGING confirm only (per rule 10). If COT conflicts with fresh cross-asset/yield flows, TRUST THE FRESH FLOWS for intraday direction and lower conviction rather than siding with stale positioning.`
+11. SIGNAL WEIGHTING (intraday direction): Lead with FRESH signals — breaking news, today's CROSS-ASSET flows (DXY, risk-on/off via VIX/SPY), and the US 2Y yield move (rising 2Y = USD-supportive, falling = USD-negative). These drive TODAY'S direction. The US ECONOMIC ACTUALS set the macro backdrop (is inflation hot? labor tight?) and shape conviction. COT is the LAGGING confirm only (per rule 10). If COT conflicts with fresh cross-asset/yield flows, TRUST THE FRESH FLOWS for intraday direction and lower conviction rather than siding with stale positioning.
+
+12. ANTI-HALLUCINATION: Only cite specific numbers, statistics, or historical claims that are EXPLICITLY present in the data provided to you (price, calendar forecast/previous, news, COT, cross-asset values). NEVER invent or estimate specific figures — especially:
+   - Historical superlatives like 'X-year low/high', 'weakest since...', 'highest in decades' UNLESS that exact claim appears verbatim in the provided news/data.
+   - Precise statistics (participation rates, GDP figures, historical averages) that are not in the data you received.
+   If you want to describe a move as significant, use qualitative language ('sharply weaker', 'notable miss vs forecast') instead of fabricated precise historical claims. When in doubt, describe what the DATA shows, not what you recall from training. A single fabricated number destroys trader trust — accuracy over drama.
+
+13. NEVER reference internal rule numbers (e.g. 'rule 9', 'rule 8') in your user-facing reasoning output. Rules guide your analysis but must stay invisible to the reader.`
 
   const prevLine = prevBias
     ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
