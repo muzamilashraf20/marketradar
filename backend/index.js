@@ -705,6 +705,18 @@ async function getPairRoomBatch(candidates) {
   } catch (e) { console.error('⚠️ Pair room batch failed:', e?.message); const st = getCached(roomCacheKey); return st || {} }
 }
 
+const EXHAUST_DIRPCT = 150 // 1.5x ADR — beyond this, a directional move is exhausted; no fresh setup in that direction
+
+// getMoveContext's dirPct is UNCAPPED (unlike room.roomScore, which caps at 100%) — it can read
+// 150+, which is what lets us detect a move that has gone 1.5x+ beyond a normal daily range.
+// moveDir comes from fromOpenPips' sign: > 0 = 'UP', < 0 = 'DOWN'.
+function isPairExhausted(dirPct, biasAction, moveDir) {
+  if (dirPct == null || !biasAction || !moveDir) return false
+  const biasWantsUp = String(biasAction).toUpperCase() === 'BUY'
+  const moveIsUp = String(moveDir).toUpperCase() === 'UP'
+  return (biasWantsUp === moveIsUp) && dirPct > EXHAUST_DIRPCT
+}
+
 // ── STAGE 1: MOVE POTENTIAL SCORING ──
 // Picks the pair most likely to deliver a catchable move today, combining:
 // strength divergence (conviction) + room left (ADR) + upcoming catalyst + ADR size + fresh news.
@@ -1420,19 +1432,21 @@ async function saveChannelPostState(key) {
 // force=true bypasses the per-symbol cache (used on breaking-news catalysts)
 // sessionOpen=true allows full pair re-pick (used ONLY at session opens: Sydney/Tokyo/London/NY)
 // Without sessionOpen, a locked pair is KEPT and only its reasoning/confidence is refreshed.
-async function computeTodaysAIBias(force = false, sessionOpen = false) {
+async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustRetry = false) {
   if (isForexClosed()) return null
 
   const day = utcDay()
 
   // ── LOCK-ONLY REFRESH: if pair is locked today and this is NOT a session open, just refresh reasoning ──
   let top
+  let candidates = null // populated only on the FULL RE-PICK path — read by the exhaustion switch below
+  let room = {}
   if (todayBiasLock?.date === day && !sessionOpen) {
     console.log(`🔒 LOCK-ONLY PATH: pair=${todayBiasLock.pair} (${todayBiasLock.selectedBy || 'formula'}), lockDate=${todayBiasLock.date}, today=${day}, sessionOpen=${sessionOpen}, force=${force}`)
     // Skip all ranking/scoring — go straight to generateBiasFor on the locked pair
     top = { symbol: todayBiasLock.symbol, pair: todayBiasLock.pair }
     // Still fetch room data for the locked pair so potentialNote is accurate
-    let room = {}; try { room = await getPairRoomBatch([top]) } catch (e) {}
+    try { room = await getPairRoomBatch([top]) } catch (e) {}
     const r = room[top.symbol]
     top.roomScore = r ? r.roomScore : null
     top.adrPips = r ? r.adrPips : null
@@ -1443,7 +1457,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     console.log(`🔄 FULL RE-PICK (fundamentals): sessionOpen=${sessionOpen}, lock=${todayBiasLock?.pair || 'none'}, lockDate=${todayBiasLock?.date || 'none'}, today=${day}`)
 
     // Fixed candidate list — all major pairs + gold
-    const candidates = BIAS_CANDIDATES
+    candidates = BIAS_CANDIDATES
 
     // ── 1. CALENDAR: upcoming + recent releases ──
     let events = []; try { events = await getEconomicCalendar() } catch (e) {}
@@ -1512,7 +1526,6 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
     } catch (e) {}
 
     // ── 4. ROOM DATA (with retry for TwelveData 429) ──
-    let room = {}
     try { room = await getPairRoomBatch(candidates) } catch (e) {
       const retryWait = 8000 + Math.floor(Math.random() * 2000)
       console.log(`⚠️ Room batch failed (${e?.message}) — retrying in ${retryWait}ms...`)
@@ -1584,6 +1597,69 @@ async function computeTodaysAIBias(force = false, sessionOpen = false) {
   try {
     bias = await generateBiasFor(top.symbol, 'intraday', force)
   } catch (e) { console.error('Today bias gen error:', e?.message); return getCached('today_bias') || null }
+
+  // ── EXHAUSTION SWITCH: a pair whose bias direction already moved >1.5x ADR from today's open
+  // is exhausted (e.g. a 2.6x-ADR selloff) — a fresh SELL there just chases a move that's already
+  // done. Reuses bias.moveContext (already computed inside generateBiasFor — no extra API call).
+  // Tries up to 2 fresh alternatives (AI runner-ups first, then remaining candidates ranked by
+  // room left) before giving up.
+  const MAX_EXHAUST_SWITCHES = 2
+  const runnerUpPool = top.runnerUps || []
+  const triedSymbols = new Set([top.symbol])
+  let switches = 0
+  let stillExhausted = false
+  while (true) {
+    const mc = bias.moveContext
+    if (!mc) { stillExhausted = false; break }
+    const moveDir = mc.fromOpenPips > 0 ? 'UP' : 'DOWN'
+    const biasAction = /buy|bull/i.test(bias.direction) ? 'BUY' : /sell|bear/i.test(bias.direction) ? 'SELL' : null
+    stillExhausted = isPairExhausted(mc.dirPct, biasAction, moveDir)
+    if (!stillExhausted) break
+    if (switches >= MAX_EXHAUST_SWITCHES) break
+
+    console.log(`🚫 EXHAUSTED: ${top.pair} already ${mc.dirPct}% ADR in ${bias.direction} direction — looking for a fresh pair`)
+
+    let nextSymbol = runnerUpPool.map(r => r.symbol).find(s => s && !triedSymbols.has(s))
+    if (!nextSymbol && candidates) {
+      const fallback = candidates
+        .filter(c => !triedSymbols.has(c.symbol))
+        .sort((a, b) => (room[b.symbol]?.roomScore || 0) - (room[a.symbol]?.roomScore || 0))[0]
+      nextSymbol = fallback?.symbol
+    }
+
+    if (!nextSymbol) {
+      // LOCK-ONLY path has no candidate list to fall back on — force one full re-pick instead
+      // of guessing, guarded so it can only happen once per call.
+      if (!candidates && !_exhaustRetry) {
+        console.log(`🔓 Locked pair exhausted with no alternatives — forcing one full re-pick`)
+        todayBiasLock = null
+        return computeTodaysAIBias(force, true, true)
+      }
+      break
+    }
+
+    switches++
+    triedSymbols.add(nextSymbol)
+    console.log(`↪️ Switching to fresh candidate: ${nextSymbol} (attempt ${switches}/${MAX_EXHAUST_SWITCHES})`)
+    let switchedBias
+    try {
+      switchedBias = await generateBiasFor(nextSymbol, 'intraday', force)
+    } catch (e) { console.error(`Exhaustion switch bias gen failed for ${nextSymbol}:`, e?.message); continue }
+
+    const r = room[nextSymbol]
+    top = { symbol: nextSymbol, pair: nextSymbol, roomScore: r?.roomScore ?? null, adrPips: r?.adrPips ?? null }
+    bias = switchedBias
+  }
+
+  if (stillExhausted) {
+    console.log(`⚠️ Exhaustion-switch attempts used up — keeping ${top.pair} with a warning note`)
+    bias.reasoning = `⚠️ Note: most pairs extended today — setups limited. ${bias.reasoning || ''}`.trim()
+  }
+
+  if (switches > 0) {
+    todayBiasLock = { date: day, symbol: top.symbol, pair: top.pair, selectedBy: 'exhaustion-switch' }
+    console.log(`🔒 Lock updated after exhaustion switch: ${top.pair}`)
+  }
 
   const result = {
     symbol: top.symbol,
