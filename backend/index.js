@@ -1021,7 +1021,7 @@ Return ONLY valid JSON:
   const m = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
-    system: 'You are an elite macro fundamental strategist for BiasForge.ai. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.',
+    system: 'You are an elite macro fundamental strategist for BiasForge. You generate trading bias from economic data, central bank policy, COT positioning, news catalysts, and cross-asset context — NEVER from technical indicators or currency strength scores. Return ONLY valid JSON.',
     messages: [{ role: 'user', content: prompt }]
   })
   trackAI('pair-selection', 'claude-sonnet-4-6', m.usage)
