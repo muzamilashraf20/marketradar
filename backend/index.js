@@ -1175,6 +1175,7 @@ CRITICAL RULES:
    - 55-69% = Weak conviction (mixed signals, upcoming risk events)
    - 40-54% = Very low conviction (conflicting data, recommend sitting out)
    Never default to 75%. Calibrate based on actual data quality.
+   CONFLUENCE = CONVICTION: Do NOT be reflexively conservative. When MULTIPLE independent signals point the SAME direction — e.g. an economic release surprise + US yield move + cross-asset flows (DXY/VIX/SPY) + breaking news all agreeing — that is a HIGH-CONVICTION setup and confidence of 75-85% (Grade A/B) is JUSTIFIED and expected. A big NFP miss (e.g. 57k vs 110k forecast) with falling yields and risk-off flows is NOT a 'marginal' call — it is a clear, confident directional read. Reserve LOW confidence (Grade C/D, <60%) ONLY for when signals genuinely CONFLICT with each other (e.g. hawkish data but risk-on flows), or when you truly lack the key data. Do not manufacture false uncertainty when the macro picture is clearly aligned — that under-serves the trader as much as false confidence would.
 
 3. ENTRY QUALITY (move maturity): Use the MOVE CONTEXT data to judge whether the favorable move has already largely happened. BiasForge gives traders a fundamental DIRECTION; they confirm with their own technical setup — so warn them when the move is extended (a technical entry now would be a chase).
    - FRESH: pair has used <40% of its ADR, or has barely moved in the bias direction → good time to hunt a technical setup. Grade unaffected.
@@ -1208,7 +1209,9 @@ CRITICAL RULES:
    - Precise statistics (participation rates, GDP figures, historical averages) that are not in the data you received.
    If you want to describe a move as significant, use qualitative language ('sharply weaker', 'notable miss vs forecast') instead of fabricated precise historical claims. When in doubt, describe what the DATA shows, not what you recall from training. A single fabricated number destroys trader trust — accuracy over drama.
 
-13. NEVER reference internal rule numbers (e.g. 'rule 9', 'rule 8') in your user-facing reasoning output. Rules guide your analysis but must stay invisible to the reader.`
+13. NEVER reference internal rule numbers (e.g. 'rule 9', 'rule 8') in your user-facing reasoning output. Rules guide your analysis but must stay invisible to the reader.
+
+14. EXTRACT RELEASES FROM NEWS: If the breaking news contains an actual economic release figure (e.g. 'NFP came in at 57k vs 110k expected', 'CPI rose 0.2%'), treat that ACTUAL number as ground truth for surprise analysis — compare it to the forecast and let the surprise drive both direction and conviction. News-reported actuals are often fresher than the FRED/calendar data during the first hours after a release. If news and FRED disagree on a number, prefer the more recent news figure but note the discrepancy.`
 
   const prevLine = prevBias
     ? `${prevBias.direction} @ ${prevBias.confidence}% confidence (generated ${prevBias.generatedAt || 'earlier'}) · invalidation level: ${prevBias.levels?.invalidation || 'N/A'}`
@@ -1932,8 +1935,16 @@ app.get('/api/bias-performance', async (req, res) => {
       results.push({ ...row, performance: perf })
     }
 
-    // Win/loss verdict ONLY from closed 24h windows (final). Live biases show running pips but don't affect win rate.
-    const final = results.filter(r => r.performance && r.performance.status === 'final')
+    // Win/loss verdict ONLY from closed 24h windows (final) AND high-conviction calls — Grade B+
+    // with 60%+ confidence. Low-conviction D-grade biases (e.g. NFP-day whipsaws) were never meant
+    // to be acted on and shouldn't drag down the win rate. Live biases show running pips but don't
+    // affect win rate.
+    const isHighConviction = (r) => {
+      const g = (r.trade_grade || r.tradeGrade || '').toUpperCase()
+      const conf = r.confidence ?? r.performance?.confidence ?? 0
+      return ['A+', 'A', 'B'].includes(g) && conf >= 60
+    }
+    const final = results.filter(r => r.performance?.status === 'final' && isHighConviction(r))
     const live = results.filter(r => r.performance && r.performance.status === 'live')
     const withPips = results.filter(r => r.performance && typeof r.performance.pips === 'number' && (r.performance.status === 'final' || r.performance.status === 'live'))
     const wins = final.filter(r => r.performance.correct === true)
@@ -1946,7 +1957,8 @@ app.get('/api/bias-performance', async (req, res) => {
       winRate: final.length ? +((wins.length / final.length) * 100).toFixed(1) : null,
       avgPips: avg(withPips, 'pips'),
       avgMfePips: avg(withPips, 'mfePips'),
-      avgMaePips: avg(withPips, 'maePips')
+      avgMaePips: avg(withPips, 'maePips'),
+      countedBasis: 'Grade B+ & 60%+ confidence'
     }
     const payload = { success: true, days, summary, history: results }
     setCache(cacheKey, payload)
