@@ -1,4 +1,5 @@
 ﻿import 'dotenv/config'
+import crypto from 'crypto'
 import express from 'express'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
@@ -2078,6 +2079,107 @@ app.post('/api/gumroad/webhook', async (req, res) => {
   }
 })
 // ============================================
+// 🪙 CRYPTO PAYMENTS (NOWPayments — runs PARALLEL to Gumroad)
+//    Settlement USDT (TRC20). Customer pays BTC / USDT / USDC.
+//    Crypto does NOT auto-renew → we track expires_at and expire on read.
+// ============================================
+
+// NOWPayments signs the IPN with HMAC-SHA512 over the JSON body
+// with keys sorted alphabetically (recursively). Rebuild + compare.
+function npSortObject(obj) {
+  return Object.keys(obj).sort().reduce((acc, key) => {
+    const val = obj[key]
+    acc[key] = (val && typeof val === 'object' && !Array.isArray(val)) ? npSortObject(val) : val
+    return acc
+  }, {})
+}
+
+// PART 1 — create an invoice, return the hosted checkout URL
+app.post('/api/crypto/create-payment', async (req, res) => {
+  try {
+    const { email, plan } = req.body
+    if (!email) return res.status(400).json({ error: 'No email provided' })
+    if (plan !== 'monthly' && plan !== 'annual') return res.status(400).json({ error: 'Invalid plan' })
+    const buyerEmail = email.toLowerCase().trim()
+    const price = plan === 'annual' ? 399 : 40
+    const { data } = await axios.post('https://api.nowpayments.io/v1/invoice', {
+      price_amount: price,
+      price_currency: 'usd',
+      pay_currency: null, // customer picks BTC / USDT / USDC on the NOWPayments page
+      order_id: `biasforge_${plan}_${buyerEmail}_${Date.now()}`,
+      order_description: `BiasForge Pro ${plan}`,
+      ipn_callback_url: 'https://marketradar-production.up.railway.app/api/crypto/webhook',
+      success_url: 'https://biasforge.co/dashboard?crypto=success',
+      cancel_url: 'https://biasforge.co/pricing?crypto=cancelled'
+    }, {
+      headers: { 'x-api-key': process.env.NOWPAYMENTS_API_KEY, 'Content-Type': 'application/json' }
+    })
+    console.log('Crypto invoice created:', { email: buyerEmail, plan, id: data?.id })
+    res.json({ success: true, invoice_url: data.invoice_url })
+  } catch (e) {
+    console.error('Crypto create-payment error:', e.response?.data || e.message)
+    res.status(500).json({ error: 'Failed to create crypto payment' })
+  }
+})
+
+// PART 2 — IPN webhook: verify signature, then upgrade + set expiry
+app.post('/api/crypto/webhook', async (req, res) => {
+  try {
+    const sig = req.headers['x-nowpayments-sig']
+    const ipnSecret = process.env.NOWPAYMENTS_IPN_SECRET
+    if (!sig || !ipnSecret) return res.status(400).json({ error: 'Missing signature' })
+
+    const expected = crypto.createHmac('sha512', ipnSecret)
+      .update(JSON.stringify(npSortObject(req.body)))
+      .digest('hex')
+    const sigBuf = Buffer.from(sig, 'hex')
+    const expBuf = Buffer.from(expected, 'hex')
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      console.error('Crypto webhook: invalid signature')
+      return res.status(401).json({ error: 'Invalid signature' })
+    }
+
+    const { payment_status, order_id } = req.body
+    console.log('Crypto webhook:', { payment_status, order_id })
+
+    // Only credit on fully-paid statuses (waiting/confirming/partially_paid do NOT upgrade)
+    if (payment_status !== 'finished' && payment_status !== 'confirmed') {
+      return res.json({ success: true, action: 'ignored', status: payment_status })
+    }
+
+    // order_id = biasforge_<plan>_<email>_<timestamp>. Email may contain '_',
+    // so plan is index 1, timestamp is the last chunk, email is everything between.
+    const parts = (order_id || '').split('_')
+    const plan = parts[1]
+    const buyerEmail = parts.slice(2, -1).join('_')
+    if (!buyerEmail || (plan !== 'monthly' && plan !== 'annual')) {
+      console.error('Crypto webhook: cannot parse order_id', order_id)
+      return res.status(400).json({ error: 'Bad order_id' })
+    }
+
+    // Stack the new term on top of any remaining active time
+    const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
+    const days = plan === 'annual' ? 365 : 30
+    const now = Date.now()
+    const existingMs = existing?.expires_at ? new Date(existing.expires_at).getTime() : 0
+    const base = existingMs > now ? existingMs : now
+    const expiresAt = new Date(base + days * 24 * 60 * 60 * 1000).toISOString()
+
+    if (existing) {
+      await supabase.from('user_plans').update({ tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }).eq('email', buyerEmail)
+    } else {
+      const { data: { users } } = await supabase.auth.admin.listUsers()
+      const authUser = users?.find(u => u.email?.toLowerCase() === buyerEmail)
+      await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }, { onConflict: 'email' })
+    }
+    console.log(`Crypto: upgraded ${buyerEmail} to PRO until ${expiresAt}`)
+    res.json({ success: true, action: 'upgraded', expires_at: expiresAt })
+  } catch (e) {
+    console.error('Crypto webhook error:', e.message)
+    res.status(500).json({ error: 'Webhook processing failed' })
+  }
+})
+// ============================================
 // 📓 TRADE JOURNAL
 // ============================================
 app.get('/api/trades', async (req, res) => {
@@ -2246,11 +2348,20 @@ app.get('/api/user/plan', async (req, res) => {
       plan = newPlan
     }
 
+    // Crypto plans don't auto-renew — downgrade once past expiry.
+    // Gumroad/subscription pro users have expires_at = null, so they're never touched here.
+    if (plan?.tier === 'pro' && plan?.expires_at && new Date(plan.expires_at).getTime() < Date.now()) {
+      await supabase.from('user_plans').update({ tier: 'free', updated_at: new Date().toISOString() }).eq('user_id', user.id)
+      plan.tier = 'free'
+      console.log(`Crypto plan expired — downgraded ${user.email} to free`)
+    }
+
     res.json({
       success: true,
       plan: {
         tier: plan?.tier || 'free',
         trialStart: plan?.trial_start,
+        expiresAt: plan?.expires_at || null,
         updatedAt: plan?.updated_at,
       }
     })
