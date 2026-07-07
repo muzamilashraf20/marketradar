@@ -69,7 +69,7 @@ export default function FinalCTA() {
               href="#pricing"
               className="flex items-center gap-2 px-8 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
-              Start 7-Day Free Trial <ArrowRight size={16} />
+              Get Started Free <ArrowRight size={16} />
             </a>
             <a
               href="#features"
@@ -81,7 +81,7 @@ export default function FinalCTA() {
 
           {/* Trust line */}
           <p className="text-sm text-slate-400">
-            No credit card required · Cancel anytime · Built for serious traders
+            Free plan available · Cancel anytime · Built for serious traders
           </p>
 
         </div>

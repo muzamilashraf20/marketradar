@@ -74,7 +74,7 @@ export default function HeroSection() {
               onClick={() => navigate('/login')}
               className="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-base transition-all flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 hover:shadow-xl hover:shadow-cyan-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
-              Start 7-Day Free Trial
+              Get Started Free
               <ArrowRight size={18} strokeWidth={2.5} />
             </button>
 
@@ -88,7 +88,7 @@ export default function HeroSection() {
           </div>
 
           <p className="mt-4 text-xs sm:text-sm text-slate-500">
-            No credit card required · 7-day free trial · Cancel anytime
+            Free plan available · Card or crypto to upgrade · Cancel anytime
           </p>
         </div>
         </RevealSection>

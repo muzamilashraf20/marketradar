@@ -50,7 +50,7 @@ export default function Navbar() {
             onClick={() => window.location.href = '/login'}
             className="px-6 py-2.5 bg-white text-black font-bold rounded-xl hover:bg-cyan-400 transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
           >
-            Start Free Trial
+            Get Started
           </button>
         </div>
         <button
@@ -92,7 +92,7 @@ export default function Navbar() {
               onClick={() => window.location.href = '/login'}
               className="mt-4 px-10 py-4 bg-cyan-400 text-black font-black text-lg rounded-2xl hover:bg-white transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
             >
-              Start Free Trial
+              Get Started
             </button>
           </div>
         </div>
