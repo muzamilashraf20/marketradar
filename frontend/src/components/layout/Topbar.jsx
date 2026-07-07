@@ -338,7 +338,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               <div className="absolute right-0 top-full mt-2 w-48 bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-white/10">
                   <p className="text-xs text-white font-semibold truncate">{email}</p>
-                  <p className={`text-[10px] mt-0.5 ${!planLoaded ? 'text-slate-400' : isPro ? 'text-cyan-400' : 'text-amber-400'}`}>{!planLoaded ? '··· Plan' : isPro ? 'Pro Plan' : 'Free Plan'}</p>
+                  <p className={`text-[10px] mt-0.5 ${!planLoaded ? 'text-slate-400' : isPro ? 'text-cyan-400' : 'text-amber-400'}`}>{!planLoaded ? '··· Plan' : isPro ? 'Pro Plan' : 'Locked'}</p>
                 </div>
                 <div className="py-1">
                   <button

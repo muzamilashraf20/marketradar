@@ -738,7 +738,7 @@ export default function Dashboard() {
               {biasError && <p className="text-xs text-red-400 mt-3">{biasError}</p>}
               {!isPro && (
                 <p className="text-xs text-slate-500 mt-3">
-                  Free plan: 1 pair only.{' '}
+                  Preview: 1 pair only.{' '}
                   <span onClick={() => navigate('/pricing')} className="text-cyan-400 hover:text-cyan-300 cursor-pointer font-semibold">
                     Upgrade to Pro for all 4 pairs →
                   </span>

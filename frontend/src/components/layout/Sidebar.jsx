@@ -5,7 +5,7 @@ import {
   LayoutDashboard, TrendingUp, Newspaper, Calendar,
   ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
   Settings, LogOut, Activity, X, ChevronRight, BarChart2,
-  Lock, Clock
+  Lock
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -25,7 +25,7 @@ const NAV_ITEMS = [
 export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded, logout } = useAuth()
+  const { user, isPro, isActualPro, trialExpired, planLoaded, logout } = useAuth()
 
   const handleLogout = () => {
     logout()
@@ -49,12 +49,9 @@ export default function Sidebar({ onClose }) {
   } else if (isActualPro) {
     planLabel = 'Pro'
     planBadgeClass = 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20'
-  } else if (isTrialActive) {
-    planLabel = `Trial · ${trialDaysLeft}d left`
-    planBadgeClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
   } else {
-    planLabel = 'Expired'
-    planBadgeClass = 'bg-red-500/15 text-red-400 border border-red-500/20'
+    planLabel = 'Locked'
+    planBadgeClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
   }
 
   return (
@@ -126,33 +123,15 @@ export default function Sidebar({ onClose }) {
         })}
       </nav>
 
-      {/* Trial countdown banner */}
-      {isTrialActive && (
-        <div className="mx-3 mb-3">
-          <div className="w-full px-3 py-3 rounded-xl bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 border border-emerald-500/20 text-center">
-            <div className="flex items-center justify-center gap-1.5 mb-1">
-              <Clock size={12} className="text-emerald-400" />
-              <p className="text-[11px] font-bold text-emerald-400">{trialDaysLeft} days left in trial</p>
-            </div>
-            <button
-              onClick={() => window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')}
-              className="text-[10px] text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
-            >
-              Upgrade now to keep access →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Upgrade banner for expired users */}
+      {/* Upgrade banner for locked (non-subscribed) users */}
       {trialExpired && (
         <div className="mx-3 mb-3">
           <button
             onClick={() => window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')}
-            className="w-full px-3 py-3 rounded-xl bg-gradient-to-r from-red-500/10 to-amber-500/10 border border-red-500/20 text-center hover:border-red-500/40 transition-all"
+            className="w-full px-3 py-3 rounded-xl bg-gradient-to-r from-amber-500/10 to-cyan-500/10 border border-amber-500/20 text-center hover:border-amber-500/40 transition-all"
           >
-            <p className="text-[11px] font-bold text-red-400">Trial Expired</p>
-            <p className="text-[9px] text-slate-500 mt-0.5">Upgrade to Pro · $40/mo</p>
+            <p className="text-[11px] font-bold text-amber-400">Subscribe to Unlock</p>
+            <p className="text-[9px] text-slate-500 mt-0.5">Pro · $40/mo or $399/yr</p>
           </button>
         </div>
       )}
@@ -174,7 +153,7 @@ export default function Sidebar({ onClose }) {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs text-white font-medium truncate">{email}</p>
-            <p className={`text-[10px] ${!planLoaded ? 'text-slate-400' : isActualPro ? 'text-cyan-400' : isTrialActive ? 'text-emerald-400' : 'text-red-400'}`}>{planLabel}</p>
+            <p className={`text-[10px] ${!planLoaded ? 'text-slate-400' : isActualPro ? 'text-cyan-400' : 'text-amber-400'}`}>{planLabel}</p>
           </div>
         </div>
 

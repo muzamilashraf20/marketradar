@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
-const TRIAL_DAYS = 7
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -205,14 +204,15 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut().catch(() => {})
   }
 
+  // No free trial — BiasForge is paid-only. Access requires an active Pro plan.
   const isActualPro = plan?.tier === 'pro'
-  const trialDaysLeft = user?.createdAt
-    ? Math.max(0, TRIAL_DAYS - Math.floor((Date.now() - new Date(user.createdAt).getTime()) / 86400000))
-    : 0
-  const isTrialActive = trialDaysLeft > 0 && !isActualPro
-  const trialExpired = user && planLoaded && trialDaysLeft === 0 && !isActualPro
+  const trialDaysLeft = 0
+  const isTrialActive = false
+  // "Locked": a signed-in user whose plan has resolved and is not Pro → must subscribe.
+  // (Kept the trialExpired name so downstream gating/lock-wall logic stays unchanged.)
+  const trialExpired = !!(user && planLoaded && !isActualPro)
 
-  const isPro = isActualPro || isTrialActive
+  const isPro = isActualPro
 
   return (
     <AuthContext.Provider value={{

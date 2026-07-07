@@ -8,11 +8,6 @@ const rows = [
     other: { text: '$49–99/month', type: 'neutral' },
   },
   {
-    feature: 'Free Plan Available',
-    biasforge: { text: 'Yes, always free', type: 'good', icon: 'check' },
-    other: { text: 'No', type: 'bad', icon: 'x' },
-  },
-  {
     feature: 'AI Macro Bias Engine',
     biasforge: { text: 'AI-powered macro bias engine', type: 'good', icon: 'check', badge: 'EXCLUSIVE' },
     other: { text: 'Not Available', type: 'bad', icon: 'x' },
@@ -153,16 +148,16 @@ export default function ComparisonTable() {
         {/* Bottom CTA */}
         <div className="text-center mt-12 flex flex-col items-center gap-4">
           <p className="text-slate-300 font-semibold text-base">
-            Start free — upgrade with card or crypto
+            Get full access — card or crypto
           </p>
           <a
             href="#pricing"
             className="px-8 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-600 text-black font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20"
           >
-            Get Started Free
+            Get Started
           </a>
           <p className="text-xs text-slate-500">
-            Free plan available • Cancel anytime
+            Card or crypto • Cancel anytime
           </p>
         </div>
 

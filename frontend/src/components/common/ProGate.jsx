@@ -36,11 +36,11 @@ export default function ProGate({ title, subtitle, children }) {
           </div>
 
           <h2 className="text-2xl font-black text-white mb-2">
-            {trialExpired ? 'Your Trial Has Ended' : 'Pro Feature'}
+            {trialExpired ? 'Subscribe to Continue' : 'Pro Feature'}
           </h2>
           <p className="text-slate-400 text-sm mb-8 max-w-md mx-auto">
             {trialExpired
-              ? 'Your 7-day free trial has expired. Upgrade to BiasForge Pro to continue using all trading tools.'
+              ? 'BiasForge is a paid subscription. Upgrade to Pro to unlock all trading tools.'
               : `Upgrade to BiasForge Pro to unlock ${title?.toLowerCase() || 'this feature'} and all premium trading tools.`
             }
           </p>

@@ -77,10 +77,10 @@ export default function DashboardLayout({ title, subtitle, children }) {
               </div>
 
               <h1 className="text-3xl font-black text-white mb-3">
-                Your 7-Day Trial Has Ended
+                Subscribe to Unlock BiasForge
               </h1>
               <p className="text-slate-400 text-sm mb-8 max-w-md mx-auto leading-relaxed">
-                Your free trial is over. Upgrade to BiasForge Pro to unlock AI Bias, 
+                BiasForge is a paid subscription. Upgrade to Pro to unlock AI Bias,
                 Prop Firm Mode, News Scoring, Currency Strength, and all premium tools.
               </p>
 
