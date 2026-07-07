@@ -102,13 +102,13 @@ export default function FAQSection() {
         {/* Bottom */}
         <div className="text-center mt-10 flex flex-col items-center gap-4">
           <p className="text-sm text-slate-500">
-            Still unsure if BiasForge is right for you? Start free and decide from the inside.
+            Ready to trade with macro clarity? Choose a plan and get instant access.
           </p>
           <a
             href="#pricing"
             className="px-6 py-2.5 rounded-xl border border-white/15 text-slate-300 text-sm font-semibold hover:border-cyan-500/30 hover:text-cyan-400 transition-all duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
           >
-            Start Free
+            Get Started
           </a>
         </div>
 

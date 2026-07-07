@@ -83,7 +83,7 @@ export default function Testimonials() {
             href="#pricing"
             className="inline-flex items-center gap-2 px-8 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-600 text-black font-bold text-sm hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
           >
-            Start Free <ArrowRight size={16} />
+            Get Started <ArrowRight size={16} />
           </a>
         </div>
 

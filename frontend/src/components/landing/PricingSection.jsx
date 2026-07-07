@@ -21,7 +21,7 @@ const proFeatures = [
 
 const eliteFeatures = [
   { text: 'Everything in Pro' },
-  { text: '2 months FREE (17% savings)' },
+  { text: '2 months off vs monthly (17% savings)' },
   { text: 'Priority support' },
   { text: 'Early access to new features' },
   { text: 'Annual strategy review call' },
