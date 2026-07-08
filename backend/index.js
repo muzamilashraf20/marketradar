@@ -7,6 +7,7 @@ import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
 import { Resend } from 'resend'
+import { runEngine as runEngineV2, CONFIG as V2_CONFIG } from './biasEngineV2/biasEngine.js'
 
 const app = express()
 const rssParser = new Parser()
@@ -2531,6 +2532,20 @@ async function getCOTData() {
         reportDate = finRows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
         const latest = finRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(reportDate.slice(0, 10)))
 
+        // ── WoW: prior report's net per currency (v2 OrderFlow wants week-over-week change) ──
+        const finDates = [...new Set(finRows.map(r => (r.report_date_as_yyyy_mm_dd || '').slice(0, 10)).filter(Boolean))].sort().reverse()
+        const priorFinDate = finDates[1] || null
+        const priorNet = {}
+        if (priorFinDate) {
+          for (const row of finRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(priorFinDate))) {
+            const mn = (row.contract_market_name || '').toUpperCase().trim()
+            const m = FINANCIAL_MAP[mn]
+            if (!m) continue
+            const q = v => parseInt(v) || 0
+            priorNet[m.currency] = (q(row.asset_mgr_positions_long) + q(row.lev_money_positions_long)) - (q(row.asset_mgr_positions_short) + q(row.lev_money_positions_short))
+          }
+        }
+
         for (const row of latest) {
           const mn = (row.contract_market_name || '').toUpperCase().trim()
           let m = null
@@ -2553,6 +2568,7 @@ async function getCOTData() {
           results.push({
             currency: m.currency, flag: m.flag,
             longContracts: tl, shortContracts: ts, netPosition: np,
+            weeklyChange: priorNet[m.currency] != null ? np - priorNet[m.currency] : null,
             bias, reportDate,
             breakdown: {
               assetManagers: { long: al, short: as, net: al - as },
@@ -2576,6 +2592,21 @@ async function getCOTData() {
         const comDate = comRows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
         if (!reportDate) reportDate = comDate
         const comLatest = comRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(comDate.slice(0, 10)))
+
+        // ── WoW: prior report's net per commodity (smart money = managed money + other reportables) ──
+        const comDates = [...new Set(comRows.map(r => (r.report_date_as_yyyy_mm_dd || '').slice(0, 10)).filter(Boolean))].sort().reverse()
+        const priorComDate = comDates[1] || null
+        const priorNetCom = {}
+        if (priorComDate) {
+          for (const row of comRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(priorComDate))) {
+            const mn = (row.contract_market_name || '').toUpperCase().trim()
+            let m = null
+            for (const [k, v] of Object.entries(COMMODITY_MAP)) { if (mn.includes(k)) { m = v; break } }
+            if (!m) continue
+            const q = v => parseInt(v) || 0
+            priorNetCom[m.currency] = (q(row.m_money_positions_long_all) + q(row.other_rept_positions_long)) - (q(row.m_money_positions_short_all) + q(row.other_rept_positions_short))
+          }
+        }
 
         for (const row of comLatest) {
           const mn = (row.contract_market_name || '').toUpperCase().trim()
@@ -2606,6 +2637,7 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
           results.push({
             currency: m.currency, flag: m.flag,
             longContracts: tl, shortContracts: ts, netPosition: np,
+            weeklyChange: priorNetCom[m.currency] != null ? np - priorNetCom[m.currency] : null,
             bias, reportDate: comDate,
             breakdown: {
               assetManagers: { long: mml, short: mms, net: mml - mms },   // Managed Money
@@ -2686,6 +2718,132 @@ app.get('/api/earnings', async (req, res) => {
     } catch (e) { console.error('Session alert error:', e.message) }
   }, 5 * 60 * 1000)   // ← every 5 min instead of 60 min (lightweight: just an hour comparison)
   console.log('🧠 Session AI bias alerts (every 5min, DST-safe)')
+// ============================================================================
+// 🔬 BIAS ENGINE v2 — SHADOW MODE (does NOT touch the live dashboard / v1 engine)
+// Wires the v2 feeds.* + market access to existing data functions. Writes only to
+// bias_state_v2 / bias_history_v2. Manual endpoint + env-gated cron.
+// ============================================================================
+const V2_TD_SYMBOL = { XAUUSD: 'XAU/USD', EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', USDCAD: 'USD/CAD', AUDUSD: 'AUD/USD', NZDUSD: 'NZD/USD', USDCHF: 'USD/CHF' }
+
+// Current spot price for a pair (single TwelveData /price call)
+async function v2Price(pair) {
+  const sym = V2_TD_SYMBOL[pair]; if (!sym) return null
+  try {
+    const r = await axios.get(`https://api.twelvedata.com/price?symbol=${sym}&apikey=${process.env.TWELVEDATA_API_KEY}`)
+    const p = parseFloat(r.data?.price)
+    return isFinite(p) ? p : null
+  } catch (e) { return null }
+}
+
+// Weekly ATR (price units) + hot-week flag. Spec uses WEEKLY ATR as the invalidation buffer.
+// Cached 6h — weekly ATR barely moves intraday.
+async function getWeeklyATR(pair) {
+  const sym = V2_TD_SYMBOL[pair]; if (!sym) return null
+  const ck = `v2_watr_${pair}`
+  if (isCacheFreshFor(ck, 6 * 60 * 60 * 1000)) return getCached(ck)
+  try {
+    const r = await axios.get('https://api.twelvedata.com/time_series', {
+      params: { symbol: sym, interval: '1week', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+    })
+    const vals = r.data?.values
+    if (!Array.isArray(vals) || vals.length < 4) return getCached(ck) || null
+    // vals[0] = current (forming) week → use completed weeks for the ATR baseline
+    const completed = vals.slice(1)
+    const trs = completed.map(d => parseFloat(d.high) - parseFloat(d.low)).filter(n => isFinite(n) && n > 0)
+    if (!trs.length) return getCached(ck) || null
+    const atr = trs.reduce((s, x) => s + x, 0) / trs.length
+    const lastTR = trs[0]                               // most recent completed week
+    const isHighAtrWeek = lastTR > atr * 1.25           // trend-expansion week → relax exhaustion cap
+    const out = { atr, isHighAtrWeek }
+    setCache(ck, out)
+    return out
+  } catch (e) { return getCached(ck) || null }
+}
+
+// The data-access layer the v2 engine expects. Each method is defensive: a failing
+// feed returns a safe default so one bad source can't kill the whole shadow run.
+function buildV2Feeds() {
+  return {
+    async getCalendarThisWeek() {
+      try {
+        const events = await getEconomicCalendar()
+        const now = Date.now(), weekAhead = now + 7 * 24 * 60 * 60 * 1000
+        return (events || [])
+          .filter(e => { const t = new Date(e.time).getTime(); return t >= now - 24 * 60 * 60 * 1000 && t <= weekAhead })
+          .map(e => ({ title: e.event, impact: String(e.impact || '').toLowerCase() }))
+      } catch (e) { return [] }
+    },
+    async getCentralBankText() {
+      // No dedicated CB-speech feed in-stack → FRED actuals + recent high-impact releases (per plan)
+      const parts = []
+      try { const actuals = await fetchUSActuals(); if (actuals) parts.push('US ECONOMIC ACTUALS (FRED):\n' + actuals) } catch (e) {}
+      try {
+        const events = await getEconomicCalendar()
+        const now = Date.now(), weekAgo = now - 7 * 24 * 60 * 60 * 1000
+        const recent = (events || [])
+          .filter(e => String(e.impact || '').toLowerCase() === 'high' && new Date(e.time).getTime() < now && new Date(e.time).getTime() > weekAgo)
+          .slice(0, 12)
+          .map(e => `${e.event} (${e.country})${e.forecast ? ' | forecast ' + e.forecast : ''}${e.previous ? ' | previous ' + e.previous : ''}`)
+        if (recent.length) parts.push('RECENT HIGH-IMPACT RELEASES (past 7d):\n' + recent.join('\n'))
+      } catch (e) {}
+      return parts.join('\n\n') || ''
+    },
+    async getNewsHeadlines() {
+      const n = getCached('latest_news')
+      if (!Array.isArray(n)) return []
+      return n.filter(a => (a.impact || 0) >= 7).map(a => `[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`)
+    },
+    async getCOT() {
+      try {
+        const cot = await getCOTData()
+        const out = {}
+        for (const c of (cot?.data || [])) out[c.currency] = { net: c.netPosition, change: c.weeklyChange ?? null }
+        return out
+      } catch (e) { return {} }
+    },
+    async getRiskBasket() {
+      const basket = { vix: null, gold: null, dxy: null, spx: null, jpy: null, chf: null }
+      try {
+        const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT } — VIX may be absent on some TD plans
+        if (x) { if (x.VIX) basket.vix = x.VIX.price; if (x.DXY) basket.dxy = x.DXY.price; if (x.SPY) basket.spx = x.SPY.price }
+      } catch (e) {}
+      try { basket.gold = await v2Price('XAUUSD') } catch (e) {}
+      try {
+        const s = await getLiveStrength()   // safe-haven read for JPY/CHF (0..100 strength)
+        const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
+        basket.jpy = find('JPY'); basket.chf = find('CHF')
+      } catch (e) {}
+      return basket
+    },
+    async getPairMarket(pair) {
+      const price = await v2Price(pair)
+      if (price == null) return null
+      const weekly = await getWeeklyATR(pair)
+      if (!weekly) return null
+      let adrUsedPct = 0
+      try { const mv = await getMoveContext(pair, price); if (mv?.pctADR != null) adrUsedPct = Math.min(mv.pctADR / 100, 1) } catch (e) {}
+      return { price, atr: weekly.atr, adrUsedPct, isHighAtrWeek: weekly.isHighAtrWeek }
+    },
+    // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
+  }
+}
+
+async function runV2Shadow(trigger) {
+  const started = Date.now()
+  const feeds = buildV2Feeds()
+  const onUsage = (label, model, usage) => { try { trackAI(label, model, usage) } catch (e) {} }
+  const out = await runEngineV2({ supabase, feeds, onUsage })
+  console.log(`🔬 [v2-shadow:${trigger}] regime=${out.regime} in ${Date.now() - started}ms`)
+  for (const r of out.results) console.log(`   ${r.pair}: diff=${r.diff} ${r.action}${r.direction ? ' ' + r.direction : ''}${r.reason ? ' (' + r.reason + ')' : ''}`)
+  return out
+}
+
+// Manual trigger — inspect a full v2 run on demand. Does not affect the live dashboard.
+app.post('/api/v2/shadow/run', async (req, res) => {
+  try { const out = await runV2Shadow('manual'); res.json({ success: true, pairs: V2_CONFIG.PAIRS.length, ...out }) }
+  catch (e) { console.error('v2 shadow run error:', e?.message); res.status(500).json({ success: false, error: e?.message }) }
+})
+
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
@@ -2698,4 +2856,12 @@ app.listen(5000, () => {
   console.log('📰 News cron (10min)')
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
+  // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
+  if (process.env.V2_SHADOW_CRON === 'on') {
+    const mins = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '30', 10)
+    setInterval(() => { runV2Shadow('cron').catch(e => console.error('v2 shadow cron error:', e?.message)) }, mins * 60 * 1000)
+    console.log(`🔬 v2 shadow cron ON (every ${mins}min → bias_state_v2 / bias_history_v2)`)
+  } else {
+    console.log('🔬 v2 shadow cron OFF (set V2_SHADOW_CRON=on to enable)')
+  }
 })
