@@ -673,23 +673,55 @@ async function getMoveContext(symbol, currentPrice) {
 // move in the bias DIRECTION has already happened today. One TwelveData call for all pairs.
 // Returns { SYMBOL: { adrPips, favorablePips, pctUsed, roomScore } }. roomScore 1=fresh, 0=exhausted.
 const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURGBP: 'EUR/GBP', EURJPY: 'EUR/JPY', GBPJPY: 'GBP/JPY', AUDJPY: 'AUD/JPY', XAUUSD: 'XAU/USD' }
+
+// ── SHARED TwelveData candle cache (v1 + v2 both read this to avoid per-pair 429s) ──
+// TwelveData bills PER SYMBOL, so the real lever is caching each symbol's candles and
+// reusing them across BOTH engines within a short window — not just batching the HTTP call.
+// Per-symbol cache: only STALE symbols are (re)fetched, in one batched request.
+async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
+  const out = {}
+  const stale = []
+  for (const p of [...new Set(pairs)]) {
+    if (!ROOM_SYMBOL_MAP[p]) continue
+    const ck = `${keyPrefix}_${p}`
+    if (isCacheFreshFor(ck, ttlMs)) out[p] = getCached(ck)
+    else stale.push(p)
+  }
+  if (stale.length) {
+    const syms = stale.map(p => ROOM_SYMBOL_MAP[p])
+    try {
+      const r = await axios.get('https://api.twelvedata.com/time_series', {
+        params: { symbol: syms.join(','), interval, outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+      })
+      if (r.data?.code === 429) {
+        console.warn(`⚠️ TwelveData 429 (${interval} batch) — serving stale where available`)
+      } else {
+        for (const p of stale) {
+          const td = ROOM_SYMBOL_MAP[p]
+          const d = syms.length === 1 ? r.data : r.data?.[td]
+          if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values }
+        }
+      }
+    } catch (e) { console.warn(`⚠️ Candle batch (${interval}) failed: ${e?.message} — stale fallback`) }
+  }
+  return out   // { PAIR: values[] } ; missing pairs → caller falls back to stale/skip
+}
+// Daily candles: 90s shared TTL (intraday ADR barely moves, short enough to stay fresh)
+const getDailyCandles  = (pairs) => fetchCandlesBatch(pairs, '1day',  90 * 1000,          'tdcandle_d')
+// Weekly candles: 6h shared TTL (weekly ATR is a slow, weekly buffer)
+const getWeeklyCandles = (pairs) => fetchCandlesBatch(pairs, '1week', 6 * 60 * 60 * 1000, 'tdcandle_w')
+
 async function getPairRoomBatch(candidates) {
-  const tdSymbols = [...new Set(candidates.map(c => ROOM_SYMBOL_MAP[c.symbol]).filter(Boolean))]
-  if (!tdSymbols.length) return {}
-  // 12-min cache keyed by the set of symbols — daily ADR barely moves intraday, saves heavy TwelveData calls (429 fix)
-  const roomCacheKey = `room_${tdSymbols.slice().sort().join('_')}`
+  const symbols = [...new Set(candidates.map(c => c.symbol).filter(s => ROOM_SYMBOL_MAP[s]))]
+  if (!symbols.length) return {}
+  // 12-min result cache — derived room metrics barely move intraday
+  const roomCacheKey = `room_${symbols.slice().sort().join('_')}`
   if (isCacheFreshFor(roomCacheKey, 12 * 60 * 1000)) return getCached(roomCacheKey)
   try {
-    const r = await axios.get('https://api.twelvedata.com/time_series', {
-      params: { symbol: tdSymbols.join(','), interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-    })
-    if (r.data?.code === 429) { const st = getCached(roomCacheKey); if (st) return st }
+    const candles = await getDailyCandles(symbols)   // shared per-symbol cache (both engines)
     const out = {}
     for (const c of candidates) {
-      const td = ROOM_SYMBOL_MAP[c.symbol]
-      if (!td) continue
-      const d = tdSymbols.length === 1 ? r.data : r.data?.[td]
-      const vals = d?.values
+      const vals = candles[c.symbol]
       if (!Array.isArray(vals) || vals.length < 3) continue
       const pip = /JPY/.test(c.symbol) ? 0.01 : /XAU/.test(c.symbol) ? 0.1 : 0.0001
       const completed = vals.slice(1)
@@ -702,7 +734,7 @@ async function getPairRoomBatch(candidates) {
       const pctUsed = adrPips ? Math.min(favorable / adrPips, 1) : 0
       out[c.symbol] = { adrPips: +adrPips.toFixed(0), favorablePips: +favorable.toFixed(0), pctUsed: Math.round(pctUsed * 100), roomScore: +(1 - pctUsed).toFixed(2) }
     }
-    setCache(roomCacheKey, out)
+    if (Object.keys(out).length) setCache(roomCacheKey, out)
     return out
   } catch (e) { console.error('⚠️ Pair room batch failed:', e?.message); const st = getCached(roomCacheKey); return st || {} }
 }
@@ -2723,41 +2755,24 @@ app.get('/api/earnings', async (req, res) => {
 // Wires the v2 feeds.* + market access to existing data functions. Writes only to
 // bias_state_v2 / bias_history_v2. Manual endpoint + env-gated cron.
 // ============================================================================
-const V2_TD_SYMBOL = { XAUUSD: 'XAU/USD', EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', USDCAD: 'USD/CAD', AUDUSD: 'AUD/USD', NZDUSD: 'NZD/USD', USDCHF: 'USD/CHF' }
-
-// Current spot price for a pair (single TwelveData /price call)
-async function v2Price(pair) {
-  const sym = V2_TD_SYMBOL[pair]; if (!sym) return null
-  try {
-    const r = await axios.get(`https://api.twelvedata.com/price?symbol=${sym}&apikey=${process.env.TWELVEDATA_API_KEY}`)
-    const p = parseFloat(r.data?.price)
-    return isFinite(p) ? p : null
-  } catch (e) { return null }
+// Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
+// so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
+function v2AdrFromDaily(pair, vals) {
+  const completed = vals.slice(1)
+  const adr = completed.reduce((s, x) => s + (parseFloat(x.high) - parseFloat(x.low)), 0) / (completed.length || 1)
+  const today = vals[0]
+  const price = parseFloat(today.close)               // latest (forming) daily close ≈ current price
+  const todayRange = parseFloat(today.high) - parseFloat(today.low)
+  const adrUsedPct = adr > 0 ? Math.min(todayRange / adr, 1) : 0   // fraction of ADR spent today
+  return { price: isFinite(price) ? price : null, adrUsedPct }
 }
-
-// Weekly ATR (price units) + hot-week flag. Spec uses WEEKLY ATR as the invalidation buffer.
-// Cached 6h — weekly ATR barely moves intraday.
-async function getWeeklyATR(pair) {
-  const sym = V2_TD_SYMBOL[pair]; if (!sym) return null
-  const ck = `v2_watr_${pair}`
-  if (isCacheFreshFor(ck, 6 * 60 * 60 * 1000)) return getCached(ck)
-  try {
-    const r = await axios.get('https://api.twelvedata.com/time_series', {
-      params: { symbol: sym, interval: '1week', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-    })
-    const vals = r.data?.values
-    if (!Array.isArray(vals) || vals.length < 4) return getCached(ck) || null
-    // vals[0] = current (forming) week → use completed weeks for the ATR baseline
-    const completed = vals.slice(1)
-    const trs = completed.map(d => parseFloat(d.high) - parseFloat(d.low)).filter(n => isFinite(n) && n > 0)
-    if (!trs.length) return getCached(ck) || null
-    const atr = trs.reduce((s, x) => s + x, 0) / trs.length
-    const lastTR = trs[0]                               // most recent completed week
-    const isHighAtrWeek = lastTR > atr * 1.25           // trend-expansion week → relax exhaustion cap
-    const out = { atr, isHighAtrWeek }
-    setCache(ck, out)
-    return out
-  } catch (e) { return getCached(ck) || null }
+function v2WeeklyAtr(vals) {
+  if (!Array.isArray(vals) || vals.length < 4) return null
+  // vals[0] = current (forming) week → ATR from completed weeks; hot week relaxes the exhaustion cap
+  const trs = vals.slice(1).map(d => parseFloat(d.high) - parseFloat(d.low)).filter(n => isFinite(n) && n > 0)
+  if (!trs.length) return null
+  const atr = trs.reduce((s, x) => s + x, 0) / trs.length
+  return { atr, isHighAtrWeek: trs[0] > atr * 1.25 }
 }
 
 // The data-access layer the v2 engine expects. Each method is defensive: a failing
@@ -2807,7 +2822,7 @@ function buildV2Feeds() {
         const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT } — VIX may be absent on some TD plans
         if (x) { if (x.VIX) basket.vix = x.VIX.price; if (x.DXY) basket.dxy = x.DXY.price; if (x.SPY) basket.spx = x.SPY.price }
       } catch (e) {}
-      try { basket.gold = await v2Price('XAUUSD') } catch (e) {}
+      try { const gc = await getDailyCandles(['XAUUSD']); const gv = gc.XAUUSD; if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
       try {
         const s = await getLiveStrength()   // safe-haven read for JPY/CHF (0..100 strength)
         const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
@@ -2816,13 +2831,17 @@ function buildV2Feeds() {
       return basket
     },
     async getPairMarket(pair) {
-      const price = await v2Price(pair)
+      // Read from the SHARED candle caches — the first getPairMarket call in a run warms all
+      // v2 pairs in one batched request (only stale symbols fetched), the rest hit cache.
+      const daily = await getDailyCandles(V2_CONFIG.PAIRS)
+      const dvals = daily[pair]
+      if (!Array.isArray(dvals) || dvals.length < 3) return null
+      const { price, adrUsedPct } = v2AdrFromDaily(pair, dvals)
       if (price == null) return null
-      const weekly = await getWeeklyATR(pair)
-      if (!weekly) return null
-      let adrUsedPct = 0
-      try { const mv = await getMoveContext(pair, price); if (mv?.pctADR != null) adrUsedPct = Math.min(mv.pctADR / 100, 1) } catch (e) {}
-      return { price, atr: weekly.atr, adrUsedPct, isHighAtrWeek: weekly.isHighAtrWeek }
+      const weekly = await getWeeklyCandles(V2_CONFIG.PAIRS)
+      const w = v2WeeklyAtr(weekly[pair])
+      if (!w) return null
+      return { price, atr: w.atr, adrUsedPct, isHighAtrWeek: w.isHighAtrWeek }
     },
     // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
   }
