@@ -957,17 +957,20 @@ async function fetchCrossAssetLive() {
 async function fetchYields() {
   if (isCacheFreshFor('yields_fred', 6 * 60 * 60 * 1000)) return getCached('yields_fred')
   const key = process.env.FRED_API_KEY
-  if (!key) return null
+  if (!key) { console.warn('🏦 FRED: FRED_API_KEY not set in env'); return null }
   const getSeries = async (id) => {
+    const maskedUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=***&file_type=json&sort_order=desc&limit=8`
     try {
       const r = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${key}&file_type=json&sort_order=desc&limit=8`, { timeout: 10000 })
-      const vals = (r.data?.observations || [])
-        .map(o => ({ date: o.date, v: parseFloat(o.value) }))
-        .filter(o => !isNaN(o.v))   // FRED uses "." for holidays / missing days
-      if (!vals.length) return null
+      const obs = r.data?.observations || []
+      const vals = obs.map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))   // FRED uses "." for holidays
+      if (!vals.length) { console.warn(`🏦 FRED ${id}: HTTP ${r.status}, ${obs.length} obs, 0 numeric — ${maskedUrl}`); return null }
       const latest = vals[0], prev = vals[1] || vals[0]
       return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date } // change in percentage points
-    } catch (e) { return null }
+    } catch (e) {
+      console.warn(`🏦 FRED ${id} error: status=${e?.response?.status ?? 'n/a'} msg="${e?.message}" body=${JSON.stringify(e?.response?.data || '').slice(0, 120)} — ${maskedUrl}`)
+      return null
+    }
   }
   try {
     const [y2, y10] = await Promise.all([getSeries('DGS2'), getSeries('DGS10')])
@@ -2675,10 +2678,12 @@ async function getCOTData() {
     }
 
     // ── Fetch 2: Disaggregated (commodities + crypto) ──
+   // NOTE: trailing comma in the IN(...) list makes Socrata 400 → gold silently missing. No trailing comma.
    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
                '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
-               '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27,)'
+               '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27)'
     const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
+    if (!comRes.ok) console.warn(`⚠️ COT commodity fetch HTTP ${comRes.status} — gold/XAU positioning unavailable`)
 
     if (comRes.ok) {
       const comRows = await comRes.json()
@@ -2686,6 +2691,8 @@ async function getCOTData() {
         const comDate = comRows[0]?.report_date_as_yyyy_mm_dd?.split('T')[0] || ''
         if (!reportDate) reportDate = comDate
         const comLatest = comRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(comDate.slice(0, 10)))
+        // Log what the gold/XAU lookup is matching against (COMMODITY_MAP keys are substring-matched on contract_market_name)
+        console.log(`🥇 COT commodity contracts (${comDate}): ${[...new Set(comLatest.map(r => (r.contract_market_name || '').trim()))].join(' | ') || 'none'}`)
 
         // ── WoW: prior report's net per commodity (smart money = managed money + other reportables) ──
         const comDates = [...new Set(comRows.map(r => (r.report_date_as_yyyy_mm_dd || '').slice(0, 10)).filter(Boolean))].sort().reverse()
@@ -2694,6 +2701,7 @@ async function getCOTData() {
         if (priorComDate) {
           for (const row of comRows.filter(r => (r.report_date_as_yyyy_mm_dd || '').startsWith(priorComDate))) {
             const mn = (row.contract_market_name || '').toUpperCase().trim()
+            if (mn.includes('MICRO') || mn.includes('E-MINI')) continue   // skip mini/micro → use main GOLD/SILVER
             let m = null
             for (const [k, v] of Object.entries(COMMODITY_MAP)) { if (mn.includes(k)) { m = v; break } }
             if (!m) continue
@@ -2704,6 +2712,7 @@ async function getCOTData() {
 
         for (const row of comLatest) {
           const mn = (row.contract_market_name || '').toUpperCase().trim()
+          if (mn.includes('MICRO') || mn.includes('E-MINI')) continue   // skip mini/micro → use main GOLD/SILVER
 
           let m = null
           for (const [k, v] of Object.entries(COMMODITY_MAP)) {
@@ -2761,6 +2770,7 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
     if (stale) { console.warn('⚠️ COT: empty/failed fetch — using last cached value'); return stale }
     return { data: [], reportDate: '' }
   }
+  console.log(`📊 COT loaded (${results.length}): ${results.map(r => `${r.currency}(${r.netPosition > 0 ? '+' : ''}${r.netPosition})`).join(', ')}${results.some(r => r.currency === 'XAU') ? '' : ' ⚠️ NO XAU'}`)
   const payload = { data: results, reportDate }
   setCache('cot_data', payload)
   return payload
@@ -2827,8 +2837,19 @@ app.get('/api/earnings', async (req, res) => {
 // bias_state_v2 / bias_history_v2. Manual endpoint + env-gated cron.
 // ============================================================================
 let v2LastGoodCOT = null      // last non-empty COT snapshot → durability for orderflow
-let v2LastGoodYields = null   // last-good FRED yields snapshot → durability for XAU macro
+let v2LastGoodYields = null   // last-good yields snapshot → durability for XAU macro
 let v2LastGoodBasket = null   // last-good risk basket (per-field) → durability for sentiment
+
+// FRED is flaky — derive the real-yield direction from TLT (20y+ treasury ETF) instead, sourced
+// from the already-working, cached, rate-limited cross-asset feed. TLT up → long yields DOWN → gold+.
+async function yieldsProxyFromTLT() {
+  const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT } from TwelveData
+  const tlt = x?.TLT
+  if (!tlt || tlt.price == null) return null
+  const dir = tlt.change > 0 ? 'falling (TLT up) → gold-positive'
+            : tlt.change < 0 ? 'rising (TLT down) → gold-negative' : 'flat'
+  return { source: 'TLT-proxy', tlt_price: tlt.price, tlt_change_pct: tlt.change, real_yield_direction: dir }
+}
 
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
 // so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
@@ -2935,17 +2956,21 @@ function buildV2Feeds() {
       return merged
     },
     async getYields() {
-      // US2Y / US10Y from FRED (6h cache + stale fallback) — real-rate proxy for XAU macro.
-      let y = null
+      // Primary: FRED US2Y/US10Y. FRED is flaky, so on failure fall back to a TLT proxy from the
+      // (working, cached, rate-limited) cross-asset feed. Keep a last-good snapshot either way.
+      let y = null, src = null
       try { y = await fetchYields() } catch (e) {}
-      const hasData = y && (y.y2?.value != null || y.y10?.value != null)
-      if (hasData) {
+      if (y && (y.y2?.value != null || y.y10?.value != null)) src = 'FRED'
+      else {
+        try { const proxy = await yieldsProxyFromTLT(); if (proxy) { y = proxy; src = 'TLT-proxy' } } catch (e) {}
+      }
+      if (src) {
         v2LastGoodYields = y
-        console.log(`   [v2 yields] fresh US2Y=${y.y2?.value ?? 'n/a'} US10Y=${y.y10?.value ?? 'n/a'} Δ10Y=${y.y10?.change ?? 'n/a'}`)
+        console.log(`   [v2 yields] fresh (${src}) ${JSON.stringify(y)}`)
         return y
       }
-      if (v2LastGoodYields) { console.warn(`   [v2 yields] cache US2Y=${v2LastGoodYields.y2?.value ?? 'n/a'} US10Y=${v2LastGoodYields.y10?.value ?? 'n/a'} (fetch empty)`); return v2LastGoodYields }
-      console.warn('   [v2 yields] none (no fetch, no snapshot yet)')
+      if (v2LastGoodYields) { console.warn(`   [v2 yields] cache ${JSON.stringify(v2LastGoodYields)} (fetch empty)`); return v2LastGoodYields }
+      console.warn('   [v2 yields] none (no FRED, no TLT, no snapshot yet)')
       return null
     },
     async getPairMarket(pair) {
