@@ -2536,9 +2536,10 @@ app.get('/api/news', async (req, res) => {
 // ============================================
 // 📊 COT REPORT (Currencies + Commodities + Crypto)
 // ============================================
-// Reusable COT fetcher (cached 6h — CFTC data updates weekly on Fridays)
+// Reusable COT fetcher (cached 24h — CFTC data updates weekly on Fridays; a single fetch
+// failure falls back to the last cached value instead of zeroing positioning).
 async function getCOTData() {
-  if (isCacheFreshFor('cot_data', 6 * 60 * 60 * 1000)) return getCached('cot_data')
+  if (isCacheFreshFor('cot_data', 24 * 60 * 60 * 1000)) return getCached('cot_data')
   // ── Dataset 1: TFF (gpe5-46if) — Currencies + USD Index ──
   const FINANCIAL_MAP = {
     'EURO FX':              { currency: 'EUR', flag: '🇪🇺' },
@@ -2561,7 +2562,7 @@ async function getCOTData() {
   const results = []
   const seen = new Set()
   let reportDate = ''
-  {
+  try {
     // ── Fetch 1: Financial instruments (currencies) ──
     const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
                    '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
@@ -2697,11 +2698,20 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
         ? o[a.bias] - o[b.bias]
         : Math.abs(b.netPosition) - Math.abs(a.netPosition)
     })
-
-    const payload = { data: results, reportDate }
-    setCache('cot_data', payload)
-    return payload
+  } catch (e) {
+    console.warn(`⚠️ COT fetch error: ${e?.message}`)
   }
+
+  // Durability: never overwrite a good cache with an empty result. COT is weekly, so on an
+  // empty/failed fetch fall back to the last cached value instead of returning nothing.
+  if (!results.length) {
+    const stale = getCached('cot_data')
+    if (stale) { console.warn('⚠️ COT: empty/failed fetch — using last cached value'); return stale }
+    return { data: [], reportDate: '' }
+  }
+  const payload = { data: results, reportDate }
+  setCache('cot_data', payload)
+  return payload
 }
 
 app.get('/api/cot', async (req, res) => {
@@ -2764,6 +2774,8 @@ app.get('/api/earnings', async (req, res) => {
 // Wires the v2 feeds.* + market access to existing data functions. Writes only to
 // bias_state_v2 / bias_history_v2. Manual endpoint + env-gated cron.
 // ============================================================================
+let v2LastGoodCOT = null   // last non-empty COT snapshot → belt-and-suspenders durability for orderflow
+
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
 // so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
 function v2AdrFromDaily(pair, vals) {
@@ -2833,8 +2845,18 @@ function buildV2Feeds() {
         const cot = await getCOTData()
         const out = {}
         for (const c of (cot?.data || [])) out[c.currency] = { net: c.netPosition, change: c.weeklyChange ?? null }
-        return out
-      } catch (e) { return {} }
+        if (Object.keys(out).length) {
+          v2LastGoodCOT = out   // remember last non-empty snapshot
+          for (const [ccy, v] of Object.entries(out)) console.log(`   [v2 cot] ${ccy} net=${v.net} wChange=${v.change ?? 'n/a'}`)
+          return out
+        }
+        if (v2LastGoodCOT) { console.warn('⚠️ [v2 cot] empty COT — using last good snapshot'); return v2LastGoodCOT }
+        console.warn('⚠️ [v2 cot] empty COT and no snapshot yet')
+        return {}
+      } catch (e) {
+        if (v2LastGoodCOT) { console.warn(`⚠️ [v2 cot] error (${e?.message}) — using last good snapshot`); return v2LastGoodCOT }
+        return {}
+      }
     },
     async getRiskBasket() {
       const basket = { vix: null, gold: null, dxy: null, spx: null, jpy: null, chf: null }
