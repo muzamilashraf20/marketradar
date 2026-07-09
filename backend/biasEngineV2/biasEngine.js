@@ -62,53 +62,88 @@ function detectRegime(calendarEventsThisWeek) {
 // ---------------------------------------------------------------------------
 // 2. HELPERS for calling the API (with prompt caching on the stable system block)
 // ---------------------------------------------------------------------------
-async function callJSON({ model, system, user, maxTokens = 1500 }) {
-  const res = await anthropic.messages.create({
-    model,
-    max_tokens: maxTokens,
-    // Sonnet 5 runs adaptive thinking when `thinking` is omitted — disable it so this
-    // stays a deterministic JSON scorer (no thinking tokens, no latency). Haiku accepts it too.
-    thinking: { type: "disabled" },
-    // cache_control marks the system block as cacheable → ~10% input cost on repeat runs
-    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: user }],
-  });
-  const text = res.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  return { parsed: JSON.parse(text.replace(/```json|```/g, "").trim()), usage: res.usage, model };
+// Extract the JSON substring from a model response that may include preamble/markdown
+// (e.g. "Looking at the data... { ... }"). Picks whichever of {..} or [..] appears first
+// as the JSON root, and trims everything before/after it.
+function extractJSON(text) {
+  if (!text) return "";
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  const oi = cleaned.indexOf("{"), oj = cleaned.lastIndexOf("}");
+  const ai = cleaned.indexOf("["), aj = cleaned.lastIndexOf("]");
+  let start = -1, end = -1;
+  if (oi !== -1 && (ai === -1 || oi < ai)) { start = oi; end = oj; }   // object root
+  else if (ai !== -1) { start = ai; end = aj; }                         // array root
+  return (start !== -1 && end > start) ? cleaned.slice(start, end + 1) : cleaned;
+}
+
+// Calls a model and returns { parsed, model }. Robust to preamble: extract the JSON, and on
+// parse failure retry the SAME call ONCE with a stricter instruction. If it still fails, log
+// the raw output and return parsed:null (never throws) so the stage degrades gracefully
+// instead of 500-ing the whole run.
+async function callJSON({ model, system, user, maxTokens = 1500, label, onUsage }) {
+  const run = async (sys) => {
+    const res = await anthropic.messages.create({
+      model,
+      max_tokens: maxTokens,
+      // Sonnet 5 runs adaptive thinking when `thinking` is omitted — disable it so this
+      // stays a deterministic JSON scorer (no thinking tokens, no latency). Haiku accepts it too.
+      thinking: { type: "disabled" },
+      // cache_control marks the system block as cacheable → ~10% input cost on repeat runs
+      system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: user }],
+    });
+    onUsage?.(label, model, res.usage);   // bill BOTH attempts if a retry happens
+    return res.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  };
+
+  const t1 = await run(system);
+  try { return { parsed: JSON.parse(extractJSON(t1)), model }; }
+  catch (e1) { console.warn(`⚠️ [v2 ${label}] JSON parse failed (try 1): ${e1.message} — retrying stricter`); }
+
+  const strict = system + "\n\nReturn ONLY valid JSON. No preamble, no explanation, no markdown fences.";
+  const t2 = await run(strict);
+  try { return { parsed: JSON.parse(extractJSON(t2)), model }; }
+  catch (e2) {
+    console.error(`⚠️ [v2 ${label}] JSON parse failed after retry: ${e2.message}. Raw output:\n${(t2 || "").slice(0, 800)}`);
+    return { parsed: null, model };   // graceful skip — caller supplies a safe default
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 3. PIPELINE STAGES
 // ---------------------------------------------------------------------------
 async function extractSignals({ cbText, newsItems }, onUsage) {
-  const { parsed, usage, model } = await callJSON({
+  const { parsed } = await callJSON({
     model: MODELS.EXTRACTION,
     system: EXTRACTION_SYSTEM,
     user: extractionUser({ cbText, newsItems }),
+    label: "v2-extraction",
+    onUsage,
   });
-  onUsage?.("v2-extraction", model, usage);
-  return parsed;
+  return parsed ?? {};   // empty digest → scoring still runs on COT / risk basket
 }
 
 async function scoreCurrencies({ regime, digest, marketData }, onUsage) {
-  const { parsed, usage, model } = await callJSON({
+  const { parsed } = await callJSON({
     model: MODELS.SCORING,
     system: SCORING_SYSTEM,
     user: scoringUser({ regime, digest, marketData }),
+    label: "v2-scoring",
+    onUsage,
   });
-  onUsage?.("v2-scoring", model, usage);
-  return parsed.currencies;
+  return (parsed && parsed.currencies) ? parsed.currencies : {};   // {} → composite all 0 → all HOLD_FLAT (no bias change)
 }
 
 async function writeThesis(args, onUsage) {
-  const { parsed, usage, model } = await callJSON({
+  const { parsed } = await callJSON({
     model: MODELS.THESIS,
     system: THESIS_SYSTEM,
     user: thesisUser(args),
     maxTokens: 400,
+    label: "v2-thesis",
+    onUsage,
   });
-  onUsage?.("v2-thesis", model, usage);
-  return parsed;
+  return parsed ?? { thesis: "", invalidation_text: "" };
 }
 
 // composite score per currency, using the active regime weights (done in CODE)
