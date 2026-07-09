@@ -233,13 +233,17 @@ function invalidationLevel(direction, price, atr) {
 //    bias_history_v2 keeps every open/flip/close. See bias_state_v2.sql.
 // ---------------------------------------------------------------------------
 async function loadState(supabase, pair) {
-  const { data } = await supabase.from("bias_state_v2").select("*").eq("pair", pair).maybeSingle();
+  const { data, error } = await supabase.from("bias_state_v2").select("*").eq("pair", pair).maybeSingle();
+  // supabase-js returns { data, error } — it does NOT throw. Log so a missing table can't fail silently.
+  if (error) console.error(`⚠️ [v2 db] loadState(${pair}) failed: ${error.message}${error.code ? ` (${error.code})` : ""}`);
   return data || null;
 }
 async function saveState(supabase, pair, obj) {
-  await supabase.from("bias_state_v2").upsert({ pair, ...obj, updated_at: new Date().toISOString() });
+  const { error: e1 } = await supabase.from("bias_state_v2").upsert({ pair, ...obj, updated_at: new Date().toISOString() });
+  if (e1) console.error(`⚠️ [v2 db] saveState upsert bias_state_v2(${pair}) failed: ${e1.message}${e1.code ? ` (${e1.code})` : ""}`);
   // also append to bias_history_v2 for the "Bias History" panel
-  await supabase.from("bias_history_v2").insert({ pair, ...obj, created_at: new Date().toISOString() });
+  const { error: e2 } = await supabase.from("bias_history_v2").insert({ pair, ...obj, created_at: new Date().toISOString() });
+  if (e2) console.error(`⚠️ [v2 db] saveState insert bias_history_v2(${pair}) failed: ${e2.message}${e2.code ? ` (${e2.code})` : ""}`);
 }
 
 // ---------------------------------------------------------------------------
