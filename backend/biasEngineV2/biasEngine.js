@@ -250,14 +250,20 @@ async function runEngine({ supabase, feeds, onUsage }) {
   const calendar    = await feeds.getCalendarThisWeek();     // [{title, impact}]
   const cbText      = await feeds.getCentralBankText();      // raw string
   const newsItems   = await feeds.getNewsHeadlines();        // [string]
-  const cot         = await feeds.getCOT();                  // { USD:{net, change}, ... }
+  const cot         = await feeds.getCOT();                  // { USD:{net, change}, ..., XAU:{...} }
   const riskBasket  = await feeds.getRiskBasket();           // { vix, gold, dxy, spx, jpy, chf }
+  const yields      = await feeds.getYields?.();             // { y2, y10 } — real-rate proxy for XAU macro
 
   const regime = detectRegime(calendar);
 
-  const digest = await extractSignals({ cbText, newsItems }, onUsage);                          // Haiku
-  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket } }, onUsage); // Sonnet 5
+  const digest = await extractSignals({ cbText, newsItems }, onUsage);                                     // Haiku
+  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket, yields } }, onUsage); // Sonnet 5
   const comp   = composite(scores, regime.weights);
+
+  // XAU is scored as its own asset (macro=real-yields/Fed, orderflow=gold COT, sentiment=risk-off),
+  // so the XAUUSD bias below is Score(XAU) − Score(USD), not just inverted USD.
+  const xs = scores["XAU"] || { macro: 0, orderflow: 0, sentiment: 0 };
+  console.log(`   [v2 xau] macro=${xs.macro} orderflow=${xs.orderflow} sentiment=${xs.sentiment} composite=${(comp["XAU"] ?? 0).toFixed(2)}`);
 
   const results = [];
   for (const pair of CONFIG.PAIRS) {

@@ -2924,6 +2924,10 @@ function buildV2Feeds() {
       } catch (e) {}
       return basket
     },
+    async getYields() {
+      // US2Y / US10Y from FRED (6h cache) — real-rate proxy for XAU macro scoring
+      try { return await fetchYields() } catch (e) { return null }
+    },
     async getPairMarket(pair) {
       // Read from the SHARED candle caches — the first getPairMarket call in a run warms all
       // v2 pairs in one batched request (only stale symbols fetched), the rest hit cache.

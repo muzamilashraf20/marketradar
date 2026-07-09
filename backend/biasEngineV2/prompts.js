@@ -3,7 +3,7 @@
 // System blocks are written to be STABLE across runs so they can be prompt-cached.
 // Only the user message carries the changing per-run data.
 
-export const CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"];
+export const CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "XAU"];
 
 // ---------------------------------------------------------------------------
 // STAGE 1 — EXTRACTION (Haiku 4.5)
@@ -57,6 +57,14 @@ SCORE THE THREE COMPONENTS INDEPENDENTLY:
    high-beta/commodity currencies (AUD, NZD, CAD) score negative. In risk-ON, reverse. Judge the risk regime
    from the provided basket (VIX, gold, equities, DXY, JPY/CHF behaviour). Do NOT use the yield curve here.
 
+SPECIAL ASSET — XAU (GOLD, priced in USD). Score it on the SAME -5..+5 scale, but its drivers differ from fiat:
+- macro (XAU): REAL YIELDS + Fed stance. Falling real yields / dovish Fed = bullish gold (positive); rising real
+  yields / hawkish Fed = bearish gold (negative). Use the provided YIELDS as a real-rate proxy: falling US10Y
+  (or rising TLT) → positive; rising US10Y (or falling TLT) → negative. XAU has NO central bank of its own.
+- orderflow (XAU): gold COT positioning (net non-commercial + week-over-week change), same rule as the fiats.
+- sentiment (XAU): RISK-OFF / safe-haven demand. In risk-off (VIX up, equities down, haven bid) gold scores
+  strongly positive; in risk-on, negative. Use the SAME risk basket as the fiat sentiment score.
+
 RULES:
 - Score ONLY from the data provided. If a component has no supporting data for a currency, score it 0.
 - Be conservative: reserve |4| and |5| for genuinely strong, well-supported signals. Most scores sit in -3..+3.
@@ -66,7 +74,8 @@ Output STRICT JSON only, no markdown, no preamble:
 {
   "currencies": {
     "USD": { "macro": 0, "orderflow": 0, "sentiment": 0, "note": "" },
-    ... every currency ...
+    "XAU": { "macro": 0, "orderflow": 0, "sentiment": 0, "note": "" },
+    ... every asset (all 8 fiats + XAU) ...
   }
 }`;
 
@@ -82,7 +91,10 @@ ${JSON.stringify(marketData.cot, null, 2)}
 CROSS-ASSET / RISK BASKET:
 ${JSON.stringify(marketData.riskBasket, null, 2)}
 
-Score these currencies: ${CURRENCIES.join(", ")}. Remember: components are independent, no combining.`;
+YIELDS (US2Y / US10Y — real-rate proxy for XAU macro; falling yields = gold-positive):
+${JSON.stringify(marketData.yields ?? {}, null, 2)}
+
+Score these assets: ${CURRENCIES.join(", ")}. Remember: components are independent, no combining.`;
 }
 
 // ---------------------------------------------------------------------------
