@@ -40,6 +40,36 @@ function setCache(key, data) { API_CACHE[key] = { data, timestamp: Date.now() } 
 function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < ttlMs : false }
 
 // ============================================
+// ⏳ GLOBAL TwelveData RATE LIMITER (shared by v1 + v2)
+// Basic-8 plan = 8 credits/min, billed PER SYMBOL. A burst (e.g. a 12-symbol batch, or v1+v2
+// firing together) exceeds 8/min and 429s. This is a sliding-window credit budget with headroom
+// under 8; acquisitions are serialized (FIFO) so the window accounting is race-free. Callers
+// `await tdAcquire(nSymbols)` before every TwelveData request. A run may take a few minutes —
+// there's no real-time requirement here.
+// ============================================
+const TD_CAP = 7                  // max credits per rolling 60s (1 credit of headroom under 8)
+const TD_WINDOW = 60 * 1000
+const _tdLog = []                 // [{ t, credits }] consumed within the window
+let _tdChain = Promise.resolve()  // serialize acquisitions
+async function _tdReserve(credits) {
+  credits = Math.min(TD_CAP, Math.max(1, credits | 0))
+  for (;;) {
+    const now = Date.now()
+    while (_tdLog.length && now - _tdLog[0].t >= TD_WINDOW) _tdLog.shift()
+    const used = _tdLog.reduce((s, x) => s + x.credits, 0)
+    if (used + credits <= TD_CAP) { _tdLog.push({ t: now, credits }); return }
+    const waitMs = Math.min(TD_WINDOW, TD_WINDOW - (now - _tdLog[0].t) + 50)
+    await new Promise(r => setTimeout(r, waitMs))
+  }
+}
+// Acquire N credits (≈ N symbols) before a TwelveData call; resolves when within budget.
+function tdAcquire(credits = 1) {
+  const p = _tdChain.then(() => _tdReserve(credits))
+  _tdChain = p.catch(() => {})   // keep the chain alive even if a caller rejects
+  return p
+}
+
+// ============================================
 // 📅 SHARED ECONOMIC CALENDAR (ForexFactory feed)
 // Finnhub /calendar/economic is premium-only now — FF feed is free.
 // Normalized shape: { event, country (currency code), time (ISO), impact, forecast, previous }
@@ -607,7 +637,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 app.get('/api/prices', async (req, res) => {
   if (isCacheFresh('prices')) return res.json(getCached('prices'))
   const stale = getCached('prices')
-  try { const r = await axios.get(`https://api.twelvedata.com/price?symbol=EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD&apikey=${process.env.TWELVEDATA_API_KEY}`); if (r.data?.code === 429) { if (stale) return res.json(stale); return res.json({ success: true, data: r.data }) }; const result = { success: true, data: r.data }; setCache('prices', result); res.json(result) } catch (e) { if (stale) return res.json(stale); res.status(500).json({ error: 'Price fetch failed' }) }
+  try { await tdAcquire(5); const r = await axios.get(`https://api.twelvedata.com/price?symbol=EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD&apikey=${process.env.TWELVEDATA_API_KEY}`); if (r.data?.code === 429) { if (stale) return res.json(stale); return res.json({ success: true, data: r.data }) }; const result = { success: true, data: r.data }; setCache('prices', result); res.json(result) } catch (e) { if (stale) return res.json(stale); res.status(500).json({ error: 'Price fetch failed' }) }
 })
 
 // ============================================
@@ -624,6 +654,7 @@ async function getLiveStrength() {
   if (isCacheFresh('strength')) return getCached('strength')
   const pairs = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
   try {
+    await tdAcquire(pairs.length)
     const r = await axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`)
     if (r.data.code === 429) return getCached('strength') || null
     const scores = {USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0}, counts = {...scores}
@@ -646,6 +677,7 @@ async function getMoveContext(symbol, currentPrice) {
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
   const pip = /JPY/i.test(symbol) ? 0.01 : /XAU/i.test(symbol) ? 0.1 : (/BTC|NAS/i.test(symbol) ? 1 : 0.0001)
   try {
+    await tdAcquire(1)
     const r = await axios.get('https://api.twelvedata.com/time_series', {
       params: { symbol: symbolMap[symbol] || symbol, interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
     })
@@ -681,42 +713,58 @@ const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY
 async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
   const out = {}
   const stale = []
-  for (const p of [...new Set(pairs)]) {
-    if (!ROOM_SYMBOL_MAP[p]) continue
+  const wanted = [...new Set(pairs)].filter(p => ROOM_SYMBOL_MAP[p])
+  for (const p of wanted) {
     const ck = `${keyPrefix}_${p}`
-    if (isCacheFreshFor(ck, ttlMs)) out[p] = getCached(ck)
+    if (isCacheFreshFor(ck, ttlMs)) out[p] = getCached(ck)   // fresh cache hit → 0 credits
     else stale.push(p)
   }
   if (stale.length) {
-    // Anti-amplification: getPairMarket calls this once per pair (8×/run). If the batch fails,
-    // nothing caches and the symbols stay stale — without this guard the next pair re-fires the
-    // same batch, up to 8×/run. Cap to ONE attempt per interval per ~20s (covers a single run).
+    // Anti-amplification: getPairMarket calls this once per pair (8×/run). Cap to ONE fetch
+    // attempt per stale-set per ~20s (covers a single run) so a throttled set isn't re-hit 8×.
     const attemptKey = `${keyPrefix}_attempt_${stale.slice().sort().join('_')}`
-    if (isCacheFreshFor(attemptKey, 20 * 1000)) return out
-    setCache(attemptKey, 1)
-    const syms = stale.map(p => ROOM_SYMBOL_MAP[p])
-    try {
-      const r = await axios.get('https://api.twelvedata.com/time_series', {
-        params: { symbol: syms.join(','), interval, outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-      })
-      // time_series SUCCESS carries no top-level `code`; ERROR responses do (429/400/401…).
-      if (r.data?.code) {
-        console.warn(`⚠️ TwelveData ${interval} error code=${r.data.code} msg="${r.data.message || ''}" (${syms.length} sym) — stale fallback`)
-      } else {
-        let got = 0
-        for (const p of stale) {
-          const td = ROOM_SYMBOL_MAP[p]
-          const d = syms.length === 1 ? r.data : r.data?.[td]
-          if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values; got++ }
-        }
-        console.log(`📈 [candles ${interval}] ${got}/${stale.length} symbols returned values (${syms.join(',')})`)
+    if (!isCacheFreshFor(attemptKey, 20 * 1000)) {
+      setCache(attemptKey, 1)
+      // Fetch in SMALL chunks (≤2 symbols) through the shared limiter so we stay under 8 credits/min.
+      const CHUNK = 2
+      let got = 0
+      for (let i = 0; i < stale.length; i += CHUNK) {
+        const group = stale.slice(i, i + CHUNK)
+        const syms = group.map(p => ROOM_SYMBOL_MAP[p])
+        try {
+          await tdAcquire(syms.length)   // credit-gated: waits until within budget
+          const r = await axios.get('https://api.twelvedata.com/time_series', {
+            params: { symbol: syms.join(','), interval, outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+          })
+          // time_series SUCCESS carries no top-level `code`; ERROR responses do (429/400/401…).
+          if (r.data?.code) {
+            console.warn(`⚠️ TwelveData ${interval} error code=${r.data.code} msg="${r.data.message || ''}" (${syms.join(',')})`)
+          } else {
+            for (const p of group) {
+              const td = ROOM_SYMBOL_MAP[p]
+              const d = group.length === 1 ? r.data : r.data?.[td]
+              if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values; got++ }
+            }
+          }
+        } catch (e) { console.warn(`⚠️ Candle chunk (${interval} ${syms.join(',')}) failed: ${e?.message}`) }
       }
-    } catch (e) { console.warn(`⚠️ Candle batch (${interval}) failed: ${e?.message} — stale fallback`) }
+      console.log(`📈 [candles ${interval}] fetched ${got}/${stale.length} fresh`)
+    }
+    // Per-symbol stale fallback: any stale symbol we couldn't (re)fetch this run uses its LAST
+    // cached candle (even if expired) instead of dropping out → caller gets data, not a SKIP.
+    let staleUsed = 0
+    for (const p of stale) {
+      if (out[p]) continue
+      const cached = getCached(`${keyPrefix}_${p}`)
+      if (Array.isArray(cached)) { out[p] = cached; staleUsed++ }
+    }
+    if (staleUsed) console.log(`📈 [candles ${interval}] ${staleUsed} from stale cache (throttled/failed)`)
   }
-  return out   // { PAIR: values[] } ; missing pairs → caller falls back to stale/skip
+  return out   // { PAIR: values[] }
 }
-// Daily candles: 90s shared TTL (intraday ADR barely moves, short enough to stay fresh)
-const getDailyCandles  = (pairs) => fetchCandlesBatch(pairs, '1day',  90 * 1000,          'tdcandle_d')
+// Daily candles: 10-min shared TTL (ADR is a daily metric — cache aggressively so back-to-back
+// runs / repeat pairs within the window cost 0 credits; price is the latest daily close).
+const getDailyCandles  = (pairs) => fetchCandlesBatch(pairs, '1day',  10 * 60 * 1000,      'tdcandle_d')
 // Weekly candles: 6h shared TTL (weekly ATR is a slow, weekly buffer)
 const getWeeklyCandles = (pairs) => fetchCandlesBatch(pairs, '1week', 6 * 60 * 60 * 1000, 'tdcandle_w')
 
@@ -876,6 +924,7 @@ async function fetchCrossAssetLive() {
   if (!key) return null
   try {
     const symbols = 'DXY,VIX,SPY,TLT'
+    await tdAcquire(String(symbols).split(',').length)
     const r = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 })
     const result = {}
     for (const sym of symbols.split(',')) {
@@ -1097,6 +1146,7 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   for (let attempt = 0; attempt < 3 && currentPrice === 'unknown'; attempt++) {
     try {
       if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+      await tdAcquire(1)
       const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
       if (pr.data?.price) currentPrice = pr.data.price
     } catch (e) {}
@@ -1899,6 +1949,7 @@ async function scoreBias(row) {
   const fetchStart = new Date(start.getTime() - 30 * 60 * 1000)
   const fetchEnd = new Date(Math.min(windowEnd.getTime() + 30 * 60 * 1000, Date.now()))
   try {
+    await tdAcquire(1)
     const r = await axios.get('https://api.twelvedata.com/time_series', {
       params: {
         symbol, interval: '15min', timezone: 'UTC',
@@ -2474,6 +2525,7 @@ app.get('/api/strength', async (req, res) => {
   if (isCacheFresh('strength')) return res.json(getCached('strength'))
   const stale = getCached('strength'), pairs=['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
   try {
+    await tdAcquire(pairs.length)
     const r = await axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`)
     if(r.data.code===429){if(stale)return res.json(stale);return res.status(429).json({success:false,error:'Rate limit'})}
     const scores={USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0},counts={...scores}
@@ -2884,16 +2936,14 @@ function buildV2Feeds() {
       const { price, adrUsedPct, adr } = v2AdrFromDaily(pair, dvals)
       if (price == null) { console.log(`   [v2 mkt] ${pair}: SKIP bad_price`); return null }
 
-      // Prefer REAL weekly ATR; fall back to a daily-derived ATR so we NEVER skip when daily exists.
-      let atr, isHighAtrWeek, atrSrc
-      const weekly = await getWeeklyCandles(V2_CONFIG.PAIRS)
-      const w = v2WeeklyAtr(weekly[pair])
-      if (w) { atr = w.atr; isHighAtrWeek = w.isHighAtrWeek; atrSrc = 'weekly' }
-      else {
-        const f = v2AtrFromDaily(dvals)
-        if (!f) { console.log(`   [v2 mkt] ${pair}: SKIP no_atr`); return null }
-        atr = f.atr; isHighAtrWeek = f.isHighAtrWeek; atrSrc = 'daily-fallback'
-      }
+      // 1day only by default — ATR from daily (dailyADR*√5). Weekly is OPTIONAL: use a REAL weekly
+      // ATR ONLY if it's already cached (read-only, spends no credits); never fetch weekly here.
+      const f = v2AtrFromDaily(dvals)
+      if (!f) { console.log(`   [v2 mkt] ${pair}: SKIP no_atr`); return null }
+      let atr = f.atr, isHighAtrWeek = f.isHighAtrWeek, atrSrc = 'daily'
+      const wCached = getCached(`tdcandle_w_${pair}`)
+      const w = Array.isArray(wCached) ? v2WeeklyAtr(wCached) : null
+      if (w) { atr = w.atr; isHighAtrWeek = w.isHighAtrWeek; atrSrc = 'weekly-cache' }
       console.log(`   [v2 mkt] ${pair}: price=${price} atr=${atr.toFixed(5)} (${atrSrc}) adrUsed=${Math.round(adrUsedPct * 100)}% adr=${adr.toFixed(5)}`)
       return { price, atr, adrUsedPct, isHighAtrWeek }
     },
