@@ -3005,8 +3005,18 @@ async function runV2Shadow(trigger) {
   const feeds = buildV2Feeds()
   const onUsage = (label, model, usage) => { try { trackAI(label, model, usage) } catch (e) {} }
   const out = await runEngineV2({ supabase, feeds, onUsage })
-  console.log(`🔬 [v2-shadow:${trigger}] regime=${out.regime} in ${Date.now() - started}ms`)
-  for (const r of out.results) console.log(`   ${r.pair}: diff=${r.diff} ${r.action}${r.direction ? ' ' + r.direction : ''}${r.reason ? ' (' + r.reason + ')' : ''}`)
+  const ts = new Date().toISOString()
+  const isChange = a => a === 'OPEN' || a === 'FLIP' || a === 'CLOSE'
+  const changes = out.results.filter(r => isChange(r.action))
+  // Header: timestamped so 12+h of runs are scannable by time; change-count surfaces whipsaw at a glance.
+  console.log(`🔬 [v2-shadow:${trigger}] ${ts} | regime=${out.regime} | ${changes.length} bias change(s) | ${Date.now() - started}ms`)
+  for (const r of out.results) {
+    const tag = isChange(r.action) ? '🔔 CHANGE' : '        '
+    const inval = r.invalidation != null ? ` inval=${(+r.invalidation).toFixed(r.pair.includes('JPY') ? 3 : r.pair === 'XAUUSD' ? 2 : 5)}` : ''
+    console.log(`   ${tag} ${r.pair.padEnd(6)} ${String(r.action).padEnd(9)} ${String(r.direction || 'FLAT').padEnd(4)} diff=${String(r.diff).padStart(6)}${r.reason ? ' (' + r.reason + ')' : ''}${inval}`)
+  }
+  // One grep-friendly summary line for whipsaw review: `grep "v2-CHANGES"` gives every bias transition.
+  if (changes.length) console.log(`   ⚑ v2-CHANGES ${ts}: ${changes.map(c => `${c.pair} ${c.action} ${c.direction || ''}${c.reason ? '/' + c.reason : ''}`.trim()).join(', ')}`)
   return out
 }
 

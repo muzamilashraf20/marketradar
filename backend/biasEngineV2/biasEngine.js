@@ -307,7 +307,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
       if (state && state.direction !== "FLAT") await feeds.updateRunning?.(pair, price);
     }
 
-    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT" });
+    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation });
   }
 
   return { regime: regime.label, scores, results };
