@@ -688,19 +688,28 @@ async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
     else stale.push(p)
   }
   if (stale.length) {
+    // Anti-amplification: getPairMarket calls this once per pair (8×/run). If the batch fails,
+    // nothing caches and the symbols stay stale — without this guard the next pair re-fires the
+    // same batch, up to 8×/run. Cap to ONE attempt per interval per ~20s (covers a single run).
+    const attemptKey = `${keyPrefix}_attempt_${stale.slice().sort().join('_')}`
+    if (isCacheFreshFor(attemptKey, 20 * 1000)) return out
+    setCache(attemptKey, 1)
     const syms = stale.map(p => ROOM_SYMBOL_MAP[p])
     try {
       const r = await axios.get('https://api.twelvedata.com/time_series', {
         params: { symbol: syms.join(','), interval, outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
       })
-      if (r.data?.code === 429) {
-        console.warn(`⚠️ TwelveData 429 (${interval} batch) — serving stale where available`)
+      // time_series SUCCESS carries no top-level `code`; ERROR responses do (429/400/401…).
+      if (r.data?.code) {
+        console.warn(`⚠️ TwelveData ${interval} error code=${r.data.code} msg="${r.data.message || ''}" (${syms.length} sym) — stale fallback`)
       } else {
+        let got = 0
         for (const p of stale) {
           const td = ROOM_SYMBOL_MAP[p]
           const d = syms.length === 1 ? r.data : r.data?.[td]
-          if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values }
+          if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values; got++ }
         }
+        console.log(`📈 [candles ${interval}] ${got}/${stale.length} symbols returned values (${syms.join(',')})`)
       }
     } catch (e) { console.warn(`⚠️ Candle batch (${interval}) failed: ${e?.message} — stale fallback`) }
   }
@@ -2764,7 +2773,7 @@ function v2AdrFromDaily(pair, vals) {
   const price = parseFloat(today.close)               // latest (forming) daily close ≈ current price
   const todayRange = parseFloat(today.high) - parseFloat(today.low)
   const adrUsedPct = adr > 0 ? Math.min(todayRange / adr, 1) : 0   // fraction of ADR spent today
-  return { price: isFinite(price) ? price : null, adrUsedPct }
+  return { price: isFinite(price) ? price : null, adrUsedPct, adr }
 }
 function v2WeeklyAtr(vals) {
   if (!Array.isArray(vals) || vals.length < 4) return null
@@ -2773,6 +2782,17 @@ function v2WeeklyAtr(vals) {
   if (!trs.length) return null
   const atr = trs.reduce((s, x) => s + x, 0) / trs.length
   return { atr, isHighAtrWeek: trs[0] > atr * 1.25 }
+}
+// Weekly-ATR PROXY from daily candles — used when the weekly cache is cold/unavailable so
+// v2 never SKIPs while daily data exists (v1 keeps daily warm). A trading week ≈ 5 sessions →
+// weekly range ≈ dailyADR * √5 (random-walk scaling). isHighAtrWeek from recent daily expansion.
+function v2AtrFromDaily(vals) {
+  const ranges = vals.slice(1).map(d => parseFloat(d.high) - parseFloat(d.low)).filter(n => isFinite(n) && n > 0)
+  if (!ranges.length) return null
+  const adr = ranges.reduce((s, x) => s + x, 0) / ranges.length
+  const recent = ranges.slice(0, 3)
+  const recentAvg = recent.reduce((s, x) => s + x, 0) / recent.length
+  return { atr: adr * Math.sqrt(5), isHighAtrWeek: recentAvg > adr * 1.25 }
 }
 
 // The data-access layer the v2 engine expects. Each method is defensive: a failing
@@ -2835,13 +2855,25 @@ function buildV2Feeds() {
       // v2 pairs in one batched request (only stale symbols fetched), the rest hit cache.
       const daily = await getDailyCandles(V2_CONFIG.PAIRS)
       const dvals = daily[pair]
-      if (!Array.isArray(dvals) || dvals.length < 3) return null
-      const { price, adrUsedPct } = v2AdrFromDaily(pair, dvals)
-      if (price == null) return null
+      if (!Array.isArray(dvals) || dvals.length < 3) {
+        console.log(`   [v2 mkt] ${pair}: SKIP no_daily (candles=${Array.isArray(dvals) ? dvals.length : 'none'})`)
+        return null
+      }
+      const { price, adrUsedPct, adr } = v2AdrFromDaily(pair, dvals)
+      if (price == null) { console.log(`   [v2 mkt] ${pair}: SKIP bad_price`); return null }
+
+      // Prefer REAL weekly ATR; fall back to a daily-derived ATR so we NEVER skip when daily exists.
+      let atr, isHighAtrWeek, atrSrc
       const weekly = await getWeeklyCandles(V2_CONFIG.PAIRS)
       const w = v2WeeklyAtr(weekly[pair])
-      if (!w) return null
-      return { price, atr: w.atr, adrUsedPct, isHighAtrWeek: w.isHighAtrWeek }
+      if (w) { atr = w.atr; isHighAtrWeek = w.isHighAtrWeek; atrSrc = 'weekly' }
+      else {
+        const f = v2AtrFromDaily(dvals)
+        if (!f) { console.log(`   [v2 mkt] ${pair}: SKIP no_atr`); return null }
+        atr = f.atr; isHighAtrWeek = f.isHighAtrWeek; atrSrc = 'daily-fallback'
+      }
+      console.log(`   [v2 mkt] ${pair}: price=${price} atr=${atr.toFixed(5)} (${atrSrc}) adrUsed=${Math.round(adrUsedPct * 100)}% adr=${adr.toFixed(5)}`)
+      return { price, atr, adrUsedPct, isHighAtrWeek }
     },
     // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
   }
