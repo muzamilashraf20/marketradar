@@ -942,12 +942,12 @@ async function fetchCrossAssetLive() {
       console.log(`📈 Cross-asset live: ${Object.keys(result).join(', ')}`)
       return result
     }
+    // empty result — never overwrite a good cache; fall back to stale
+    const staleEmpty = getCached('cross_asset_live')
+    if (staleEmpty) { console.log('📈 Cross-asset empty — using stale cache'); return staleEmpty }
   } catch (e) {
     const stale = getCached('cross_asset_live')
-    if (e?.response?.status === 429 && stale) {
-      console.log(`📈 Cross-asset 429 — returning stale cache`)
-      return stale
-    }
+    if (stale) { console.log(`📈 Cross-asset fetch failed (${e?.message}) — using stale cache`); return stale }
     console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`)
   }
   return null
@@ -971,12 +971,12 @@ async function fetchYields() {
   }
   try {
     const [y2, y10] = await Promise.all([getSeries('DGS2'), getSeries('DGS10')])
-    if (!y2 && !y10) return null
+    if (!y2 && !y10) { const stale = getCached('yields_fred'); if (stale) { console.log('🏦 Yields empty — using stale cache'); return stale } return null }
     const result = { y2, y10 }
     setCache('yields_fred', result)
     console.log(`🏦 Yields (FRED): 2yr ${y2?.value ?? 'n/a'}% · 10yr ${y10?.value ?? 'n/a'}%`)
     return result
-  } catch (e) { console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
+  } catch (e) { const stale = getCached('yields_fred'); if (stale) { console.log(`🏦 Yields fetch failed (${e?.message}) — using stale cache`); return stale } console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
 }
 
 // Fetch latest US economic ACTUALS from FRED (free) — fills the surprise gap the FF feed lacks. 12h cache.
@@ -2826,7 +2826,9 @@ app.get('/api/earnings', async (req, res) => {
 // Wires the v2 feeds.* + market access to existing data functions. Writes only to
 // bias_state_v2 / bias_history_v2. Manual endpoint + env-gated cron.
 // ============================================================================
-let v2LastGoodCOT = null   // last non-empty COT snapshot → belt-and-suspenders durability for orderflow
+let v2LastGoodCOT = null      // last non-empty COT snapshot → durability for orderflow
+let v2LastGoodYields = null   // last-good FRED yields snapshot → durability for XAU macro
+let v2LastGoodBasket = null   // last-good risk basket (per-field) → durability for sentiment
 
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
 // so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
@@ -2922,11 +2924,29 @@ function buildV2Feeds() {
         const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
         basket.jpy = find('JPY'); basket.chf = find('CHF')
       } catch (e) {}
-      return basket
+      // Durability: fill any missing field from the last-good snapshot, then update the snapshot
+      // per-field so a single 429 never zeroes the risk read (which starves XAU + fiat sentiment).
+      const merged = { ...basket }
+      let filled = 0
+      if (v2LastGoodBasket) for (const k of Object.keys(merged)) { if (merged[k] == null && v2LastGoodBasket[k] != null) { merged[k] = v2LastGoodBasket[k]; filled++ } }
+      const freshEntries = Object.entries(basket).filter(([, v]) => v != null)
+      if (freshEntries.length) v2LastGoodBasket = { ...(v2LastGoodBasket || {}), ...Object.fromEntries(freshEntries) }
+      console.log(`   [v2 basket] ${freshEntries.length}/6 fresh${filled ? `, ${filled} from cache` : ''} → vix=${merged.vix ?? 'n/a'} spx=${merged.spx ?? 'n/a'} dxy=${merged.dxy ?? 'n/a'} gold=${merged.gold ?? 'n/a'} jpy=${merged.jpy ?? 'n/a'} chf=${merged.chf ?? 'n/a'}`)
+      return merged
     },
     async getYields() {
-      // US2Y / US10Y from FRED (6h cache) — real-rate proxy for XAU macro scoring
-      try { return await fetchYields() } catch (e) { return null }
+      // US2Y / US10Y from FRED (6h cache + stale fallback) — real-rate proxy for XAU macro.
+      let y = null
+      try { y = await fetchYields() } catch (e) {}
+      const hasData = y && (y.y2?.value != null || y.y10?.value != null)
+      if (hasData) {
+        v2LastGoodYields = y
+        console.log(`   [v2 yields] fresh US2Y=${y.y2?.value ?? 'n/a'} US10Y=${y.y10?.value ?? 'n/a'} Δ10Y=${y.y10?.change ?? 'n/a'}`)
+        return y
+      }
+      if (v2LastGoodYields) { console.warn(`   [v2 yields] cache US2Y=${v2LastGoodYields.y2?.value ?? 'n/a'} US10Y=${v2LastGoodYields.y10?.value ?? 'n/a'} (fetch empty)`); return v2LastGoodYields }
+      console.warn('   [v2 yields] none (no fetch, no snapshot yet)')
+      return null
     },
     async getPairMarket(pair) {
       // Read from the SHARED candle caches — the first getPairMarket call in a run warms all
