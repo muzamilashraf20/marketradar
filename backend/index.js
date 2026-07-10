@@ -917,13 +917,14 @@ function buildCrossAssetContext(room, liveAssets, yields) {
   return lines.join('\n')
 }
 
-// Fetch real cross-asset data (DXY, VIX, SPY, TLT) from TwelveData — 30min cache
+// Fetch real cross-asset data from TwelveData — 30min cache. UUP (dollar ETF) and VIXY (VIX ETF)
+// are added as proxies for DXY/VIX, which the TwelveData Basic plan does not serve as indices.
 async function fetchCrossAssetLive() {
   if (isCacheFreshFor('cross_asset_live', 30 * 60 * 1000)) return getCached('cross_asset_live')
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) return null
   try {
-    const symbols = 'DXY,VIX,SPY,TLT'
+    const symbols = 'DXY,VIX,SPY,TLT,UUP,VIXY'
     await tdAcquire(String(symbols).split(',').length)
     const r = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 })
     const result = {}
@@ -2621,7 +2622,8 @@ async function getCOTData() {
     // ── Fetch 1: Financial instruments (currencies) ──
     const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
                    '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
-    const finRes = await fetch(finUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
+    const finRes = await fetch(finUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' }, signal: AbortSignal.timeout(12000) })
+    if (!finRes.ok) console.warn(`⚠️ COT financial fetch HTTP ${finRes.status} — currency positioning unavailable`)
 
     if (finRes.ok) {
       const finRows = await finRes.json()
@@ -2682,7 +2684,7 @@ async function getCOTData() {
    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
                '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
                '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27)'
-    const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' } })
+    const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' }, signal: AbortSignal.timeout(12000) })
     if (!comRes.ok) console.warn(`⚠️ COT commodity fetch HTTP ${comRes.status} — gold/XAU positioning unavailable`)
 
     if (comRes.ok) {
@@ -2843,12 +2845,28 @@ let v2LastGoodBasket = null   // last-good risk basket (per-field) → durabilit
 // FRED is flaky — derive the real-yield direction from TLT (20y+ treasury ETF) instead, sourced
 // from the already-working, cached, rate-limited cross-asset feed. TLT up → long yields DOWN → gold+.
 async function yieldsProxyFromTLT() {
-  const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT } from TwelveData
+  const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT, UUP, VIXY } from TwelveData
   const tlt = x?.TLT
   if (!tlt || tlt.price == null) return null
   const dir = tlt.change > 0 ? 'falling (TLT up) → gold-positive'
             : tlt.change < 0 ? 'rising (TLT down) → gold-negative' : 'flat'
   return { source: 'TLT-proxy', tlt_price: tlt.price, tlt_change_pct: tlt.change, real_yield_direction: dir }
+}
+
+// DB-backed durability for v2 last-good snapshots (COT, risk basket). The cron process can reset
+// on Railway redeploy, wiping in-memory snapshots — persist to app_state so they survive restarts.
+async function v2LoadSnapshot(key) {
+  try {
+    const { data, error } = await supabase.from('app_state').select('value').eq('key', key).maybeSingle()
+    if (error) return null
+    return data?.value ?? null
+  } catch (e) { return null }
+}
+function v2SaveSnapshot(key, value) {
+  // fire-and-forget — don't block the run on the write
+  supabase.from('app_state').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+    .then(({ error }) => { if (error) console.error(`⚠️ [v2 db] snapshot save ${key} failed: ${error.message}`) })
+    .catch(e => console.error(`⚠️ [v2 db] snapshot save ${key} error: ${e?.message}`))
 }
 
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
@@ -2916,28 +2934,33 @@ function buildV2Feeds() {
       return n.filter(a => (a.impact || 0) >= 7).map(a => `[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`)
     },
     async getCOT() {
+      let out = {}
       try {
         const cot = await getCOTData()
-        const out = {}
         for (const c of (cot?.data || [])) out[c.currency] = { net: c.netPosition, change: c.weeklyChange ?? null }
-        if (Object.keys(out).length) {
-          v2LastGoodCOT = out   // remember last non-empty snapshot
-          for (const [ccy, v] of Object.entries(out)) console.log(`   [v2 cot] ${ccy} net=${v.net} wChange=${v.change ?? 'n/a'}`)
-          return out
-        }
-        if (v2LastGoodCOT) { console.warn('⚠️ [v2 cot] empty COT — using last good snapshot'); return v2LastGoodCOT }
-        console.warn('⚠️ [v2 cot] empty COT and no snapshot yet')
-        return {}
-      } catch (e) {
-        if (v2LastGoodCOT) { console.warn(`⚠️ [v2 cot] error (${e?.message}) — using last good snapshot`); return v2LastGoodCOT }
-        return {}
+      } catch (e) { console.warn(`⚠️ [v2 cot] getCOTData error: ${e?.message}`) }
+      if (Object.keys(out).length) {
+        v2LastGoodCOT = out
+        v2SaveSnapshot('cot_last_good_v2', out)   // DB-persist so cron restarts don't lose it
+        console.log(`   [v2 cot] fresh (${Object.keys(out).length}): ${Object.entries(out).map(([c, v]) => `${c}=${v.net}${v.change != null ? '/' + v.change : ''}`).join(' ')}`)
+        return out
       }
+      // fetch empty → in-memory snapshot, then DB snapshot (survives process restart)
+      if (v2LastGoodCOT) { console.warn(`   [v2 cot] cache(mem) ${Object.keys(v2LastGoodCOT).length} ccy — fetch empty`); return v2LastGoodCOT }
+      const db = await v2LoadSnapshot('cot_last_good_v2')
+      if (db && Object.keys(db).length) { v2LastGoodCOT = db; console.warn(`   [v2 cot] cache(db) ${Object.keys(db).length} ccy — fetch empty, restored from DB`); return db }
+      console.warn('   [v2 cot] EMPTY (no fetch, no mem snapshot, no DB snapshot)')
+      return {}
     },
     async getRiskBasket() {
       const basket = { vix: null, gold: null, dxy: null, spx: null, jpy: null, chf: null }
       try {
-        const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT } — VIX may be absent on some TD plans
-        if (x) { if (x.VIX) basket.vix = x.VIX.price; if (x.DXY) basket.dxy = x.DXY.price; if (x.SPY) basket.spx = x.SPY.price }
+        const x = await fetchCrossAssetLive()   // DXY,VIX,SPY,TLT + UUP,VIXY proxies
+        if (x) {
+          basket.vix = x.VIX?.price ?? x.VIXY?.price ?? null   // VIXY = VIX-futures ETF proxy (Basic plan)
+          basket.dxy = x.DXY?.price ?? x.UUP?.price ?? null    // UUP = US-dollar-index ETF proxy (Basic plan)
+          basket.spx = x.SPY?.price ?? null
+        }
       } catch (e) {}
       try { const gc = await getDailyCandles(['XAUUSD']); const gv = gc.XAUUSD; if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
       try {
@@ -2945,13 +2968,17 @@ function buildV2Feeds() {
         const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
         basket.jpy = find('JPY'); basket.chf = find('CHF')
       } catch (e) {}
-      // Durability: fill any missing field from the last-good snapshot, then update the snapshot
-      // per-field so a single 429 never zeroes the risk read (which starves XAU + fiat sentiment).
+      // Hydrate the in-memory snapshot from DB once (survives cron process restarts)
+      if (!v2LastGoodBasket) { const dbSnap = await v2LoadSnapshot('basket_last_good_v2'); if (dbSnap) v2LastGoodBasket = dbSnap }
+      // Fill any missing field from last-good, update the snapshot per-field, and DB-persist it.
       const merged = { ...basket }
       let filled = 0
       if (v2LastGoodBasket) for (const k of Object.keys(merged)) { if (merged[k] == null && v2LastGoodBasket[k] != null) { merged[k] = v2LastGoodBasket[k]; filled++ } }
       const freshEntries = Object.entries(basket).filter(([, v]) => v != null)
-      if (freshEntries.length) v2LastGoodBasket = { ...(v2LastGoodBasket || {}), ...Object.fromEntries(freshEntries) }
+      if (freshEntries.length) {
+        v2LastGoodBasket = { ...(v2LastGoodBasket || {}), ...Object.fromEntries(freshEntries) }
+        v2SaveSnapshot('basket_last_good_v2', v2LastGoodBasket)
+      }
       console.log(`   [v2 basket] ${freshEntries.length}/6 fresh${filled ? `, ${filled} from cache` : ''} → vix=${merged.vix ?? 'n/a'} spx=${merged.spx ?? 'n/a'} dxy=${merged.dxy ?? 'n/a'} gold=${merged.gold ?? 'n/a'} jpy=${merged.jpy ?? 'n/a'} chf=${merged.chf ?? 'n/a'}`)
       return merged
     },
