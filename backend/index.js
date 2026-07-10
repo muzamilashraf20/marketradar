@@ -710,7 +710,7 @@ const ROOM_SYMBOL_MAP = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY
 // TwelveData bills PER SYMBOL, so the real lever is caching each symbol's candles and
 // reusing them across BOTH engines within a short window — not just batching the HTTP call.
 // Per-symbol cache: only STALE symbols are (re)fetched, in one batched request.
-async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
+async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix, chunkSize = 2) {
   const out = {}
   const stale = []
   const wanted = [...new Set(pairs)].filter(p => ROOM_SYMBOL_MAP[p])
@@ -725,8 +725,8 @@ async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
     const attemptKey = `${keyPrefix}_attempt_${stale.slice().sort().join('_')}`
     if (!isCacheFreshFor(attemptKey, 20 * 1000)) {
       setCache(attemptKey, 1)
-      // Fetch in SMALL chunks (≤2 symbols) through the shared limiter so we stay under 8 credits/min.
-      const CHUNK = 2
+      // Fetch in SMALL chunks through the shared limiter so we stay under 8 credits/min.
+      const CHUNK = Math.max(1, chunkSize)
       let got = 0
       for (let i = 0; i < stale.length; i += CHUNK) {
         const group = stale.slice(i, i + CHUNK)
@@ -762,11 +762,34 @@ async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix) {
   }
   return out   // { PAIR: values[] }
 }
-// Daily candles: 10-min shared TTL (ADR is a daily metric — cache aggressively so back-to-back
-// runs / repeat pairs within the window cost 0 credits; price is the latest daily close).
+// Daily candles: 10-min shared TTL for v1 (its room/exhaustion read wants intraday freshness).
 const getDailyCandles  = (pairs) => fetchCandlesBatch(pairs, '1day',  10 * 60 * 1000,      'tdcandle_d')
 // Weekly candles: 6h shared TTL (weekly ATR is a slow, weekly buffer)
 const getWeeklyCandles = (pairs) => fetchCandlesBatch(pairs, '1week', 6 * 60 * 60 * 1000, 'tdcandle_w')
+
+// v2 daily candles: OWN key + 6h TTL + chunk=1, so the 30-min shadow cron reuses them and refetches
+// at most once per 6h (PDH/PDL + ADR are daily metrics, static within the day) — this keeps v2 off
+// v1's 10-min churn that was tripping Basic-8. DB-persist the set so a redeploy hydrates from DB
+// instead of cold-fetching all 8 at once (which 429s). v1 is untouched (separate key + TTL).
+async function getV2DailyCandles(pairs) {
+  const out = await fetchCandlesBatch(pairs, '1day', 6 * 60 * 60 * 1000, 'tdcandle_dv2', 1)
+  const wanted = [...new Set(pairs)].filter(p => ROOM_SYMBOL_MAP[p])
+  const missing = wanted.filter(p => !Array.isArray(out[p]))
+  if (missing.length) {
+    // Cold in-memory cache (e.g. right after a redeploy) → hydrate from the DB snapshot so we don't SKIP.
+    const snap = await v2LoadSnapshot('daily_candles_v2')
+    let hyd = 0
+    if (snap) for (const p of missing) { if (Array.isArray(snap[p])) { out[p] = snap[p]; setCache(`tdcandle_dv2_${p}`, snap[p]); hyd++ } }
+    if (hyd) console.log(`📈 [v2 candles] hydrated ${hyd}/${missing.length} from DB snapshot (cold cache)`)
+  }
+  // Persist the good set to DB (throttled ~5min) so the next cold start has candles to serve.
+  const good = Object.fromEntries(Object.entries(out).filter(([, v]) => Array.isArray(v) && v.length))
+  if (Object.keys(good).length && !isCacheFreshFor('daily_candles_db_saved', 5 * 60 * 1000)) {
+    setCache('daily_candles_db_saved', 1)
+    v2SaveSnapshot('daily_candles_v2', good)
+  }
+  return out
+}
 
 async function getPairRoomBatch(candidates) {
   const symbols = [...new Set(candidates.map(c => c.symbol).filter(s => ROOM_SYMBOL_MAP[s]))]
@@ -2962,7 +2985,7 @@ function buildV2Feeds() {
           basket.spx = x.SPY?.price ?? null
         }
       } catch (e) {}
-      try { const gc = await getDailyCandles(['XAUUSD']); const gv = gc.XAUUSD; if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
+      try { const gc = await getV2DailyCandles(['XAUUSD']); const gv = gc.XAUUSD; if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
       try {
         const s = await getLiveStrength()   // safe-haven read for JPY/CHF (0..100 strength)
         const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
@@ -3003,7 +3026,7 @@ function buildV2Feeds() {
     async getPairMarket(pair) {
       // Read from the SHARED candle caches — the first getPairMarket call in a run warms all
       // v2 pairs in one batched request (only stale symbols fetched), the rest hit cache.
-      const daily = await getDailyCandles(V2_CONFIG.PAIRS)
+      const daily = await getV2DailyCandles(V2_CONFIG.PAIRS)
       const dvals = daily[pair]
       if (!Array.isArray(dvals) || dvals.length < 3) {
         console.log(`   [v2 mkt] ${pair}: SKIP no_daily (candles=${Array.isArray(dvals) ? dvals.length : 'none'})`)
