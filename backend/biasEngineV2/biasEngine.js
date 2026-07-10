@@ -35,7 +35,8 @@ const CONFIG = {
   OPEN_THRESHOLD: 1.8,     // |diff| needed to open a bias, and the far side needed to flip (dead-band edge).
                            // Lowered 2.5→1.8 so meaningful signals actually trigger biases for the shadow
                            // review; still a ±1.8 dead-band around zero, so near-zero noise won't whipsaw.
-  ATR_INVALIDATION_MULT: 1.5, // invalidation = entry ± m*ATR
+  ATR_INVALIDATION_MULT: 1.5, // FALLBACK only (when PDH/PDL unavailable): entry ± m*ATR
+  INVALIDATION_ATR_BUFFER: 0.2, // hybrid PDH/PDL invalidation cushion = this × daily ATR (stop-hunt buffer)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
   PAIRS: ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF"],
@@ -173,12 +174,10 @@ function newDirection(diff) {
 /**
  * @param state  existing bias state for this pair, or null if flat
  * @param diff   score(base) - score(quote)
- * @param price  current price
- * @param atr    weekly ATR (price units)
- * @param adrUsedPct  fraction of ADR already spent today (0..1)
- * @param isHighAtrWeek boolean
+ * @param market { price, atr(weekly), adr(daily), pdh, pdl, adrUsedPct, isHighAtrWeek }
  */
-function decide(state, diff, price, atr, adrUsedPct, isHighAtrWeek) {
+function decide(state, diff, market) {
+  const { price, adrUsedPct, isHighAtrWeek } = market;
   const T = CONFIG.OPEN_THRESHOLD;
 
   // --- currently FLAT: consider opening ---
@@ -190,13 +189,13 @@ function decide(state, diff, price, atr, adrUsedPct, isHighAtrWeek) {
     if (adrUsedPct > cap) return { action: "HOLD_FLAT", reason: "adr_exhausted" };
 
     const direction = newDirection(diff);
-    return { action: "OPEN", direction, invalidation: invalidationLevel(direction, price, atr) };
+    return { action: "OPEN", direction, invalidation: invalidationLevel(direction, market) };
   }
 
   // --- currently in a BIAS: hold unless a trigger fires ---
   const dir = state.direction;
 
-  // Trigger B: ATR price invalidation breached?
+  // Trigger B: price broke the PDL (BUY) / PDH (SELL) invalidation level?
   const invalidated =
     (dir === "BUY"  && price <= state.invalidation_level) ||
     (dir === "SELL" && price >= state.invalidation_level);
@@ -207,17 +206,17 @@ function decide(state, diff, price, atr, adrUsedPct, isHighAtrWeek) {
     (dir === "SELL" && diff >= T);
 
   if (invalidated || scoreFlipped) {
-    // If the score still supports the same side but price invalidated, go FLAT (don't force a flip).
+    // If the score still supports the same side but price broke the level, go FLAT (don't force a flip).
     const stillSameSide = dir === newDirection(diff);
     if (invalidated && stillSameSide) {
-      return { action: "CLOSE", reason: "atr_invalidation" }; // exit to flat, wait for re-setup
+      return { action: "CLOSE", reason: "level_break" }; // exit to flat, wait for re-setup
     }
     const direction = newDirection(diff);
     return {
       action: "FLIP",
       direction,
-      invalidation: invalidationLevel(direction, price, atr),
-      reason: invalidated ? "atr_invalidation" : "regime_reversal",
+      invalidation: invalidationLevel(direction, market),
+      reason: invalidated ? "level_break" : "regime_reversal",
     };
   }
 
@@ -225,9 +224,15 @@ function decide(state, diff, price, atr, adrUsedPct, isHighAtrWeek) {
   return { action: "HOLD" };
 }
 
-function invalidationLevel(direction, price, atr) {
-  const m = CONFIG.ATR_INVALIDATION_MULT;
-  return direction === "BUY" ? price - m * atr : price + m * atr;
+// Hybrid PDH/PDL invalidation: a BUY dies below the Previous Day Low, a SELL dies above the
+// Previous Day High, with a small buffer (× daily ATR) so a wick/stop-hunt through the level
+// doesn't falsely invalidate — only a genuine break past PDL/PDH does. Falls back to ATR-distance
+// only when PDH/PDL are unavailable.
+function invalidationLevel(direction, market) {
+  const { price, atr, adr, pdh, pdl } = market;
+  const buffer = CONFIG.INVALIDATION_ATR_BUFFER * (adr ?? atr ?? 0);
+  if (direction === "BUY") return (pdl != null) ? pdl - buffer : price - CONFIG.ATR_INVALIDATION_MULT * atr;
+  return (pdh != null) ? pdh + buffer : price + CONFIG.ATR_INVALIDATION_MULT * atr;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +287,9 @@ async function runEngine({ supabase, feeds, onUsage }) {
       results.push({ pair, diff: +diff.toFixed(2), action: "SKIP", reason: "no_market_data" });
       continue;
     }
-    const { price, atr, adrUsedPct, isHighAtrWeek } = market;
+    const { price, atr } = market;
     const state = await loadState(supabase, pair);
-    const d = decide(state, diff, price, atr, adrUsedPct, isHighAtrWeek);
+    const d = decide(state, diff, market);
 
     if (d.action === "OPEN" || d.action === "FLIP") {
       const thesis = await writeThesis({                                    // Sonnet 5, only on change

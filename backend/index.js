@@ -3020,8 +3020,16 @@ function buildV2Feeds() {
       const wCached = getCached(`tdcandle_w_${pair}`)
       const w = Array.isArray(wCached) ? v2WeeklyAtr(wCached) : null
       if (w) { atr = w.atr; isHighAtrWeek = w.isHighAtrWeek; atrSrc = 'weekly-cache' }
-      console.log(`   [v2 mkt] ${pair}: price=${price} atr=${atr.toFixed(5)} (${atrSrc}) adrUsed=${Math.round(adrUsedPct * 100)}% adr=${adr.toFixed(5)}`)
-      return { price, atr, adrUsedPct, isHighAtrWeek }
+      // Previous completed day = dvals[1] (dvals[0] is today's forming bar) → PDH/PDL, already in the data
+      const prev = dvals[1]
+      const pdh = prev ? parseFloat(prev.high) : null
+      const pdl = prev ? parseFloat(prev.low) : null
+      const dp = pair.includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
+      const buf = V2_CONFIG.INVALIDATION_ATR_BUFFER * adr   // 0.2 × daily ATR cushion
+      const invBuy = pdl != null ? (pdl - buf).toFixed(dp) : 'n/a'
+      const invSell = pdh != null ? (pdh + buf).toFixed(dp) : 'n/a'
+      console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${pdl != null ? pdl.toFixed(dp) : 'n/a'} PDH=${pdh != null ? pdh.toFixed(dp) : 'n/a'} | inval BUY=${invBuy} SELL=${invSell} (buf=${buf.toFixed(dp)}) adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}]`)
+      return { price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
     },
     // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
   }
