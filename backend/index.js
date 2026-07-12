@@ -767,27 +767,67 @@ const getDailyCandles  = (pairs) => fetchCandlesBatch(pairs, '1day',  10 * 60 * 
 // Weekly candles: 6h shared TTL (weekly ATR is a slow, weekly buffer)
 const getWeeklyCandles = (pairs) => fetchCandlesBatch(pairs, '1week', 6 * 60 * 60 * 1000, 'tdcandle_w')
 
-// v2 daily candles: OWN key + 6h TTL + chunk=1, so the 30-min shadow cron reuses them and refetches
-// at most once per 6h (PDH/PDL + ADR are daily metrics, static within the day) — this keeps v2 off
-// v1's 10-min churn that was tripping Basic-8. DB-persist the set so a redeploy hydrates from DB
-// instead of cold-fetching all 8 at once (which 429s). v1 is untouched (separate key + TTL).
+// v2 daily candles: OWN key (tdcandle_dv2) + 6h TTL, so the 30-min shadow cron reuses them and
+// refetches at most once per 6h (PDH/PDL + ADR are daily, static within the day). v1 untouched.
+// COLD-START SEED: tdAcquire allows a burst of up to 7 at once, which still 429s a fresh fill (harder
+// on a closed-market Saturday). So seed SLOWLY — one symbol every ~10s — and DB-persist after EACH
+// symbol so a partial seed survives a mid-fill 429 and the next run resumes where it left off.
+const V2_DAILY_TTL = 6 * 60 * 60 * 1000
+const V2_SEED_GAP_MS = 10 * 1000
 async function getV2DailyCandles(pairs) {
-  const out = await fetchCandlesBatch(pairs, '1day', 6 * 60 * 60 * 1000, 'tdcandle_dv2', 1)
   const wanted = [...new Set(pairs)].filter(p => ROOM_SYMBOL_MAP[p])
+  const out = {}
+  const stale = []
+  for (const p of wanted) {
+    if (isCacheFreshFor(`tdcandle_dv2_${p}`, V2_DAILY_TTL)) out[p] = getCached(`tdcandle_dv2_${p}`)
+    else stale.push(p)
+  }
+
+  // Load the DB snapshot once — used both as the MERGE BASE for persistence and as the recovery
+  // source, so a partial re-seed never overwrites previously-good symbols in the snapshot.
+  let _db = null
+  const loadDb = async () => { if (_db === null) _db = (await v2LoadSnapshot('daily_candles_v2')) || {}; return _db }
+
+  // Slow, paced seed of stale/cold symbols — one at a time, ~10s apart. Guarded so only one seeding
+  // pass runs at a time (a run's first getPairMarket call seeds all; later pairs hit the warm cache).
+  if (stale.length && !isCacheFreshFor('tdcandle_dv2_seeding', 3 * 60 * 1000)) {
+    setCache('tdcandle_dv2_seeding', 1)
+    const base = await loadDb()   // merge base — keeps prior-good symbols we don't re-seed this pass
+    let got = 0
+    for (const p of stale) {
+      try {
+        await tdAcquire(1)
+        const r = await axios.get('https://api.twelvedata.com/time_series', {
+          params: { symbol: ROOM_SYMBOL_MAP[p], interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
+        })
+        if (r.data?.code) {
+          console.warn(`⚠️ [v2 candles] ${p} error code=${r.data.code} "${r.data.message || ''}"`)
+        } else if (Array.isArray(r.data?.values)) {
+          setCache(`tdcandle_dv2_${p}`, r.data.values); out[p] = r.data.values; base[p] = r.data.values; got++
+          // incremental persist of the MERGED snapshot — a partial seed survives a later 429
+          v2SaveSnapshot('daily_candles_v2', base)
+        }
+      } catch (e) { console.warn(`⚠️ [v2 candles] ${p} fetch failed: ${e?.message}`) }
+      await new Promise(res => setTimeout(res, V2_SEED_GAP_MS))   // slow stagger (cold seed only)
+    }
+    console.log(`📈 [v2 candles] slow-seed ${got}/${stale.length} fetched → ${Object.keys(out).length}/${wanted.length} present`)
+  }
+
+  // Anything still missing: expired in-memory cache → then DB snapshot (survives restarts / partial seed).
   const missing = wanted.filter(p => !Array.isArray(out[p]))
   if (missing.length) {
-    // Cold in-memory cache (e.g. right after a redeploy) → hydrate from the DB snapshot so we don't SKIP.
-    const snap = await v2LoadSnapshot('daily_candles_v2')
-    let hyd = 0
-    if (snap) for (const p of missing) { if (Array.isArray(snap[p])) { out[p] = snap[p]; setCache(`tdcandle_dv2_${p}`, snap[p]); hyd++ } }
-    if (hyd) console.log(`📈 [v2 candles] hydrated ${hyd}/${missing.length} from DB snapshot (cold cache)`)
+    let recovered = 0
+    for (const p of missing) { const old = getCached(`tdcandle_dv2_${p}`); if (Array.isArray(old)) { out[p] = old; recovered++ } }
+    const stillMissing = wanted.filter(p => !Array.isArray(out[p]))
+    if (stillMissing.length) {
+      const snap = await loadDb()
+      for (const p of stillMissing) { if (Array.isArray(snap[p])) { out[p] = snap[p]; setCache(`tdcandle_dv2_${p}`, snap[p]); recovered++ } }
+    }
+    if (recovered) console.log(`📈 [v2 candles] recovered ${recovered}/${missing.length} from stale/DB`)
+    const finalMissing = wanted.filter(p => !Array.isArray(out[p]))
+    if (finalMissing.length) console.warn(`📈 [v2 candles] ${finalMissing.length} still missing (${finalMissing.join(',')}) — will seed next run`)
   }
-  // Persist the good set to DB (throttled ~5min) so the next cold start has candles to serve.
-  const good = Object.fromEntries(Object.entries(out).filter(([, v]) => Array.isArray(v) && v.length))
-  if (Object.keys(good).length && !isCacheFreshFor('daily_candles_db_saved', 5 * 60 * 1000)) {
-    setCache('daily_candles_db_saved', 1)
-    v2SaveSnapshot('daily_candles_v2', good)
-  }
+
   return out
 }
 
@@ -2985,7 +3025,9 @@ function buildV2Feeds() {
           basket.spx = x.SPY?.price ?? null
         }
       } catch (e) {}
-      try { const gc = await getV2DailyCandles(['XAUUSD']); const gv = gc.XAUUSD; if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
+      // read-only: don't trigger the paced seed here (would grab the seed guard before the pair loop);
+      // gold comes from whatever the pair loop / a prior run already seeded, else the basket snapshot fills it.
+      try { const gv = getCached('tdcandle_dv2_XAUUSD'); if (Array.isArray(gv) && gv[0]) basket.gold = parseFloat(gv[0].close) } catch (e) {}
       try {
         const s = await getLiveStrength()   // safe-haven read for JPY/CHF (0..100 strength)
         const find = c => s?.currencies?.find(z => z.currency === c)?.strength ?? null
