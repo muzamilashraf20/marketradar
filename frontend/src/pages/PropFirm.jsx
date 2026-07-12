@@ -10,6 +10,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 // ============================================
 const FIRM_PRESETS = {
   custom: { label: 'Custom', accountSizes: [], dailyDD: 5, totalDD: 10, profitTarget: 10, challengeDays: 30, consistency: null },
+  fundingpips: { label: 'FundingPips (2-Step)', accountSizes: [5000, 10000, 25000, 50000, 100000], dailyDD: 5, totalDD: 10, profitTarget: 8, challengeDays: 0, consistency: null },
   ftmo: { label: 'FTMO', accountSizes: [10000, 25000, 50000, 100000, 200000], dailyDD: 5, totalDD: 10, profitTarget: 10, challengeDays: 30, consistency: null },
   mff: { label: 'MyFundedFX', accountSizes: [5000, 10000, 25000, 50000, 100000, 200000], dailyDD: 5, totalDD: 10, profitTarget: 8, challengeDays: 30, consistency: null },
   the5ers: { label: 'The5%ers', accountSizes: [6000, 20000, 40000, 100000], dailyDD: 4, totalDD: 6, profitTarget: 6, challengeDays: 0, consistency: null },
@@ -33,9 +34,9 @@ export default function PropFirmMode() {
   const [challengeDays, setChallengeDays] = useState(30);
 
   // Current State
-  const [currentDailyPnl, setCurrentDailyPnl] = useState(0);
-  const [currentTotalPnl, setCurrentTotalPnl] = useState(0);
-  const [bestDayProfit, setBestDayProfit] = useState(0);
+  const [currentDailyPnl, setCurrentDailyPnl] = useState('');
+  const [currentTotalPnl, setCurrentTotalPnl] = useState('');
+  const [bestDayProfit, setBestDayProfit] = useState('');
 
   // AI Guardian State
   const [tradeSymbol, setTradeSymbol] = useState('EUR/USD');
@@ -60,9 +61,9 @@ export default function PropFirmMode() {
         setRiskPerTrade(data.riskPerTrade || 1);
         setChallengeStartDate(data.challengeStartDate || '');
         setChallengeDays(data.challengeDays || 30);
-        setCurrentDailyPnl(data.currentDailyPnl || 0);
-        setCurrentTotalPnl(data.currentTotalPnl || 0);
-        setBestDayProfit(data.bestDayProfit || 0);
+        setCurrentDailyPnl(String(data.currentDailyPnl ?? ''));
+        setCurrentTotalPnl(String(data.currentTotalPnl ?? ''));
+        setBestDayProfit(String(data.bestDayProfit ?? ''));
       } catch (e) {
         console.error('Failed to load saved settings:', e);
       }
@@ -80,9 +81,9 @@ export default function PropFirmMode() {
   };
 
   const handleReset = () => {
-    setCurrentDailyPnl(0);
-    setCurrentTotalPnl(0);
-    setBestDayProfit(0);
+    setCurrentDailyPnl('');
+    setCurrentTotalPnl('');
+    setBestDayProfit('');
   };
 
   const applyPreset = (firmKey) => {
@@ -103,8 +104,11 @@ export default function PropFirmMode() {
   const maxTotalLoss = (accountSize * totalDrawdownPercent) / 100;
   const profitTargetAmount = (accountSize * profitTarget) / 100;
 
-  const dailyLossUsed = Math.abs(Math.min(currentDailyPnl, 0));
-  const totalLossUsed = Math.abs(Math.min(currentTotalPnl, 0));
+  const dailyPnlNum = Number(currentDailyPnl) || 0;
+  const totalPnlNum = Number(currentTotalPnl) || 0;
+  const bestDayNum = Number(bestDayProfit) || 0;
+  const dailyLossUsed = Math.abs(Math.min(dailyPnlNum, 0));
+  const totalLossUsed = Math.abs(Math.min(totalPnlNum, 0));
 
   const dailyLossRemaining = Math.max(0, maxDailyLoss - dailyLossUsed);
   const totalLossRemaining = Math.max(0, maxTotalLoss - totalLossUsed);
@@ -120,18 +124,18 @@ export default function PropFirmMode() {
     ? Math.max(0, Math.floor((new Date() - new Date(challengeStartDate)) / (1000 * 60 * 60 * 24)))
     : 0;
   const daysRemaining = challengeDays > 0 ? Math.max(0, challengeDays - daysElapsed) : null;
-  const profitProgress = profitTargetAmount > 0 ? Math.min(100, Math.max(0, (currentTotalPnl / profitTargetAmount) * 100)) : 0;
+  const profitProgress = profitTargetAmount > 0 ? Math.min(100, Math.max(0, (totalPnlNum / profitTargetAmount) * 100)) : 0;
 
   // Consistency rule check
   const firmPreset = FIRM_PRESETS[selectedFirm];
   const consistencyLimit = firmPreset?.consistency;
-  const consistencyViolation = consistencyLimit && currentTotalPnl > 0 && bestDayProfit > 0
-    ? (bestDayProfit / currentTotalPnl) * 100 > consistencyLimit
+  const consistencyViolation = consistencyLimit && totalPnlNum > 0 && bestDayNum > 0
+    ? (bestDayNum / totalPnlNum) * 100 > consistencyLimit
     : false;
 
   // Daily target to stay on track
   const dailyTargetToHitGoal = daysRemaining && daysRemaining > 0
-    ? Math.max(0, (profitTargetAmount - Math.max(0, currentTotalPnl)) / daysRemaining)
+    ? Math.max(0, (profitTargetAmount - Math.max(0, totalPnlNum)) / daysRemaining)
     : 0;
 
   // AI Guardian Handler
@@ -291,8 +295,8 @@ export default function PropFirmMode() {
             </p>
             <div className="flex items-end justify-between mb-2">
               <div>
-                <p className={`text-2xl font-black ${currentTotalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  ${currentTotalPnl >= 0 ? '+' : ''}{currentTotalPnl.toLocaleString()}
+                <p className={`text-2xl font-black ${totalPnlNum >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  ${totalPnlNum >= 0 ? '+' : ''}{totalPnlNum.toLocaleString()}
                 </p>
                 <p className="text-xs text-slate-500">of ${profitTargetAmount.toLocaleString()} target</p>
               </div>
@@ -334,8 +338,8 @@ export default function PropFirmMode() {
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
                 {selectedFirm !== 'custom' ? FIRM_PRESETS[selectedFirm].label : 'Firm'} rule: No single day can be more than {consistencyLimit}% of total profit.
-                {bestDayProfit > 0 && currentTotalPnl > 0 && (
-                  <span className="text-slate-300"> Your best day (${bestDayProfit}) is {((bestDayProfit / currentTotalPnl) * 100).toFixed(1)}% of total profit.</span>
+                {bestDayNum > 0 && totalPnlNum > 0 && (
+                  <span className="text-slate-300"> Your best day (${bestDayNum}) is {((bestDayNum / totalPnlNum) * 100).toFixed(1)}% of total profit.</span>
                 )}
               </p>
             </div>
@@ -491,21 +495,21 @@ export default function PropFirmMode() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs uppercase tracking-wider text-slate-400 mb-2">Today's P&L ($)</label>
-              <input type="number" value={currentDailyPnl} onChange={(e) => setCurrentDailyPnl(Number(e.target.value))}
+              <input type="text" inputMode="decimal" value={currentDailyPnl} onChange={(e) => setCurrentDailyPnl(e.target.value)}
                 className="w-full bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500" placeholder="0" />
               <p className="text-xs text-slate-500 mt-1">Negative = loss, positive = profit</p>
             </div>
 
             <div>
               <label className="block text-xs uppercase tracking-wider text-slate-400 mb-2">Total P&L ($)</label>
-              <input type="number" value={currentTotalPnl} onChange={(e) => setCurrentTotalPnl(Number(e.target.value))}
+              <input type="text" inputMode="decimal" value={currentTotalPnl} onChange={(e) => setCurrentTotalPnl(e.target.value)}
                 className="w-full bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500" placeholder="0" />
               <p className="text-xs text-slate-500 mt-1">Total since challenge start</p>
             </div>
 
             <div>
               <label className="block text-xs uppercase tracking-wider text-slate-400 mb-2">Best Single Day ($)</label>
-              <input type="number" value={bestDayProfit} onChange={(e) => setBestDayProfit(Number(e.target.value))}
+              <input type="text" inputMode="decimal" value={bestDayProfit} onChange={(e) => setBestDayProfit(e.target.value)}
                 className="w-full bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500" placeholder="0" />
               <p className="text-xs text-slate-500 mt-1">For consistency rule check</p>
             </div>
