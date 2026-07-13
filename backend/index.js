@@ -1020,7 +1020,7 @@ async function fetchCrossAssetLive() {
 // Fetch US Treasury yields (2yr + 10yr) from FRED — 6h cache. Real-time USD rate-expectations read.
 async function fetchYields() {
   if (isCacheFreshFor('yields_fred', 6 * 60 * 60 * 1000)) return getCached('yields_fred')
-  const key = process.env.FRED_API_KEY
+  const key = process.env.FRED_API_KEY?.trim()
   if (!key) { console.warn('🏦 FRED: FRED_API_KEY not set in env'); return null }
   const getSeries = async (id) => {
     const maskedUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=***&file_type=json&sort_order=desc&limit=8`
@@ -1049,7 +1049,7 @@ async function fetchYields() {
 // Fetch latest US economic ACTUALS from FRED (free) — fills the surprise gap the FF feed lacks. 12h cache.
 async function fetchUSActuals() {
   if (isCacheFreshFor('us_actuals_fred', 12 * 60 * 60 * 1000)) return getCached('us_actuals_fred')
-  const key = process.env.FRED_API_KEY
+  const key = process.env.FRED_API_KEY?.trim()
   if (!key) return null
   const SERIES = [
     { id: 'CPIAUCSL', label: 'CPI',                 kind: 'yoy' },
