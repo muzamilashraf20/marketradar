@@ -2685,7 +2685,7 @@ async function getCOTData() {
     // ── Fetch 1: Financial instruments (currencies) ──
     const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
                    '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
-    const finRes = await fetch(finUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' }, signal: AbortSignal.timeout(12000) })
+    const finRes = await fetch(finUrl, { headers: FF_HEADERS, signal: AbortSignal.timeout(12000) })
     if (!finRes.ok) console.warn(`⚠️ COT financial fetch HTTP ${finRes.status} — currency positioning unavailable`)
 
     if (finRes.ok) {
@@ -2747,7 +2747,7 @@ async function getCOTData() {
    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
                '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
                '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27)'
-    const comRes = await fetch(comUrl, { headers: { 'Accept': 'application/json', 'User-Agent': 'BiasForge/1.0' }, signal: AbortSignal.timeout(12000) })
+    const comRes = await fetch(comUrl, { headers: FF_HEADERS, signal: AbortSignal.timeout(12000) })
     if (!comRes.ok) console.warn(`⚠️ COT commodity fetch HTTP ${comRes.status} — gold/XAU positioning unavailable`)
 
     if (comRes.ok) {
