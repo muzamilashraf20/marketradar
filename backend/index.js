@@ -2905,15 +2905,30 @@ let v2LastGoodCOT = null      // last non-empty COT snapshot → durability for 
 let v2LastGoodYields = null   // last-good yields snapshot → durability for XAU macro
 let v2LastGoodBasket = null   // last-good risk basket (per-field) → durability for sentiment
 
-// FRED is flaky — derive the real-yield direction from TLT (20y+ treasury ETF) instead, sourced
-// from the already-working, cached, rate-limited cross-asset feed. TLT up → long yields DOWN → gold+.
-async function yieldsProxyFromTLT() {
+// LIVE real-yield DIRECTION. FRED yields carry accurate LEVELS but publish 1-2 days late (govt lag),
+// so they cannot convey TODAY's direction. TLT (20y+ treasury ETF) moves inverse to long yields in
+// real time; UUP (dollar ETF) confirms. Requiring TLT+UUP AGREEMENT filters TLT's single-day noise —
+// a lone TLT tick is noise, but TLT-down + USD-up together is a real gold-negative signal.
+async function liveYieldDirection() {
   const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT, UUP, VIXY } from TwelveData
-  const tlt = x?.TLT
+  const tlt = x?.TLT, uup = x?.UUP
   if (!tlt || tlt.price == null) return null
-  const dir = tlt.change > 0 ? 'falling (TLT up) → gold-positive'
-            : tlt.change < 0 ? 'rising (TLT down) → gold-negative' : 'flat'
-  return { source: 'TLT-proxy', tlt_price: tlt.price, tlt_change_pct: tlt.change, real_yield_direction: dir }
+  // express both in GOLD-POSITIVE space: +1 = gold-positive, -1 = gold-negative
+  const tltDir = tlt.change > 0 ? 1 : tlt.change < 0 ? -1 : 0        // TLT up = long yields DOWN = gold+
+  const uupDir = (uup && uup.change != null)
+    ? (uup.change > 0 ? -1 : uup.change < 0 ? 1 : 0)                 // USD (UUP) up = gold-
+    : 0
+  const agree = tltDir !== 0 && tltDir === uupDir
+  let real_yield_direction, direction_confidence
+  if (agree && tltDir > 0)       { real_yield_direction = 'falling yields + soft USD → gold-positive'; direction_confidence = 'high' }
+  else if (agree && tltDir < 0)  { real_yield_direction = 'rising yields + firm USD → gold-negative';  direction_confidence = 'high' }
+  else if (tltDir < 0 || uupDir < 0) { real_yield_direction = 'leaning gold-negative (rising yields or firm USD)'; direction_confidence = 'mixed' }
+  else if (tltDir > 0 || uupDir > 0) { real_yield_direction = 'leaning gold-positive (falling yields or soft USD)'; direction_confidence = 'mixed' }
+  else                           { real_yield_direction = 'flat / conflicting'; direction_confidence = 'low' }
+  return {
+    source: 'TLT+UUP (live)', real_yield_direction, direction_confidence,
+    tlt_change_pct: tlt.change, uup_change_pct: uup?.change ?? null,
+  }
 }
 
 // DB-backed durability for v2 last-good snapshots (COT, risk basket). The cron process can reset
@@ -3052,10 +3067,33 @@ function buildV2Feeds() {
       // (working, cached, rate-limited) cross-asset feed. Keep a last-good snapshot either way.
       let y = null, src = null
       try { y = await fetchYields() } catch (e) {}
-      if (y && (y.y2?.value != null || y.y10?.value != null)) src = 'FRED'
-      else {
-        try { const proxy = await yieldsProxyFromTLT(); if (proxy) { y = proxy; src = 'TLT-proxy' } } catch (e) {}
+
+      // FRED gives accurate LEVELS but lags 1-2 days, so it cannot convey TODAY's direction.
+      // Always derive DIRECTION from the live TLT+UUP feed and attach it; keep FRED's level for
+      // context and flag staleness so the scorer trusts the live direction over the stale day-change.
+      let live = null
+      try { live = await liveYieldDirection() } catch (e) {}
+      const fredDate = y?.y2?.date || y?.y10?.date || null
+      const fredAgeDays = fredDate ? Math.floor((Date.now() - new Date(fredDate + 'T00:00:00Z').getTime()) / 86400000) : null
+      const fredStale = (fredAgeDays == null) ? true : (fredAgeDays >= 1)
+
+      if (y && (y.y2?.value != null || y.y10?.value != null)) {
+        src = live ? 'FRED-level + live-dir' : 'FRED'
+        y = {
+          ...y,
+          fred_date: fredDate,
+          fred_stale: fredStale,
+          real_yield_direction: live?.real_yield_direction ?? '(FRED day-change only — may be 1-2 days stale)',
+          direction_source: live?.source ?? 'FRED (stale)',
+          direction_confidence: live?.direction_confidence ?? 'low',
+          tlt_change_pct: live?.tlt_change_pct ?? null,
+          uup_change_pct: live?.uup_change_pct ?? null,
+        }
+      } else if (live) {
+        src = 'live-dir'
+        y = live
       }
+
       if (src) {
         v2LastGoodYields = y
         console.log(`   [v2 yields] fresh (${src}) ${JSON.stringify(y)}`)
