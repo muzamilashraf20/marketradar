@@ -17,7 +17,6 @@ import Terms from './pages/Terms'
 import Privacy from './pages/Privacy'
 import Refund from './pages/Refund'
 import Contact from './pages/Contact'
-import Blog from './pages/Blog'
 import Changelog from './pages/Changelog'
 import PropFirm from './pages/PropFirm'
 import Playbooks from './pages/Playbooks'
@@ -53,7 +52,6 @@ export default function App() {
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/refund" element={<Refund />} />
         <Route path="/contact" element={<Contact />} />
-        <Route path="/blog" element={<Blog />} />
         <Route path="/changelog" element={<Changelog />} />
 
         {/* Protected Routes — FREE users can access */}
