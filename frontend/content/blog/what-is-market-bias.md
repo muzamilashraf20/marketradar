@@ -44,9 +44,9 @@ The strongest read blends both: fundamentals set the direction, technicals time 
 
 A serious fundamental bias isn't one number or one headline. It's a weighing of several inputs that either line up or fight each other:
 
-- **Price action** — what structure is actually doing right now, and whether it confirms or contradicts the fundamental story.
+- **Price action** — [what structure is actually doing right now](/blog/price-action-fundamental-context), and whether it confirms or contradicts the fundamental story.
 - **The economic calendar** — [scheduled releases like CPI, NFP and central bank decisions](/blog/how-to-trade-high-impact-news) that can reprice an asset in seconds.
-- **Breaking news** — unscheduled events, from geopolitics to central-banker comments, scored for genuine market impact rather than noise.
+- **Breaking news** — [unscheduled events, from geopolitics to central-banker comments](/blog/trading-breaking-news), scored for genuine market impact rather than noise.
 - **Institutional positioning (COT)** — what the largest players are actually holding, via the [weekly Commitments of Traders report](/blog/how-to-read-the-cot-report).
 - **Cross-asset flows** — [the dollar index, bond yields, and risk proxies](/blog/cross-asset-flows-dollar-yields) that quietly drive FX and gold from the outside.
 
