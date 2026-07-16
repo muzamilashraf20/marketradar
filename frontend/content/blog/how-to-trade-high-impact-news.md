@@ -2,7 +2,7 @@
 title: "How to Trade High-Impact News (Without Gambling on the Number)"
 description: "High-impact news moves markets in seconds, and most traders treat it like a coin flip. Here's how to trade the economic calendar with a bias instead of a bet — before, during, and after the release."
 slug: "how-to-trade-high-impact-news"
-date: "2026-07-16"
+date: "2026-07-17"
 category: "Economic Calendar"
 tags: ["economic calendar", "news trading", "high-impact news", "NFP", "CPI", "forex"]
 ogImage: "/og-image.png"
