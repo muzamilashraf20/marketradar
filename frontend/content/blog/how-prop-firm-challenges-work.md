@@ -61,7 +61,7 @@ Your maximum drawdown comes in two flavors:
 
 > Picture it in action. You take a $100k account up to $106k — you're up 6%, feeling great. Then a losing streak drags you back toward breakeven. With a static drawdown you have enormous room. With a *trailing* drawdown, that $6k of profit quietly raised your floor, and giving it back can breach the limit even though your account is still above its starting balance. Traders blow trailing-drawdown challenges while nominally "in profit" all the time, purely because they didn't know which type they were trading.
 
-Before your first trade, know exactly which drawdown model your firm uses and where, in real dollars, your line sits today.
+Before your first trade, know exactly [which drawdown model your firm uses](/blog/trailing-vs-static-drawdown) and where, in real dollars, your line sits today.
 
 ## Why most traders fail
 
@@ -82,7 +82,7 @@ Notice the pattern: every one of these is a *risk* failure, not a *skill* failur
 The mindset shift is everything. **Stop trying to pass the challenge and start trying to not fail it.** The target takes care of itself when you simply refuse to breach a rule.
 
 1. **Read the rulebook first — twice.** Daily limit, max drawdown (static or trailing?), minimum days, consistency, news rules. Write your real dollar lines down.
-2. **Risk small and fixed.** Keeping risk to roughly 0.5–1% per trade means it takes a genuinely awful run — not one bad trade — to threaten a daily limit.
+2. **[Risk small and fixed](/blog/prop-firm-risk-management).** Keeping risk to roughly 0.5–1% per trade means it takes a genuinely awful run — not one bad trade — to threaten a daily limit.
 3. **Treat the daily loss limit as a hard stop.** Set a personal daily loss *below* the firm's, and when you hit it, you're done for the day. No negotiating.
 4. **Slow down.** There's no prize for passing fast. Fewer, higher-conviction trades beat a flurry of marginal ones every time.
 5. **Trade a thesis, not candles.** Enter with a clear [market bias](/blog/what-is-market-bias) and a defined invalidation, so every trade has a reason and a pre-set exit for when you're wrong.
