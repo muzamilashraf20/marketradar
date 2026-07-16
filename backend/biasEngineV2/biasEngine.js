@@ -31,6 +31,11 @@ const MODELS = {
 };
 
 // --- tunable config ----------------------------------------------------------
+// Gold disabled from v2 OUTPUT for launch — unreliable direction in headline-driven chop (real yields
+// vs safe-haven vs oil/inflation conflict). Gold price still feeds cross-asset / COT / yields as an
+// INPUT. Flip V2_GOLD_ENABLED to true post-launch to restore, after the gold-specific rework.
+const V2_GOLD_ENABLED = false;
+const V2_ALL_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF"];
 const CONFIG = {
   OPEN_THRESHOLD: 1.8,     // |diff| needed to open a bias, and the far side needed to flip (dead-band edge).
                            // Lowered 2.5→1.8 so meaningful signals actually trigger biases for the shadow
@@ -39,7 +44,7 @@ const CONFIG = {
   INVALIDATION_ATR_BUFFER: 0.2, // hybrid PDH/PDL invalidation cushion = this × daily ATR (stop-hunt buffer)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
-  PAIRS: ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF"],
+  PAIRS: V2_ALL_PAIRS.filter(p => V2_GOLD_ENABLED || p !== "XAUUSD"),
   // pip size per pair for MFE/MAE + invalidation reporting
   PIP: { XAUUSD: 0.1, USDJPY: 0.01, default: 0.0001 },
 };
