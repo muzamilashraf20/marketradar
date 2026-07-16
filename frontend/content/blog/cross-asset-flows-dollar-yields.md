@@ -41,7 +41,7 @@ Those are two completely different trades with different risks, and you can only
 
 ## Driver two: yields are the engine
 
-If the dollar is the tide, **bond yields are the engine underneath it.** Yields are the price of money, and capital flows toward wherever it's paid best.
+If the dollar is the tide, **bond yields are the engine underneath it.** Yields are the price of money — set, ultimately, by [what central banks are expected to do](/blog/how-central-banks-move-markets) — and capital flows toward wherever it's paid best.
 
 | When... | The dollar tends to... | Gold tends to... |
 |---|---|---|
