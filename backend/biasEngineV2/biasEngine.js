@@ -269,11 +269,12 @@ async function runEngine({ supabase, feeds, onUsage }) {
   const cot         = await feeds.getCOT();                  // { USD:{net, change}, ..., XAU:{...} }
   const riskBasket  = await feeds.getRiskBasket();           // { vix, gold, dxy, spx, jpy, chf }
   const yields      = await feeds.getYields?.();             // { y2, y10 } — real-rate proxy for XAU macro
+  const rates       = await feeds.getRates?.();              // { USD:{value,change}, EUR:{...}, CAD:{...} } — 2Y govt yields
 
   const regime = detectRegime(calendar);
 
   const digest = await extractSignals({ cbText, newsItems }, onUsage);                                     // Haiku
-  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket, yields } }, onUsage); // Sonnet 5
+  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket, yields, rates } }, onUsage); // Sonnet 5
   const comp   = composite(scores, regime.weights);
 
   // XAU is scored as its own asset (macro=real-yields/Fed, orderflow=gold COT, sentiment=risk-off),

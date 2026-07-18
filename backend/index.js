@@ -1047,6 +1047,72 @@ async function fetchYields() {
 }
 
 // Fetch latest US economic ACTUALS from FRED (free) — fills the surprise gap the FF feed lacks. 12h cache.
+// 2-YEAR GOVERNMENT YIELDS — the primary FX driver (rate differentials). All three sources are free
+// and daily. TwelveData carries no sovereign yield series, so each central bank is queried directly:
+//   USD → FRED DGS2 | EUR → ECB AAA yield curve 2Y | CAD → Bank of Canada Valet (no key needed)
+// We keep BOTH the level and the 1-day change; the CHANGE is what actually moves FX.
+const RATE_TTL = 60 * 60 * 1000   // 1h — these are daily series, no need to hammer them
+let lastGoodRates = null
+async function fetchRateDifferentials() {
+  const cached = getCached('rate_diffs_v2')
+  if (isCacheFreshFor('rate_diffs_v2', RATE_TTL) && cached) return cached
+  const pick = (rows) => rows.length >= 2
+    ? { value: rows[0].v, change: +(rows[0].v - rows[1].v).toFixed(3), date: rows[0].d }
+    : null
+  const desc = (rows) => rows.sort((a, b) => (a.d < b.d ? 1 : -1))
+  const out = {}
+  // USD — FRED DGS2 (daily 2Y constant maturity). '.' marks a holiday/no-print day.
+  try {
+    const key = (process.env.FRED_API_KEY || '').trim()
+    if (key) {
+      const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
+        params: { series_id: 'DGS2', api_key: key, file_type: 'json', sort_order: 'desc', limit: 5 },
+        timeout: 12000,
+      })
+      const rows = (r.data?.observations || [])
+        .filter(o => o.value !== '.')
+        .map(o => ({ d: o.date, v: parseFloat(o.value) }))
+        .filter(o => !isNaN(o.v))
+      out.USD = pick(desc(rows))
+    }
+  } catch (e) { console.warn(`⚠️ [rates] USD/FRED failed: ${e?.message}`) }
+  // EUR — ECB SDMX. Observations are index-keyed; the index maps into structure.dimensions.observation[0].values.
+  try {
+    const r = await axios.get('https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y', {
+      params: { lastNObservations: 5, format: 'jsondata' }, timeout: 12000,
+    })
+    const j = r.data
+    const series = j?.dataSets?.[0]?.series
+    const k = series && Object.keys(series)[0]
+    const obs = k ? series[k].observations : null
+    const times = j?.structure?.dimensions?.observation?.[0]?.values || []
+    if (obs) {
+      const rows = Object.entries(obs)
+        .map(([i, v]) => ({ d: times[+i]?.id, v: v[0] }))
+        .filter(o => o.d != null && o.v != null)
+        .map(o => ({ d: o.d, v: +(+o.v).toFixed(3) }))
+      out.EUR = pick(desc(rows))
+    }
+  } catch (e) { console.warn(`⚠️ [rates] EUR/ECB failed: ${e?.message}`) }
+  // CAD — Bank of Canada Valet, no API key required.
+  try {
+    const id = 'BD.CDN.2YR.DQ.YLD'
+    const r = await axios.get(`https://www.bankofcanada.ca/valet/observations/${id}/json`, {
+      params: { recent: 5 }, timeout: 12000,
+    })
+    const rows = (r.data?.observations || [])
+      .map(o => ({ d: o.d, v: parseFloat(o[id]?.v) }))
+      .filter(o => !isNaN(o.v))
+    out.CAD = pick(desc(rows))
+  } catch (e) { console.warn(`⚠️ [rates] CAD/BoC failed: ${e?.message}`) }
+  // Per-currency last-good fallback so one flaky source never blanks the whole set.
+  const merged = { ...out }
+  if (lastGoodRates) for (const c of Object.keys(lastGoodRates)) { if (!merged[c] && lastGoodRates[c]) merged[c] = lastGoodRates[c] }
+  const fresh = Object.keys(out).filter(c => out[c])
+  if (fresh.length) { lastGoodRates = { ...(lastGoodRates || {}), ...Object.fromEntries(fresh.map(c => [c, out[c]])) }; setCache('rate_diffs_v2', merged) }
+  console.log(`   [v2 rates] ${fresh.length}/3 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
+  return merged
+}
 async function fetchUSActuals() {
   if (isCacheFreshFor('us_actuals_fred', 12 * 60 * 60 * 1000)) return getCached('us_actuals_fred')
   const key = process.env.FRED_API_KEY?.trim()
@@ -3063,6 +3129,10 @@ function buildV2Feeds() {
       }
       console.log(`   [v2 basket] ${freshEntries.length}/6 fresh${filled ? `, ${filled} from cache` : ''} → vix=${merged.vix ?? 'n/a'} spx=${merged.spx ?? 'n/a'} dxy=${merged.dxy ?? 'n/a'} gold=${merged.gold ?? 'n/a'} jpy=${merged.jpy ?? 'n/a'} chf=${merged.chf ?? 'n/a'}`)
       return merged
+    },
+    // 2Y government yields per currency — the rate-differential driver for FX macro scoring.
+    async getRates() {
+      try { return await fetchRateDifferentials() } catch (e) { console.warn(`⚠️ [v2 rates] failed: ${e?.message}`); return {} }
     },
     async getYields() {
       // Primary: FRED US2Y/US10Y. FRED is flaky, so on failure fall back to a TLT proxy from the

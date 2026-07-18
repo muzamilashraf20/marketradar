@@ -46,9 +46,17 @@ does that with regime weights.
 
 SCORE THE THREE COMPONENTS INDEPENDENTLY:
 
-1. macro  (-5..+5): central-bank stance (hawkish positive, dovish negative) plus data surprises.
-   A clearly hawkish CB with hot data = strongly positive. Dovish/cutting with weak data = strongly negative.
-   Neutral / no news = near 0.
+1. macro  (-5..+5): PRIMARY driver is the 2-YEAR GOVERNMENT BOND YIELD, because it prices rate
+   expectations and rate differentials are what actually move FX. Score the 1-day CHANGE, not the level:
+   a rising 2Y = the market is repricing that central bank hawkishly = positive for that currency; a
+   falling 2Y = negative. Treat a move of roughly 5bp (0.05) or more as meaningful; smaller is noise → near 0.
+   SECONDARY: central-bank stance (hawkish positive, dovish negative) and data surprises, which should
+   CONFIRM or TEMPER the yield signal rather than override it. If a currency has no 2Y data provided,
+   fall back to CB stance and data alone. Neutral / no news = near 0.
+   FRESHNESS IS MANDATORY: only score a catalyst that is from TODAY or the last session. A release or
+   speech older than ~48h is ALREADY PRICED IN and must NOT be scored as a fresh driver — at most it is
+   background context worth |1|. Never describe stale data as a "fresh repricing". If the only inputs you
+   have are older than that, macro is near 0, not a strong score.
 
 2. orderflow (-5..+5): COT positioning. Large one-sided NET speculative long = positive; net short = negative.
    Weight the WEEK-OVER-WEEK CHANGE too: fresh accumulation matters more than stale extremes.
@@ -72,6 +80,10 @@ SPECIAL ASSET — XAU (GOLD, priced in USD). Score it on the SAME -5..+5 scale, 
 RULES:
 - Score ONLY from the data provided. If a component has no supporting data for a currency, score it 0.
 - Be conservative: reserve |4| and |5| for genuinely strong, well-supported signals. Most scores sit in -3..+3.
+- CONFLICT RULE: when the evidence inside a single component points BOTH ways (e.g. hawkish CB but weak
+  data; risk-off equities but a bid in high-beta FX), that is genuine uncertainty — score it SMALL (0 to |1|),
+  never split the difference into a confident number. A near-0 score on a conflicted day is the CORRECT
+  answer; forcing a direction out of contradictory evidence is the single most damaging error you can make.
 - 'note' is max 12 words, factual, states the main driver.
 
 Output STRICT JSON only, no markdown, no preamble:
@@ -95,6 +107,8 @@ ${JSON.stringify(marketData.cot, null, 2)}
 CROSS-ASSET / RISK BASKET:
 ${JSON.stringify(marketData.riskBasket, null, 2)}
 
+2-YEAR GOVERNMENT BOND YIELDS (level + 1-day change, in %). The CHANGE is the rate-repricing signal:
+${JSON.stringify(marketData.rates ?? {}, null, 2)}
 YIELDS (US2Y / US10Y — real-rate proxy for XAU macro; falling yields = gold-positive):
 ${JSON.stringify(marketData.yields ?? {}, null, 2)}
 
