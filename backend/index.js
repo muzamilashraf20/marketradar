@@ -1105,12 +1105,58 @@ async function fetchRateDifferentials() {
       .filter(o => !isNaN(o.v))
     out.CAD = pick(desc(rows))
   } catch (e) { console.warn(`⚠️ [rates] CAD/BoC failed: ${e?.message}`) }
+  // GBP — Bank of England IADB CSV, no key. BoE publishes daily gilt yields at 5y/10y/20y only (no 2y),
+  // so IUDSNPY (5y nominal par) is the short-end proxy for UK rate expectations.
+  try {
+    const d = new Date(), p2 = n => String(n).padStart(2, '0')
+    const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    const from = new Date(d.getTime() - 20 * 86400000)
+    const fmt = x => `${p2(x.getDate())}/${MONS[x.getMonth()]}/${x.getFullYear()}`
+    const r = await axios.get('https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp', {
+      params: { 'csv.x': 'yes', Datefrom: fmt(from), Dateto: fmt(d), SeriesCodes: 'IUDSNPY', CSVF: 'TN', UsingCodes: 'Y', VPD: 'Y', VFD: 'N' },
+      timeout: 15000, responseType: 'text',
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },   // BoE rejects unknown agents
+    })
+    const MON = { Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12' }
+    const lines = String(r.data).split(/\r?\n/).filter(Boolean)
+    const col = (lines[0] || '').split(',').indexOf('IUDSNPY')
+    if (col > 0) {
+      const rows = lines.slice(1).map(l => {
+        const c = l.split(','), m = (c[0] || '').trim().match(/^(\d{2}) (\w{3}) (\d{4})$/)
+        if (!m || !MON[m[2]]) return null
+        const v = parseFloat(c[col]); return isNaN(v) ? null : { d: `${m[3]}-${MON[m[2]]}-${m[1]}`, v }
+      }).filter(Boolean)
+      out.GBP = pick(desc(rows))
+    }
+  } catch (e) { console.warn(`⚠️ [rates] GBP/BoE failed: ${e?.message}`) }
+
+  // JPY — Japan MoF daily JGB CSV (current calendar year), no key. Latin-1/Shift-JIS text with a
+  // banner row before the real header, so we locate the 'Date,' header row and read the 2Y column.
+  try {
+    const r = await axios.get('https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv', {
+      timeout: 15000, responseType: 'arraybuffer',
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+    })
+    const text = Buffer.from(r.data).toString('latin1')
+    const lines = text.split(/\r?\n/)
+    const hi = lines.findIndex(l => /^Date,/i.test(l))
+    const col = hi >= 0 ? lines[hi].split(',').findIndex(h => h.trim() === '2Y') : -1
+    if (col > 0) {
+      const rows = lines.slice(hi + 1).map(l => {
+        const c = l.split(','), m = (c[0] || '').trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/)
+        if (!m) return null
+        const v = parseFloat(c[col]); return isNaN(v) ? null : { d: `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, v }
+      }).filter(Boolean)
+      out.JPY = pick(desc(rows))
+    }
+  } catch (e) { console.warn(`⚠️ [rates] JPY/MoF failed: ${e?.message}`) }
+
   // Per-currency last-good fallback so one flaky source never blanks the whole set.
   const merged = { ...out }
   if (lastGoodRates) for (const c of Object.keys(lastGoodRates)) { if (!merged[c] && lastGoodRates[c]) merged[c] = lastGoodRates[c] }
   const fresh = Object.keys(out).filter(c => out[c])
   if (fresh.length) { lastGoodRates = { ...(lastGoodRates || {}), ...Object.fromEntries(fresh.map(c => [c, out[c]])) }; setCache('rate_diffs_v2', merged) }
-  console.log(`   [v2 rates] ${fresh.length}/3 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
+  console.log(`   [v2 rates] ${fresh.length}/5 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
   return merged
 }
 async function fetchUSActuals() {
