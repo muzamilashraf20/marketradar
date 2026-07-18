@@ -41,7 +41,7 @@ const CONFIG = {
                            // Lowered 2.5→1.8 so meaningful signals actually trigger biases for the shadow
                            // review; still a ±1.8 dead-band around zero, so near-zero noise won't whipsaw.
   ATR_INVALIDATION_MULT: 1.5, // FALLBACK only (when PDH/PDL unavailable): entry ± m*ATR
-  INVALIDATION_ATR_BUFFER: 0.2, // hybrid PDH/PDL invalidation cushion = this × daily ATR (stop-hunt buffer)
+  INVALIDATION_ATR_BUFFER: 0, // no cushion — invalidation sits exactly at PDL/PDH (tighter, reacts faster)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
   PAIRS: V2_ALL_PAIRS.filter(p => V2_GOLD_ENABLED || p !== "XAUUSD"),

@@ -2913,11 +2913,13 @@ async function liveYieldDirection() {
   const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT, UUP, VIXY } from TwelveData
   const tlt = x?.TLT, uup = x?.UUP
   if (!tlt || tlt.price == null) return null
+  // Magnitude gate: moves smaller than this are noise, not signal. Without it a 0.03% TLT tick
+  // was scoring 'high' confidence and driving a directional call off nothing.
+  const MIN_MOVE_PCT = 0.15
+  const sig = v => (v == null || Math.abs(v) < MIN_MOVE_PCT) ? 0 : (v > 0 ? 1 : -1)
   // express both in GOLD-POSITIVE space: +1 = gold-positive, -1 = gold-negative
-  const tltDir = tlt.change > 0 ? 1 : tlt.change < 0 ? -1 : 0        // TLT up = long yields DOWN = gold+
-  const uupDir = (uup && uup.change != null)
-    ? (uup.change > 0 ? -1 : uup.change < 0 ? 1 : 0)                 // USD (UUP) up = gold-
-    : 0
+  const tltDir = sig(tlt.change)          // TLT up = long yields DOWN = gold+
+  const uupDir = -sig(uup?.change)        // USD (UUP) up = gold-
   const agree = tltDir !== 0 && tltDir === uupDir
   let real_yield_direction, direction_confidence
   if (agree && tltDir > 0)       { real_yield_direction = 'falling yields + soft USD → gold-positive'; direction_confidence = 'high' }
