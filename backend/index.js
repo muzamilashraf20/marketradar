@@ -1749,6 +1749,10 @@ async function saveChannelPostState(key) {
 // among those pick the highest confidence, which already folds in entry timing (ADR spent). That
 // favours a slightly weaker but still-tradeable setup over a strong one whose move is already done.
 // If nothing cleared the threshold, fall back to the best confidence available.
+// Confidence points a challenger must beat the current headline by before the headline hands over.
+// Guards against alert spam from near-tied pairs — see the churn guard below.
+const V2_HEADLINE_SWITCH_MARGIN = 5
+
 async function getV2HeadlineBias() {
   if (!supabase) return null
   const { data, error } = await supabase
@@ -1766,7 +1770,28 @@ async function getV2HeadlineBias() {
   const strong = rows.filter(r => Math.abs(r.diff_at_entry ?? 0) >= V2_CONFIG.OPEN_THRESHOLD)
   const pool = strong.length ? strong : rows
   pool.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || Math.abs(b.diff_at_entry ?? 0) - Math.abs(a.diff_at_entry ?? 0))
-  const top = pool[0]
+  let top = pool[0]
+
+  // ── CHURN GUARD ──
+  // v2 has no daily pair lock, so without this the headline would hand over to whichever pair leads
+  // on confidence at that instant — and every handover writes bias_history, DMs subscribers and posts
+  // to the public channel. Confidence values cluster, so 1-2 point wobble would read as spam.
+  // Same dead-band idea the engine already uses for flips: the challenger must clear the incumbent by
+  // a real margin. The incumbent is held only while it is still a live bias (present in `rows`, which
+  // is already filtered to running + non-FLAT + engine-enabled).
+  const publishedPrev = getCached('today_bias')
+  const incumbent = publishedPrev?.engine === 'v2'
+    ? rows.find(r => r.pair === publishedPrev.pair)
+    : null
+  if (incumbent && incumbent.pair !== top.pair) {
+    const lead = (top.confidence ?? 0) - (incumbent.confidence ?? 0)
+    if (lead < V2_HEADLINE_SWITCH_MARGIN) {
+      console.log(`   [v2 headline] holding ${incumbent.pair} (${incumbent.confidence}%) — ${top.pair} (${top.confidence}%) leads by ${lead}, needs ${V2_HEADLINE_SWITCH_MARGIN}`)
+      top = incumbent
+    } else {
+      console.log(`   [v2 headline] switching ${incumbent.pair} (${incumbent.confidence}%) → ${top.pair} (${top.confidence}%), lead ${lead}`)
+    }
+  }
 
   const dirWord = top.direction === 'BUY' ? 'Bullish' : top.direction === 'SELL' ? 'Bearish' : 'Neutral'
   const timing = top.entry_timing || 'FRESH'
@@ -1802,6 +1827,9 @@ async function getV2HeadlineBias() {
     reasoning: top.thesis || '',
     movePotential: { score: null, note: timingNote, adrPips: null, roomPct: null, nextEvent: null },
     bias,
+    // Top-level engine marker: the churn guard and /api/macro-compass both read this off the cached
+    // result to tell a v2-published headline from a v1 one.
+    engine: 'v2',
     selectionMethod: 'v2',
     selectionReasoning: top.thesis || null,
     runnerUps: pool.slice(1, 3).map(r => ({ symbol: r.pair, direction: r.direction })),
@@ -1826,7 +1854,14 @@ async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustR
   if (process.env.BIAS_ENGINE === 'v2') {
     try {
       const v2 = await getV2HeadlineBias()
-      if (v2) return publishTodayBias(v2)
+      if (v2) {
+        // Stamp the lock with today's date even though v2 doesn't use it for selection (its state is
+        // per-pair). saveTodayBiasState persists { lock, result } and loadTodayBiasState only restores
+        // the cached result when lock.date === today — without this stamp the cache is dropped on every
+        // Railway restart, which would silently reset the churn guard's incumbent on each deploy.
+        todayBiasLock = { date: utcDay(), pair: v2.pair, symbol: v2.symbol, selectedBy: 'v2' }
+        return publishTodayBias(v2)
+      }
       console.log('   [v2 headline] empty — falling back to v1 for this cycle')
     } catch (e) {
       console.error(`⚠️ [v2 headline] failed, falling back to v1: ${e?.message}`)
@@ -1839,7 +1874,10 @@ async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustR
   let top
   let candidates = null // populated only on the FULL RE-PICK path — read by the exhaustion switch below
   let room = {}
-  if (todayBiasLock?.date === day && !sessionOpen) {
+  // selectedBy==='v2' locks exist only to persist the v2 cache across restarts (see the engine switch
+  // above) — v1 must ignore them, otherwise reaching this line as the v2 fallback would re-generate on
+  // the pair v2 just went flat on instead of making its own independent pick.
+  if (todayBiasLock?.date === day && todayBiasLock.selectedBy !== 'v2' && !sessionOpen) {
     console.log(`🔒 LOCK-ONLY PATH: pair=${todayBiasLock.pair} (${todayBiasLock.selectedBy || 'formula'}), lockDate=${todayBiasLock.date}, today=${day}, sessionOpen=${sessionOpen}, force=${force}`)
     // Skip all ranking/scoring — go straight to generateBiasFor on the locked pair
     top = { symbol: todayBiasLock.symbol, pair: todayBiasLock.pair }
@@ -2371,13 +2409,23 @@ app.get('/api/macro-compass', async (req, res) => {
     const rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
     const active = rows.filter(r => r.status === 'running' && r.direction !== 'FLAT')
 
-    // Same hybrid rule as the headline pair: prefer setups that cleared the open threshold,
-    // then rank by confidence (which already accounts for entry timing).
+    // The headline is whatever was actually PUBLISHED to Today's Bias, not a fresh re-derivation.
+    // Today's Bias is cached for TODAY_BIAS_TTL and is subject to the churn guard, so re-deriving
+    // here would let the panel flag a different pair than the dashboard card is showing for up to
+    // 45 minutes. Reading the published result makes the two disagree by construction impossible.
+    // Only trust it if it came from v2 AND that pair is still a live bias; otherwise derive.
+    const published = getCached('today_bias')
+    const publishedIsLive = published?.engine === 'v2' && active.some(r => r.pair === published.pair)
+
+    // Fallback derivation — used before the first v2 publish, or while v1 is driving the headline.
     const strong = active.filter(r => Math.abs(r.diff_at_entry ?? 0) >= V2_CONFIG.OPEN_THRESHOLD)
     const pool = strong.length ? strong : active
-    const headline = pool.length
+    const derived = pool.length
       ? [...pool].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || Math.abs(b.diff_at_entry ?? 0) - Math.abs(a.diff_at_entry ?? 0))[0].pair
       : null
+
+    const headline = publishedIsLive ? published.pair : derived
+    const headlineSource = publishedIsLive ? 'published' : 'derived'
 
     const shape = r => ({
       pair: r.pair,
@@ -2403,6 +2451,10 @@ app.get('/api/macro-compass', async (req, res) => {
       success: true,
       engine: 'v2',
       headline,
+      // 'published' = mirroring the live Today's Bias card. 'derived' = v2 hasn't published a
+      // headline yet (or v1 is driving), so this is the compass's own best pick and the dashboard
+      // card may legitimately name a different pair.
+      headlineSource,
       regime: active[0]?.regime || rows[0]?.regime || null,
       counts: { total: rows.length, active: active.length, flat: flatOut.length },
       pairs: [...activeOut, ...flatOut],
