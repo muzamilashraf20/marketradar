@@ -1151,12 +1151,35 @@ async function fetchRateDifferentials() {
     }
   } catch (e) { console.warn(`⚠️ [rates] JPY/MoF failed: ${e?.message}`) }
 
+  // AUD — RBA table F2 (daily CSV, no key). Metadata block sits above the data; we locate the
+  // 'Series ID' row and read the FCMYGBAG2D column (interpolated 2-year government bond yield).
+  try {
+    const r = await axios.get('https://www.rba.gov.au/statistics/tables/csv/f2-data.csv', {
+      timeout: 20000, responseType: 'arraybuffer',
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+    })
+    const lines = Buffer.from(r.data).toString('latin1').split(/\r?\n/)
+    const idRow = lines.findIndex(l => /^Series ID,/i.test(l))
+    const col = idRow >= 0 ? lines[idRow].split(',').findIndex(h => h.trim() === 'FCMYGBAG2D') : -1
+    if (col > 0) {
+      const MON2 = { Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12' }
+      // Only the tail matters and this file carries 60k+ historical rows (plus trailing blanks),
+      // so drop empties and scan from the end.
+      const rows = lines.filter(l => l.trim() && l.trim() !== ','.repeat(l.trim().length)).slice(-40).map(l => {
+        const c = l.split(','), m = (c[0] || '').trim().match(/^(\d{2})-(\w{3})-(\d{4})$/)
+        if (!m || !MON2[m[2]]) return null
+        const v = parseFloat(c[col]); return isNaN(v) ? null : { d: `${m[3]}-${MON2[m[2]]}-${m[1]}`, v }
+      }).filter(Boolean)
+      out.AUD = pick(desc(rows))
+    }
+  } catch (e) { console.warn(`⚠️ [rates] AUD/RBA failed: ${e?.message}`) }
+
   // Per-currency last-good fallback so one flaky source never blanks the whole set.
   const merged = { ...out }
   if (lastGoodRates) for (const c of Object.keys(lastGoodRates)) { if (!merged[c] && lastGoodRates[c]) merged[c] = lastGoodRates[c] }
   const fresh = Object.keys(out).filter(c => out[c])
   if (fresh.length) { lastGoodRates = { ...(lastGoodRates || {}), ...Object.fromEntries(fresh.map(c => [c, out[c]])) }; setCache('rate_diffs_v2', merged) }
-  console.log(`   [v2 rates] ${fresh.length}/5 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
+  console.log(`   [v2 rates] ${fresh.length}/6 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
   return merged
 }
 async function fetchUSActuals() {
