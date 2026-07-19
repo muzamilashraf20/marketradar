@@ -2358,6 +2358,62 @@ app.get('/api/bias-performance', async (req, res) => {
   }
 })
 
+// 🧭 MACRO COMPASS — every pair the v2 engine currently has a view on, for the multi-pair panel.
+// Reads the same table and applies the same pair filter as getV2HeadlineBias() so the panel can
+// never show a pair the engine has disabled, and the headline row is flagged rather than
+// re-derived on the client. Sorted strongest-conviction first.
+app.get('/api/macro-compass', async (req, res) => {
+  try {
+    if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
+    const { data, error } = await supabase.from('bias_state_v2').select('*')
+    if (error) throw error
+
+    const rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
+    const active = rows.filter(r => r.status === 'running' && r.direction !== 'FLAT')
+
+    // Same hybrid rule as the headline pair: prefer setups that cleared the open threshold,
+    // then rank by confidence (which already accounts for entry timing).
+    const strong = active.filter(r => Math.abs(r.diff_at_entry ?? 0) >= V2_CONFIG.OPEN_THRESHOLD)
+    const pool = strong.length ? strong : active
+    const headline = pool.length
+      ? [...pool].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || Math.abs(b.diff_at_entry ?? 0) - Math.abs(a.diff_at_entry ?? 0))[0].pair
+      : null
+
+    const shape = r => ({
+      pair: r.pair,
+      direction: r.direction,                       // 'BUY' | 'SELL' | 'FLAT'
+      confidence: r.confidence ?? null,             // 40..92 signal strength — NOT a win rate
+      grade: r.grade || null,                       // A | A- | B | C | D
+      entryTiming: r.entry_timing || null,          // FRESH | EXTENDED | LATE
+      thesis: r.thesis || null,
+      invalidationLevel: r.invalidation_level ?? null,
+      invalidationText: r.invalidation_text || null,
+      regime: r.regime || null,
+      isHeadline: r.pair === headline,
+      updatedAt: r.updated_at || null,
+    })
+
+    // Active pairs first (strongest conviction leading), then anything currently flat/closed.
+    const activeOut = active
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .map(shape)
+    const flatOut = rows.filter(r => !active.includes(r)).map(shape)
+
+    res.json({
+      success: true,
+      engine: 'v2',
+      headline,
+      regime: active[0]?.regime || rows[0]?.regime || null,
+      counts: { total: rows.length, active: active.length, flat: flatOut.length },
+      pairs: [...activeOut, ...flatOut],
+      updatedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    console.error('macro-compass error:', e?.message)
+    res.json({ success: false, error: 'Failed to load macro compass' })
+  }
+})
+
 app.get('/api/today-bias', async (req, res) => {
   try {
     if (isForexClosed()) {
