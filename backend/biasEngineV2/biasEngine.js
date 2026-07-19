@@ -250,6 +250,51 @@ async function loadState(supabase, pair) {
   if (error) console.error(`⚠️ [v2 db] loadState(${pair}) failed: ${error.message}${error.code ? ` (${error.code})` : ""}`);
   return data || null;
 }
+// ---------------------------------------------------------------------------
+// 5b. CONFIDENCE + GRADE — deterministic, derived from data we already have.
+//     This is SIGNAL STRENGTH, not a win rate: how much of the evidence lines up
+//     behind the direction, and whether the entry is still fresh.
+//       |diff|      — how far past the 1.8 open threshold the score sits
+//       alignment   — do macro / orderflow / sentiment agree in sign, or fight each other
+//       adrUsedPct  — a bias found after the day's range is spent is a worse entry
+//                     (expects 0..100 here; getPairMarket returns a 0..1 fraction, so the
+//                      call site scales it — see runEngine)
+//     Recomputed every run (including HOLD) so a decaying bias visibly loses conviction
+//     instead of sitting at its opening number until it flips.
+// ---------------------------------------------------------------------------
+function computeConfidence({ diff, baseScores, quoteScores, adrUsedPct }) {
+  const mag = Math.abs(diff);
+  // 1.8 (threshold) → 60, 4.5+ → 88. Below threshold decays toward 45.
+  let conf = mag >= CONFIG.OPEN_THRESHOLD
+    ? 60 + Math.min(28, (mag - CONFIG.OPEN_THRESHOLD) * 10.4)
+    : 45 + (mag / CONFIG.OPEN_THRESHOLD) * 15;
+  // Component alignment: count how many of the three components point the same way as `diff`.
+  const sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
+  const comps = ["macro", "orderflow", "sentiment"];
+  let agree = 0, against = 0;
+  if (sign !== 0) {
+    for (const k of comps) {
+      const net = (baseScores?.[k] ?? 0) - (quoteScores?.[k] ?? 0);
+      if (net === 0) continue;
+      if (Math.sign(net) === sign) agree++; else against++;
+    }
+    conf += agree * 4 - against * 6;   // conflict costs more than agreement pays
+  }
+  // Entry timing — the day's range is largely spent, so the edge is worse.
+  const adr = adrUsedPct ?? 0;
+  let timing = "FRESH";
+  if (adr >= 80) { conf -= 12; timing = "LATE"; }
+  else if (adr >= 60) { conf -= 6; timing = "EXTENDED"; }
+  conf = Math.max(40, Math.min(92, Math.round(conf)));
+  // Grade folds conviction and timing together — an A needs both.
+  let grade;
+  if (conf >= 82 && timing === "FRESH") grade = "A";
+  else if (conf >= 74) grade = timing === "LATE" ? "B" : "A-";
+  else if (conf >= 64) grade = timing === "LATE" ? "C" : "B";
+  else if (conf >= 55) grade = "C";
+  else grade = "D";
+  return { confidence: conf, grade, timing, agree, against };
+}
 async function saveState(supabase, pair, obj) {
   const { error: e1 } = await supabase.from("bias_state_v2").upsert({ pair, ...obj, updated_at: new Date().toISOString() });
   if (e1) console.error(`⚠️ [v2 db] saveState upsert bias_state_v2(${pair}) failed: ${e1.message}${e1.code ? ` (${e1.code})` : ""}`);
@@ -296,6 +341,13 @@ async function runEngine({ supabase, feeds, onUsage }) {
     const { price, atr } = market;
     const state = await loadState(supabase, pair);
     const d = decide(state, diff, market);
+    const conf = computeConfidence({
+      diff,
+      baseScores: scores[base],
+      quoteScores: scores[quote],
+      // getPairMarket returns a 0..1 FRACTION; computeConfidence's thresholds are 0..100.
+      adrUsedPct: (market.adrUsedPct ?? 0) * 100,
+    });
 
     if (d.action === "OPEN" || d.action === "FLIP") {
       const thesis = await writeThesis({                                    // Sonnet 5, only on change
@@ -314,17 +366,27 @@ async function runEngine({ supabase, feeds, onUsage }) {
         atr_at_entry: atr,
         diff_at_entry: diff,
         regime: regime.label,
+        confidence: conf.confidence,
+        grade: conf.grade,
+        entry_timing: conf.timing,
         opened_at: new Date().toISOString(),
         status: "running",
       });
     } else if (d.action === "CLOSE") {
-      await saveState(supabase, pair, { direction: "FLAT", status: "closed", closed_reason: d.reason });
+      await saveState(supabase, pair, { direction: "FLAT", status: "closed", closed_reason: d.reason, confidence: null, grade: null });
     } else {
-      // HOLD / HOLD_FLAT — refresh running pips/MFE/MAE, keep bias
-      if (state && state.direction !== "FLAT") await feeds.updateRunning?.(pair, price);
+      // HOLD / HOLD_FLAT — keep the bias, but refresh conviction so a decaying thesis shows it.
+      // This is a state refresh, NOT a bias change: no history row, no thesis call.
+      if (state && state.direction !== "FLAT") {
+        await feeds.updateRunning?.(pair, price);
+        const { error } = await supabase.from("bias_state_v2")
+          .update({ confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, updated_at: new Date().toISOString() })
+          .eq("pair", pair);
+        if (error) console.error(`⚠️ [v2 db] confidence refresh(${pair}) failed: ${error.message}`);
+      }
     }
 
-    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation });
+    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade });
   }
 
   return { regime: regime.label, scores, results };

@@ -20,6 +20,9 @@ create table if not exists bias_state_v2 (
   closed_reason       text,
   mfe                 numeric default 0,              -- max favourable excursion (pips)
   mae                 numeric default 0,              -- max adverse excursion (pips)
+  confidence          integer,                        -- 40..92 signal strength (NOT a win rate)
+  grade               text,                           -- A | A- | B | C | D
+  entry_timing        text,                           -- FRESH | EXTENDED | LATE
   opened_at           timestamptz,
   updated_at          timestamptz default now()
 );
@@ -37,6 +40,9 @@ create table if not exists bias_history_v2 (
   regime              text,
   status              text,
   closed_reason       text,
+  confidence          integer,                        -- 40..92 signal strength (NOT a win rate)
+  grade               text,                           -- A | A- | B | C | D
+  entry_timing        text,                           -- FRESH | EXTENDED | LATE
   created_at          timestamptz default now()
 );
 
