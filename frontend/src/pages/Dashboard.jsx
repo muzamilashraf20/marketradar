@@ -10,6 +10,7 @@ import { useEffect } from 'react'
 import { SkeletonCard, SkeletonRow } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
+import MacroCompass from '../components/dashboard/MacroCompass'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -29,7 +30,7 @@ function timeAgo(dateString) {
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const { isPro } = useAuth()
+  const { isPro, user } = useAuth()
 
   const [news, setNews] = useState([])
   const [newsLoading, setNewsLoading] = useState(true)
@@ -348,6 +349,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
+        <MacroCompass userName={user?.name} />
 
         {/* ── Row 1: Stat Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
