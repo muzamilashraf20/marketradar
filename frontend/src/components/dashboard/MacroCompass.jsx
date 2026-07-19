@@ -3,6 +3,11 @@ import { RefreshCw, Loader2, Compass, ChevronDown, AlertCircle, Clock } from 'lu
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
+const FLAG = {
+  USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
+  AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭', XAU: '🥇',
+}
+
 // Grade drives the accent colour, not direction — direction is already obvious from BUY/SELL.
 // This way a weak BUY and a weak SELL read as equally weak at a glance.
 const GRADE_STYLE = {
@@ -140,6 +145,13 @@ function PairCard({ p, expanded, onToggle }) {
         <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>{timeAgo(p.updatedAt)}</p>
       )}
 
+      {/* A flat pair still needs to say something — otherwise the card reads as a loading failure. */}
+      {isFlat && (
+        <p className="text-[11px] leading-snug text-slate-500 mt-2">
+          Signals too close to call — neither side has the edge.
+        </p>
+      )}
+
       {/* Thesis — clamped, expands on demand */}
       {p.thesis && !isFlat && (
         <p className={`text-[11px] leading-snug text-slate-400 mt-2 ${expanded ? '' : 'line-clamp-3'}`}>
@@ -273,7 +285,7 @@ export default function MacroCompass() {
         </div>
       )}
 
-      {data && !error && active.length === 0 && (
+      {data && !error && active.length === 0 && flat.length === 0 && (
         <div className="py-8 text-center">
           <p className="text-sm text-slate-400">No conviction anywhere right now.</p>
           <p className="text-[11.5px] text-slate-500 mt-1">
@@ -282,12 +294,14 @@ export default function MacroCompass() {
         </div>
       )}
 
-      {/* Pairs */}
-      {data && !error && active.length > 0 && (
+      {/* Pairs — every pair rides the same scroller. FLAT ones sort last but stay full cards:
+          "no bias" is a real read the engine made, not an absence of one, and hiding it in a
+          footnote made a deliberate call look like missing data. */}
+      {data && !error && (active.length > 0 || flat.length > 0) && (
         <div className="flex gap-2.5 overflow-x-auto snap-x snap-mandatory pb-2 -mx-1 px-1
                         [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5
                         [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
-          {active.map(p => (
+          {[...active, ...flat].map(p => (
             <PairCard
               key={p.pair}
               p={p}
@@ -295,20 +309,6 @@ export default function MacroCompass() {
               onToggle={() => setOpenPair(openPair === p.pair ? null : p.pair)}
             />
           ))}
-        </div>
-      )}
-
-      {/* Flat pairs — collapsed into a quiet strip so the panel isn't padded with nothing */}
-      {data && !error && flat.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-white/5">
-          <p className="text-[10px] uppercase tracking-wider text-slate-600 mb-1.5">No bias</p>
-          <div className="flex flex-wrap gap-1.5">
-            {flat.map(p => (
-              <span key={p.pair} className="text-[10.5px] font-medium px-2 py-1 rounded-md bg-white/[0.02] border border-white/5 text-slate-500">
-                {p.pair}
-              </span>
-            ))}
-          </div>
         </div>
       )}
 
