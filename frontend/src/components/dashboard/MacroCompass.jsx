@@ -3,11 +3,6 @@ import { RefreshCw, Loader2, Compass, ChevronDown, AlertCircle, Clock } from 'lu
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
-const FLAG = {
-  USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
-  AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭', XAU: '🥇',
-}
-
 // Grade drives the accent colour, not direction — direction is already obvious from BUY/SELL.
 // This way a weak BUY and a weak SELL read as equally weak at a glance.
 const GRADE_STYLE = {
@@ -86,106 +81,96 @@ function Gauge({ value, color, size = 56, stroke = 5 }) {
   )
 }
 
-function PairRow({ p, expanded, onToggle }) {
+function PairCard({ p, expanded, onToggle }) {
   const gs = gradeStyle(p.grade)
   const isBuy = p.direction === 'BUY'
   const isFlat = p.direction === 'FLAT'
-  const base = p.pair.slice(0, 3)
-  const quote = p.pair.slice(3, 6)
-  // A bias can exist without a conviction score — the engine writes direction/thesis on open, and
-  // scores conviction on its next pass. Treat that as "not scored yet", not as zero conviction.
   const scored = p.confidence != null
-  const rowStale = (ageMinsOf(p.updatedAt) ?? 0) > STALE_AFTER_MIN
+  const age = ageMinsOf(p.updatedAt)
+  const stale = age != null && age > STALE_AFTER_MIN
+  const level = fmtLevel(p.pair, p.invalidationLevel)
 
   return (
-    <div className={`rounded-xl border transition-colors ${
-      p.isHeadline
-        ? 'bg-cyan-500/[0.07] border-cyan-500/30'
-        : 'bg-white/[0.02] border-white/5 hover:border-white/10'
-    }`}>
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-3 p-3 text-left"
-        aria-expanded={expanded}
-      >
-        {scored ? <Gauge value={p.confidence} color={isFlat ? '#64748b' : gs.ring} /> : <PendingGauge />}
+    <div
+      className={`snap-start shrink-0 w-[230px] sm:w-[250px] rounded-xl border p-3 flex flex-col transition-colors ${
+        p.isHeadline
+          ? 'bg-cyan-500/[0.07] border-cyan-500/30'
+          : 'bg-white/[0.02] border-white/5 hover:border-white/10'
+      }`}
+    >
+      {/* Pair + today badge */}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <span className="text-[13px] font-bold text-white tracking-tight">{p.pair}</span>
+        {p.isHeadline && (
+          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+            Today
+          </span>
+        )}
+      </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[13px] font-bold text-white tracking-tight">
-              <span className="mr-1">{FLAG[base] || ''}{FLAG[quote] || ''}</span>{p.pair}
-            </span>
-            {p.isHeadline && (
-              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                Today
+      {/* Gauge + direction */}
+      <div className="flex items-center gap-3">
+        {scored ? <Gauge value={p.confidence} color={isFlat ? '#64748b' : gs.ring} size={50} /> : <PendingGauge size={50} />}
+        <div className="min-w-0">
+          <p className={`text-[15px] font-bold leading-none ${
+            isFlat ? 'text-slate-400' : isBuy ? 'text-emerald-400' : 'text-red-400'
+          }`}>
+            {isFlat ? 'NO BIAS' : p.direction}
+          </p>
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            {scored && p.grade && !isFlat && (
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${gs.chip}`}>{p.grade}</span>
+            )}
+            {!scored && (
+              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-white/[0.03] text-slate-500 border-white/10">
+                Scoring pending
               </span>
             )}
-          </div>
-
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
-            <span className={`text-[11px] font-bold ${
-              isFlat ? 'text-slate-400' : isBuy ? 'text-emerald-400' : 'text-red-400'
-            }`}>
-              {isFlat ? 'NO BIAS' : p.direction}
-            </span>
-            {p.grade && !isFlat && (
-              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${gs.chip}`}>
-                {p.grade}
-              </span>
-            )}
-            {p.entryTiming && !isFlat && (
+            {p.entryTiming && !isFlat && scored && (
               <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${TIMING_STYLE[p.entryTiming] || TIMING_STYLE.FRESH}`}>
                 {p.entryTiming}
               </span>
             )}
-            {!scored && !isFlat && (
-              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-slate-500/10 text-slate-400 border-slate-500/20">
-                Scoring pending
-              </span>
-            )}
-            {rowStale && (
-              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-amber-500/10 text-amber-400 border-amber-500/20">
-                {timeAgo(p.updatedAt)}
-              </span>
-            )}
           </div>
         </div>
+      </div>
 
-        {!isFlat && (
-          <ChevronDown
-            size={15}
-            className={`text-slate-500 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
-          />
-        )}
-      </button>
+      {/* Age */}
+      {p.updatedAt && (
+        <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>{timeAgo(p.updatedAt)}</p>
+      )}
 
-      {expanded && !isFlat && (
-        <div className="px-3 pb-3 pt-0 space-y-2">
-          {p.thesis && (
-            <p className="text-[11.5px] leading-relaxed text-slate-300 border-l-2 border-white/10 pl-2.5">
-              {p.thesis}
-            </p>
-          )}
-          {p.invalidationLevel != null && (
-            <div className="flex items-start gap-2 p-2 rounded-lg bg-red-500/[0.06] border border-red-500/15">
-              <AlertCircle size={13} className="text-red-400 shrink-0 mt-px" />
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold text-red-300">
-                  Invalidates at {fmtLevel(p.pair, p.invalidationLevel)}
-                </p>
-                {p.invalidationText && (
-                  <p className="text-[10.5px] text-slate-400 leading-snug mt-0.5">{p.invalidationText}</p>
-                )}
-              </div>
-            </div>
+      {/* Thesis — clamped, expands on demand */}
+      {p.thesis && !isFlat && (
+        <p className={`text-[11px] leading-snug text-slate-400 mt-2 ${expanded ? '' : 'line-clamp-3'}`}>
+          {p.thesis}
+        </p>
+      )}
+
+      {expanded && level && (
+        <div className="mt-2 p-2 rounded-lg bg-red-500/[0.06] border border-red-500/15">
+          <p className="text-[10.5px] font-semibold text-red-300">Invalidates at {level}</p>
+          {p.invalidationText && (
+            <p className="text-[10px] text-slate-400 leading-snug mt-0.5">{p.invalidationText}</p>
           )}
         </div>
+      )}
+
+      {!isFlat && (p.thesis || level) && (
+        <button
+          onClick={onToggle}
+          className="mt-auto pt-2 text-[10px] font-semibold text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1 self-start"
+          aria-expanded={expanded}
+        >
+          {expanded ? 'Less' : 'Details'}
+          <ChevronDown size={11} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
       )}
     </div>
   )
 }
 
-export default function MacroCompass({ userName }) {
+export default function MacroCompass() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -211,8 +196,6 @@ export default function MacroCompass({ userName }) {
     return () => clearInterval(t)
   }, [])
 
-  const hour = new Date().getHours()
-  const partOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening'
   const active = (data?.pairs || []).filter(p => p.direction !== 'FLAT')
   const flat = (data?.pairs || []).filter(p => p.direction === 'FLAT')
 
@@ -231,13 +214,11 @@ export default function MacroCompass({ userName }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-3 mb-4">
         <div className="min-w-0">
-          <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-            Good {partOfDay}{userName ? `, ${userName}` : ''}.
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <Compass size={15} className="text-cyan-400 shrink-0" />
+            Macro Compass
           </h2>
-          <p className="text-[11.5px] text-slate-400 mt-0.5 flex items-center gap-1.5">
-            <Compass size={12} className="text-cyan-400 shrink-0" />
-            Macro Compass — where the fundamentals point today
-          </p>
+          <p className="text-[11px] text-slate-500 mt-0.5">Where the fundamentals point today</p>
         </div>
         <button
           onClick={load}
@@ -303,9 +284,11 @@ export default function MacroCompass({ userName }) {
 
       {/* Pairs */}
       {data && !error && active.length > 0 && (
-        <div className="space-y-2">
+        <div className="flex gap-2.5 overflow-x-auto snap-x snap-mandatory pb-2 -mx-1 px-1
+                        [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5
+                        [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
           {active.map(p => (
-            <PairRow
+            <PairCard
               key={p.pair}
               p={p}
               expanded={openPair === p.pair}

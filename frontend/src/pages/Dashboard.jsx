@@ -283,6 +283,12 @@ export default function Dashboard() {
   return (
     <DashboardLayout title="Overview" subtitle="Your macro intelligence hub">
       <div className="space-y-5">
+        {/* ── Greeting ── */}
+        <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+          Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}
+          {user?.name ? `, ${user.name}` : ''}.
+        </h1>
+
         {/* ── Morning Summary Widget ── */}
         <div className="bg-gradient-to-r from-cyan-500/5 via-[#020617] to-emerald-500/5 border border-white/10 rounded-2xl p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -350,7 +356,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <MacroCompass userName={user?.name} />
+        <MacroCompass />
 
         {/* ── Row 1: Stat Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
