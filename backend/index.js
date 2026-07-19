@@ -1740,12 +1740,98 @@ async function saveChannelPostState(key) {
   } catch (e) { console.error('channel post state persist error:', e?.message) }
 }
 
+// ── v2 HEADLINE PAIR ──────────────────────────────────────────────────────────
+// v2 scores every pair continuously; v1's dashboard, Telegram and history are all built around ONE
+// headline bias per day. This adapter picks that headline pair from bias_state_v2 and maps it into
+// the exact shape computeTodaysAIBias() returns, so every downstream consumer keeps working unchanged.
+//
+// Selection (hybrid): take pairs whose |diff| cleared the open threshold — a real macro signal — and
+// among those pick the highest confidence, which already folds in entry timing (ADR spent). That
+// favours a slightly weaker but still-tradeable setup over a strong one whose move is already done.
+// If nothing cleared the threshold, fall back to the best confidence available.
+async function getV2HeadlineBias() {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('bias_state_v2')
+    .select('*')
+    .eq('status', 'running')
+    .neq('direction', 'FLAT')
+  if (error) { console.error(`⚠️ [v2 headline] read failed: ${error.message}`); return null }
+
+  // V2_CONFIG.PAIRS is the engine's own enabled list (already excludes gold while V2_GOLD_ENABLED is
+  // false) — filtering on it here means a disabled pair can never surface from a stale row.
+  let rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
+  if (!rows.length) { console.log('   [v2 headline] no running bias — nothing to surface'); return null }
+
+  const strong = rows.filter(r => Math.abs(r.diff_at_entry ?? 0) >= V2_CONFIG.OPEN_THRESHOLD)
+  const pool = strong.length ? strong : rows
+  pool.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || Math.abs(b.diff_at_entry ?? 0) - Math.abs(a.diff_at_entry ?? 0))
+  const top = pool[0]
+
+  const dirWord = top.direction === 'BUY' ? 'Bullish' : top.direction === 'SELL' ? 'Bearish' : 'Neutral'
+  const timing = top.entry_timing || 'FRESH'
+  const timingNote = timing === 'LATE' ? 'LATE — wait for a pullback'
+    : timing === 'EXTENDED' ? 'EXTENDED — much of the daily range is spent'
+    : 'FRESH — room left in the daily range'
+
+  console.log(`🎯 [v2 headline] ${top.pair} ${top.direction} · ${top.confidence}% · Grade ${top.grade} · ${timing} (from ${pool.length} candidate${pool.length === 1 ? '' : 's'}${strong.length ? '' : ', none above threshold'})`)
+
+  const bias = {
+    symbol: top.pair,
+    direction: dirWord,
+    confidence: top.confidence ?? 0,
+    tradeGrade: top.grade || '-',
+    reasoning: top.thesis || '',
+    invalidation: top.invalidation_level ?? null,
+    // Channel post + bias_history read `bias.levels.invalidation` — mirror it there too.
+    levels: { invalidation: top.invalidation_level ?? 'N/A' },
+    invalidationReasoning: top.invalidation_text || '',
+    entryTiming: timing,
+    entryTimingNote: timingNote,
+    engine: 'v2',
+    regime: top.regime || null,
+    generatedAt: top.updated_at || new Date().toISOString(),
+  }
+
+  return {
+    symbol: top.pair,
+    pair: top.pair,
+    direction: dirWord,
+    confidence: top.confidence ?? 0,
+    tradeGrade: top.grade || '-',
+    reasoning: top.thesis || '',
+    movePotential: { score: null, note: timingNote, adrPips: null, roomPct: null, nextEvent: null },
+    bias,
+    selectionMethod: 'v2',
+    selectionReasoning: top.thesis || null,
+    runnerUps: pool.slice(1, 3).map(r => ({ symbol: r.pair, direction: r.direction })),
+    conviction: top.grade || null,
+    primaryDriver: null,
+    whatWouldFlipIt: top.invalidation_text || null,
+    generatedAt: bias.generatedAt,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 // Compute Today's AI Bias for the strongest pair, cache it, and alert on direction change.
 // force=true bypasses the per-symbol cache (used on breaking-news catalysts)
 // sessionOpen=true allows full pair re-pick (used ONLY at session opens: Sydney/Tokyo/London/NY)
 // Without sessionOpen, a locked pair is KEPT and only its reasoning/confidence is refreshed.
 async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustRetry = false) {
   if (isForexClosed()) return null
+
+  // ── ENGINE SWITCH: BIAS_ENGINE=v2 serves the headline bias from the v2 engine instead of running
+  // v1's own selection + generation. v1 stays intact as the fallback: if v2 has nothing running
+  // (fresh DB, all FLAT, or a read error) we fall through and compute the v1 bias as before.
+  if (process.env.BIAS_ENGINE === 'v2') {
+    try {
+      const v2 = await getV2HeadlineBias()
+      if (v2) return publishTodayBias(v2)
+      console.log('   [v2 headline] empty — falling back to v1 for this cycle')
+    } catch (e) {
+      console.error(`⚠️ [v2 headline] failed, falling back to v1: ${e?.message}`)
+    }
+  }
 
   const day = utcDay()
 
@@ -1997,6 +2083,13 @@ async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustR
     generatedAt: bias.generatedAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
+  return publishTodayBias(result)
+}
+
+// Shared publish tail for BOTH engines: cache, persist, record history, alert subscribers, post to
+// the channel. Extracted so the v2 headline path gets identical downstream behaviour instead of a
+// second copy that can drift.
+async function publishTodayBias(result) {
   setCache('today_bias', result)
   saveTodayBiasState(result).catch(() => {})
 
@@ -2017,7 +2110,7 @@ async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustR
   // Tracked separately from subscriber DMs; persisted so restarts never cause duplicate posts.
   const channelGrade = (result.tradeGrade || '').toUpperCase()
   const channelKey = newKey  // "DIRECTION PAIR" only — grade/confidence changes don't re-post
-  if (['A+', 'A', 'B', 'C'].includes(channelGrade) && channelKey !== lastChannelPostKey) {
+  if (['A+', 'A', 'A-', 'B', 'C'].includes(channelGrade) && channelKey !== lastChannelPostKey) {
     const dirUp = result.direction.toUpperCase()
     const arrow = /BULL|BUY/.test(dirUp) ? '🟢' : /BEAR|SELL/.test(dirUp) ? '🔴' : '⚪'
     const inval = result.bias?.levels?.invalidation && result.bias.levels.invalidation !== 'N/A'
