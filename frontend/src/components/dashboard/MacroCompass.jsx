@@ -3,11 +3,6 @@ import { RefreshCw, Loader2, Compass, ChevronDown, AlertCircle, Clock } from 'lu
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
-const FLAG = {
-  USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
-  AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭', XAU: '🥇',
-}
-
 // Grade drives the accent colour, not direction — direction is already obvious from BUY/SELL.
 // This way a weak BUY and a weak SELL read as equally weak at a glance.
 const GRADE_STYLE = {
@@ -222,7 +217,7 @@ export default function MacroCompass() {
   const unscored = active.filter(p => p.confidence == null).length
 
   return (
-    <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 sm:p-5">
+    <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 sm:p-5 min-w-0 max-w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-start justify-between gap-3 mb-4">
         <div className="min-w-0">

@@ -356,8 +356,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <MacroCompass />
-
         {/* ── Row 1: Stat Cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
 
@@ -503,6 +501,8 @@ export default function Dashboard() {
             <p className="text-[10px] text-slate-500">{propRisk.drawdown}% drawdown used</p>
           </div>
         </div>
+
+        <MacroCompass />
 
         {/* ── Row 2: Live News + Upcoming Events ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

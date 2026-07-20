@@ -59,7 +59,7 @@ export default function DashboardLayout({ title, subtitle, children }) {
       </aside>
 
       {/* Main area */}
-      <div className="flex-1 flex flex-col min-h-screen md:ml-0">
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen md:ml-0">
 
         {/* Topbar */}
         <Topbar
