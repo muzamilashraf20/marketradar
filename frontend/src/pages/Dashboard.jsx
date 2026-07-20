@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
-  Newspaper, Calendar, ArrowUpRight, ArrowDownRight, Minus,
+  Newspaper, Calendar, ArrowUpRight,
   BarChart2, RefreshCw, Zap, Loader2, History, X
 } from 'lucide-react'
 import { useEffect } from 'react'
-import { SkeletonCard, SkeletonRow } from '../components/common/Skeleton'
+import { SkeletonRow } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
 import MacroCompass from '../components/dashboard/MacroCompass'
@@ -58,10 +58,6 @@ export default function Dashboard() {
 
   const [strength, setStrength] = useState(null)
   const [strengthLoading, setStrengthLoading] = useState(true)
-
-  const [biasCards, setBiasCards] = useState([])
-  const [biasLoading, setBiasLoading] = useState(false)
-  const [biasError, setBiasError] = useState('')
 
   // AI-powered Today's Bias (from /api/today-bias)
   const [aiBias, setAiBias] = useState(null)
@@ -197,47 +193,6 @@ export default function Dashboard() {
     }
   }
 
-  const generateBias = async () => {
-    setBiasLoading(true)
-    setBiasError('')
-    const symbols = isPro ? ['EUR/USD', 'GBP/USD', 'XAU/USD', 'NAS100'] : ['EUR/USD']
-    const cards = []
-
-    for (const symbol of symbols) {
-      try {
-        const res = await fetch(`${API_BASE}/api/bias`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol, timeframe: 'intraday' }),
-        })
-        const data = await res.json()
-        if (data.success && data.bias) {
-          const b = data.bias
-          const dir = (b.direction || b.bias || 'neutral').toLowerCase()
-          let direction = 'Neutral', icon = Minus, color = 'text-slate-400', bar = 'bg-slate-400'
-          if (dir.includes('bull') || dir.includes('long') || dir.includes('up')) {
-            direction = 'Bullish'; icon = ArrowUpRight; color = 'text-emerald-400'; bar = 'bg-emerald-400'
-          } else if (dir.includes('bear') || dir.includes('short') || dir.includes('down')) {
-            direction = 'Bearish'; icon = ArrowDownRight; color = 'text-red-400'; bar = 'bg-red-400'
-          }
-          cards.push({
-            asset: symbol, direction, icon,
-            confidence: b.confidence || b.score || Math.floor(Math.random() * 30 + 55),
-            reason: b.reason || b.summary || b.rationale || 'AI analysis complete',
-            color, bar,
-          })
-        }
-      } catch (e) {
-        console.error(`Bias error for ${symbol}:`, e)
-      }
-    }
-
-    if (cards.length === 0)
-      setBiasError('AI bias generation failed — credits may be exhausted. Try again later.')
-    setBiasCards(cards)
-    setBiasLoading(false)
-  }
-
   const getBiasFromStrength = () => {
     if (!strength || strength.marketClosed) return null
     const best = strength.bestPairs?.[0]
@@ -340,7 +295,11 @@ export default function Dashboard() {
                 }`}>
                   {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
                 </p>
-                <p className="text-[10px] text-slate-500 truncate">{todaysBias?.selectionMethod === 'ai' ? '🤖 AI Selected Pair' : 'Top Bias from Strength'}</p>
+                <p className="text-[10px] text-slate-500 truncate">{
+                  todaysBias?.selectionMethod === 'v2' ? '🧭 Macro Compass'
+                    : todaysBias?.selectionMethod === 'ai' ? '🤖 AI Selected Pair'
+                    : 'Top Bias from Strength'
+                }</p>
               </div>
             </div>
             {/* Prop Firm Status */}
@@ -712,96 +671,6 @@ export default function Dashboard() {
                   <p className="text-xs text-slate-500 text-center">🔴 Forex market closed (Weekend) — Data will update Monday</p>
                 </div>
               )}
-            </>
-          )}
-        </div>
-
-        {/* ── Row 4: AI Bias Snapshot ── */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <Zap size={15} className="text-cyan-400" />
-              <h2 className="text-sm font-bold text-white">AI Bias Snapshot</h2>
-            </div>
-            <span onClick={() => navigate('/bias')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
-              Full Analysis →
-            </span>
-          </div>
-
-          {/* CTA — no bias yet */}
-          {biasCards.length === 0 && !biasLoading && (
-            <div className="bg-white/[0.03] border border-dashed border-white/10 rounded-xl p-6 sm:p-8 text-center">
-              <div className="w-12 h-12 rounded-xl bg-cyan-400/10 flex items-center justify-center mx-auto mb-4">
-                <Zap size={22} className="text-cyan-400" />
-              </div>
-              <h3 className="text-sm font-bold text-white mb-1">Generate Today's AI Bias</h3>
-              <p className="text-xs text-slate-500 mb-4 max-w-sm mx-auto">
-                Get AI-powered directional bias for EUR/USD, GBP/USD, Gold, and NAS100 based on current macro conditions.
-              </p>
-              <button
-                onClick={generateBias}
-                className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
-              >
-                Generate AI Bias
-              </button>
-              {biasError && <p className="text-xs text-red-400 mt-3">{biasError}</p>}
-              {!isPro && (
-                <p className="text-xs text-slate-500 mt-3">
-                  Preview: 1 pair only.{' '}
-                  <span onClick={() => navigate('/pricing')} className="text-cyan-400 hover:text-cyan-300 cursor-pointer font-semibold">
-                    Upgrade to Pro for all 4 pairs →
-                  </span>
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Loading */}
-         {biasLoading && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {[1,2,3,4].map(i => <SkeletonCard key={i} />)}
-            </div>
-          )}
-
-          {/* Bias cards */}
-          {biasCards.length > 0 && !biasLoading && (
-            <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-                {biasCards.map(card => {
-                  const Icon = card.icon
-                  return (
-                    <div key={card.asset} onClick={() => navigate('/bias')}
-                      className="bg-white/[0.03] border border-white/10 rounded-xl p-4 hover:border-white/20 transition-all cursor-pointer">
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="text-sm font-bold text-white">{card.asset}</span>
-                        <div className="flex items-center gap-1.5">
-                          <Icon size={14} className={card.color} />
-                          <span className={`text-xs font-semibold ${card.color}`}>{card.direction}</span>
-                        </div>
-                      </div>
-                      <div className="mb-3">
-                        <div className="flex justify-between mb-1">
-                          <span className="text-[10px] text-slate-500">Confidence</span>
-                          <span className={`text-[10px] font-bold ${card.color}`}>{card.confidence}%</span>
-                        </div>
-                        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${card.bar}`} style={{ width: `${card.confidence}%` }} />
-                        </div>
-                      </div>
-                      <p className="text-[11px] text-slate-500 leading-relaxed line-clamp-2">{card.reason}</p>
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="mt-3 flex items-center justify-center">
-                <button
-                  onClick={generateBias}
-                  className="text-xs text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1"
-                >
-                  <RefreshCw size={12} />
-                  Regenerate
-                </button>
-              </div>
             </>
           )}
         </div>

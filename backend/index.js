@@ -1619,16 +1619,63 @@ ${template}`
   return bias
 }
 
+// 🔎 PAIR LOOKUP — returns the v2 engine's CURRENT view on one pair.
+// This used to run v1's own AI generation per request, which meant the same pair could read BUY here
+// and SELL on the dashboard, from two different engines with different logic. One state, one answer:
+// it now reads bias_state_v2, the same source the dashboard and Macro Compass use. No model call,
+// so no cost and no run-to-run drift.
 app.post('/api/bias', aiRateLimiter, async (req, res) => {
-  const { symbol, timeframe } = req.body
+  const { symbol } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   try {
-    const wasCached = isCacheFresh(`bias_${symbol}_${timeframe || 'intraday'}`)
-    const bias = await generateBiasFor(symbol, timeframe)
-    res.json({ success: true, bias, cached: wasCached })
+    if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
+
+    if (!V2_CONFIG.PAIRS.includes(symbol)) {
+      return res.json({
+        success: false,
+        unsupported: true,
+        error: `${symbol} isn't covered by the macro engine yet — it tracks ${V2_CONFIG.PAIRS.join(', ')}.`,
+      })
+    }
+
+    const { data, error } = await supabase.from('bias_state_v2').select('*').eq('pair', symbol).maybeSingle()
+    if (error) throw error
+
+    if (!data || data.status !== 'running' || data.direction === 'FLAT') {
+      return res.json({
+        success: true,
+        bias: {
+          symbol,
+          direction: 'Neutral',
+          confidence: data?.confidence ?? null,
+          tradeGrade: data?.grade || null,
+          reasoning: 'No directional bias right now — the macro signals are too close to call on this pair.',
+          flat: true,
+          generatedAt: data?.updated_at || null,
+        },
+      })
+    }
+
+    res.json({
+      success: true,
+      bias: {
+        symbol: data.pair,
+        direction: data.direction === 'BUY' ? 'Bullish' : 'Bearish',
+        confidence: data.confidence ?? null,
+        tradeGrade: data.grade || null,
+        entryTiming: data.entry_timing || null,
+        reasoning: data.thesis || '',
+        invalidation: data.invalidation_level ?? null,
+        levels: { invalidation: data.invalidation_level ?? 'N/A' },
+        invalidationReasoning: data.invalidation_text || '',
+        regime: data.regime || null,
+        engine: 'v2',
+        generatedAt: data.updated_at || null,
+      },
+    })
   } catch (e) {
-    console.error('Bias error:', e?.message)
-    res.status(500).json({ success: false, error: e?.message || 'AI analysis failed.' })
+    console.error('Bias lookup error:', e?.message)
+    res.status(500).json({ success: false, error: 'Could not load the bias for that pair.' })
   }
 })
 

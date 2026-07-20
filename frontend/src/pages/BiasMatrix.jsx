@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
-  TrendingUp, TrendingDown, Minus, ShieldCheck,
-  ShieldAlert, ShieldX, RefreshCw, ChevronRight,
-  Target, AlertTriangle, BookOpen, XOctagon,
-  Activity, BarChart3, Newspaper, Calendar, Zap
+  TrendingUp, TrendingDown, Minus, RefreshCw,
+  AlertTriangle, BookOpen, XOctagon, Info,
+  Activity, Zap
 } from 'lucide-react'
 
 const ASSETS = [
@@ -12,7 +11,16 @@ const ASSETS = [
   'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURJPY',
   'EURGBP', 'NAS100', 'BTC'
 ]
-const TIMEFRAMES = ['intraday', 'swing']
+
+// Invalidation levels come back as raw floats from the engine's ATR maths — round to the pair's
+// real quoting precision, same convention the backend logs and the Macro Compass use.
+const fmtLevel = (pair, v) => {
+  if (v == null || v === 'N/A') return null
+  const n = Number(v)
+  if (!Number.isFinite(n)) return null
+  const dp = String(pair).includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
+  return n.toFixed(dp)
+}
 
 function DirectionBadge({ direction }) {
   if (direction === 'Bullish') return (
@@ -39,6 +47,7 @@ function TradeGrade({ grade }) {
   const styles = {
     'A+': 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400',
     'A': 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400',
+    'A-': 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400',
     'B': 'bg-cyan-500/10 border-cyan-500/25 text-cyan-400',
     'C': 'bg-amber-500/10 border-amber-500/25 text-amber-400',
     'D': 'bg-red-500/10 border-red-500/25 text-red-400',
@@ -47,47 +56,6 @@ function TradeGrade({ grade }) {
     <div className={`px-4 py-2 rounded-xl border text-center ${styles[grade] || styles['C']}`}>
       <p className="text-[10px] uppercase tracking-wider opacity-70 mb-0.5">Trade Grade</p>
       <p className="text-2xl font-black">{grade || 'N/A'}</p>
-    </div>
-  )
-}
-
-function RiskBadge({ status }) {
-  if (status === 'SAFE') return (
-    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
-      <ShieldCheck size={12} /> SAFE
-    </div>
-  )
-  if (status === 'CAUTION') return (
-    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-bold">
-      <ShieldAlert size={12} /> CAUTION
-    </div>
-  )
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-500/15 border border-red-500/30 text-red-400 text-xs font-bold">
-      <ShieldX size={12} /> DANGER
-    </div>
-  )
-}
-
-function ProbabilityBadge({ probability }) {
-  const styles = {
-    High: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    Medium: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    Low: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-  }
-  return (
-    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${styles[probability] || styles.Low}`}>
-      {probability}
-    </span>
-  )
-}
-
-function DataSourceDot({ active, label, icon: Icon }) {
-  return (
-    <div className={`flex items-center gap-1.5 text-xs ${active ? 'text-emerald-400' : 'text-slate-600'}`}>
-      <div className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400' : 'bg-slate-700'}`} />
-      <Icon size={11} />
-      <span>{label}</span>
     </div>
   )
 }
@@ -105,28 +73,26 @@ function SkeletonCard() {
 
 export default function BiasMatrix() {
   const [selectedAsset, setSelectedAsset] = useState('EURUSD')
-  const [selectedTf, setSelectedTf] = useState('intraday')
   const [loading, setLoading] = useState(false)
   const [bias, setBias] = useState(null)
   const [error, setError] = useState('')
+  // A pair the engine doesn't cover isn't a failure — it's a coverage gap. Tracked separately so it
+  // renders as a plain note instead of a red error the user might read as something being broken.
+  const [notice, setNotice] = useState('')
 
   useEffect(() => {
+    setError(''); setNotice('')
     try {
-      const key = 'bf_bias_' + selectedAsset + '_' + selectedTf
-      const saved = localStorage.getItem(key)
-      if (saved) {
-        setBias(JSON.parse(saved))
-      } else {
-        setBias(null)
-      }
+      const saved = localStorage.getItem('bf_bias_' + selectedAsset)
+      setBias(saved ? JSON.parse(saved) : null)
     } catch {
       setBias(null)
     }
-  }, [selectedAsset, selectedTf])
+  }, [selectedAsset])
 
-  const generateBias = async () => {
+  const loadBias = async () => {
     setLoading(true)
-    setError('')
+    setError(''); setNotice('')
     setBias(null)
     try {
       const res = await fetch(
@@ -134,29 +100,24 @@ export default function BiasMatrix() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            symbol: selectedAsset,
-            timeframe: selectedTf,
-          }),
+          body: JSON.stringify({ symbol: selectedAsset }),
         }
       )
       const data = await res.json()
       if (data.success) {
         setBias(data.bias)
-        const key = 'bf_bias_' + selectedAsset + '_' + selectedTf
-        localStorage.setItem(key, JSON.stringify(data.bias))
+        localStorage.setItem('bf_bias_' + selectedAsset, JSON.stringify(data.bias))
+      } else if (data.unsupported) {
+        setNotice(data.error)
+        localStorage.removeItem('bf_bias_' + selectedAsset)
       } else {
-        setError(data.error || 'AI analysis failed')
+        setError(data.error || 'Could not load that pair')
       }
     } catch {
       setError('Cannot connect to server. Please try again.')
     }
     setLoading(false)
   }
-
-  const directionColor = bias?.direction === 'Bullish'
-    ? 'text-emerald-400' : bias?.direction === 'Bearish'
-    ? 'text-red-400' : 'text-slate-400'
 
   const confColor = (bias?.confidence || 0) >= 75
     ? 'text-emerald-400' : (bias?.confidence || 0) >= 60
@@ -171,7 +132,7 @@ export default function BiasMatrix() {
         <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
           <h2 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
             <TrendingUp size={15} className="text-cyan-400" />
-            Generate AI Bias
+            Check a Pair
           </h2>
 
           <div className="mb-4">
@@ -193,37 +154,24 @@ export default function BiasMatrix() {
             </div>
           </div>
 
-          <div className="mb-5">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Timeframe</p>
-            <div className="flex gap-2">
-              {TIMEFRAMES.map(tf => (
-                <button
-                  key={tf}
-                  onClick={() => setSelectedTf(tf)}
-                  className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all capitalize ${
-                    selectedTf === tf
-                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
-                      : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <button
-            onClick={generateBias}
+            onClick={loadBias}
             disabled={loading}
             className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-bold text-sm transition-all shadow-lg shadow-cyan-500/20"
           >
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-            {loading ? 'Analyzing markets...' : 'Generate AI Bias'}
+            {loading ? 'Loading…' : 'View Bias'}
           </button>
 
           {error && (
             <p className="mt-3 text-xs text-red-400 flex items-center gap-1.5">
               <AlertTriangle size={12} /> {error}
+            </p>
+          )}
+
+          {notice && (
+            <p className="mt-3 text-xs text-slate-400 flex items-start gap-1.5">
+              <Info size={12} className="shrink-0 mt-0.5" /> {notice}
             </p>
           )}
         </div>
@@ -235,8 +183,23 @@ export default function BiasMatrix() {
           </div>
         )}
 
+        {/* FLAT — the engine looked and decided there is no edge. That is a real call, so say it
+            plainly rather than rendering an empty bias card. */}
+        {bias?.flat && !loading && (
+          <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-8 text-center">
+            <Minus size={28} className="text-slate-500 mx-auto mb-3" />
+            <p className="text-lg font-bold text-slate-300 mb-1">{bias.symbol} — no directional bias</p>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">{bias.reasoning}</p>
+            {bias.generatedAt && (
+              <p className="text-xs text-slate-600 mt-4">
+                Last checked {new Date(bias.generatedAt).toLocaleString()}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Results */}
-        {bias && !loading && (
+        {bias && !bias.flat && !loading && (
           <div className="space-y-4">
 
             {/* Direction + Confidence + Grade */}
@@ -247,7 +210,7 @@ export default function BiasMatrix() {
               <div className="flex items-start justify-between mb-4">
                 <div>
                   <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">
-                    {bias.symbol} · {bias.timeframe}
+                    {bias.symbol}{bias.regime ? ` · ${bias.regime} regime` : ''}
                   </p>
                   <DirectionBadge direction={bias.direction} />
                 </div>
@@ -278,9 +241,9 @@ export default function BiasMatrix() {
               )}
             </div>
 
-            {/* ⏱️ ENTRY QUALITY (move maturity) */}
-            {bias.entryQuality && bias.entryQuality !== 'N/A' && (() => {
-              const eq = String(bias.entryQuality).toUpperCase()
+            {/* ⏱️ ENTRY TIMING (how much of the daily range the move has already spent) */}
+            {bias.entryTiming && (() => {
+              const eq = String(bias.entryTiming).toUpperCase()
               const cfg = eq === 'FRESH'
                 ? { box: 'bg-emerald-500/10 border-emerald-500/20', text: 'text-emerald-400', dim: 'text-emerald-400/70', label: '🟢 FRESH', desc: 'Move is early — good time to look for your technical setup.' }
                 : eq === 'EXTENDED'
@@ -292,28 +255,25 @@ export default function BiasMatrix() {
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <p className={`text-sm font-bold ${cfg.text}`}>{cfg.label} — Entry Timing</p>
-                      {typeof bias.moveContext?.pctADR === 'number' && (
-                        <span className="text-[10px] text-slate-500">({bias.moveContext.pctADR}% of daily range used)</span>
-                      )}
                     </div>
-                    <p className={`text-xs ${cfg.dim}`}>{bias.entryQualityNote || cfg.desc}</p>
+                    <p className={`text-xs ${cfg.dim}`}>{cfg.desc}</p>
                   </div>
                 </div>
               )
             })()}
 
             {/* ⚠️ INVALIDATION WARNING BAR */}
-            {bias.levels?.invalidation && (
+            {fmtLevel(bias.symbol, bias.levels?.invalidation) && (
               <div className="bg-red-500/8 border border-red-500/20 rounded-2xl p-4 flex items-start gap-3">
                 <XOctagon size={20} className="text-red-400 shrink-0 mt-0.5" />
                 <div>
                   <div className="flex items-center gap-3 mb-1">
                     <p className="text-sm font-bold text-red-400">
-                      Bias Invalidates at <span className="font-mono text-base">{bias.levels.invalidation}</span>
+                      Bias Invalidates at <span className="font-mono text-base">{fmtLevel(bias.symbol, bias.levels.invalidation)}</span>
                     </p>
                   </div>
                   <p className="text-xs text-red-400/70">
-                    {bias.invalidationNote || `If price breaks ${bias.levels.invalidation}, this bias is no longer valid. Exit or reassess.`}
+                    {bias.invalidationReasoning || `If price breaks ${fmtLevel(bias.symbol, bias.levels.invalidation)}, this bias is no longer valid. Exit or reassess.`}
                   </p>
                 </div>
               </div>
@@ -325,98 +285,13 @@ export default function BiasMatrix() {
                 <BookOpen size={14} className="text-cyan-400" />
                 AI Reasoning
               </h3>
-              <p className="text-sm text-slate-300 leading-relaxed mb-4">{bias.reasoning}</p>
-              <div className="space-y-2">
-                {bias.keyDrivers?.map((driver, i) => (
-                  <div key={i} className="flex items-center gap-2.5 text-sm text-slate-400">
-                    <ChevronRight size={14} className="text-cyan-400 shrink-0" />
-                    {driver}
-                  </div>
-                ))}
-              </div>
+              <p className="text-sm text-slate-300 leading-relaxed">{bias.reasoning}</p>
             </div>
 
-            {/* Scenarios + Levels */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
-                <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                  <AlertTriangle size={14} className="text-amber-400" />
-                  Scenarios
-                </h3>
-                <div className="space-y-3">
-                  {bias.scenarios?.map((s, i) => (
-                    <div key={i} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <p className="text-xs font-semibold text-slate-300">{s.condition}</p>
-                        <ProbabilityBadge probability={s.probability} />
-                      </div>
-                      <p className="text-xs text-slate-500">{s.outcome}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
-                <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                  <Target size={14} className="text-cyan-400" />
-                  Key Levels
-                </h3>
-                <div className="space-y-2.5">
-                  {[
-                    { label: 'Current Price', value: bias.levels?.currentPrice, color: 'text-white' },
-                    { label: '🚫 Invalidation', value: bias.levels?.invalidation, color: 'text-red-400' },
-                  ].filter(l => l.value).map(level => (
-                    <div key={level.label} className={`flex items-center justify-between py-2 border-b border-white/5 last:border-0 ${level.label.includes('Invalidation') ? 'bg-red-500/5 -mx-2 px-2 rounded-lg' : ''}`}>
-                      <span className="text-xs text-slate-500">{level.label}</span>
-                      <span className={`text-sm font-bold font-mono ${level.color}`}>{level.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Prop Firm Risk */}
-            <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <ShieldCheck size={14} className="text-emerald-400" />
-                  Prop Firm Risk Assessment
-                </h3>
-                <RiskBadge status={bias.propFirmRisk?.status || 'SAFE'} />
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {[
-                  { label: 'Recommended Risk', value: bias.propFirmRisk?.recommendedRisk },
-                  { label: 'Max Lots', value: bias.propFirmRisk?.maxLots },
-                  { label: 'Daily Budget Left', value: bias.propFirmRisk?.remainingDailyBudget },
-                  { label: 'Status', value: bias.propFirmRisk?.status },
-                ].map(item => (
-                  <div key={item.label} className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
-                    <p className="text-[10px] text-slate-500 mb-1">{item.label}</p>
-                    <p className="text-sm font-bold text-white">{item.value}</p>
-                  </div>
-                ))}
-              </div>
-              {bias.propFirmRisk?.warning && (
-                <div className="mt-3 flex items-center gap-2 text-amber-400 text-xs">
-                  <AlertTriangle size={12} />
-                  {bias.propFirmRisk.warning}
-                </div>
-              )}
-            </div>
-
-            {/* Data Sources + Timestamp */}
-            <div className="flex items-center justify-between px-2">
-              {bias.dataSources && (
-                <div className="flex items-center gap-4">
-                  <DataSourceDot active={bias.dataSources.price} label="Price" icon={Activity} />
-                  <DataSourceDot active={bias.dataSources.strength} label="Strength" icon={BarChart3} />
-                  <DataSourceDot active={bias.dataSources.calendar} label="Calendar" icon={Calendar} />
-                  <DataSourceDot active={bias.dataSources.news} label="News" icon={Newspaper} />
-                </div>
-              )}
+            {/* Timestamp */}
+            <div className="flex items-center justify-end px-2">
               <p className="text-xs text-slate-600">
-                {bias.generatedAt ? new Date(bias.generatedAt).toLocaleString() : ''} · BiasForge AI
+                {bias.generatedAt ? `Engine last updated ${new Date(bias.generatedAt).toLocaleString()}` : ''} · BiasForge
               </p>
             </div>
 
@@ -424,11 +299,11 @@ export default function BiasMatrix() {
         )}
 
         {/* Empty state */}
-        {!bias && !loading && (
+        {!bias && !loading && !notice && (
           <div className="text-center py-16 bg-white/[0.02] border border-white/10 rounded-2xl">
             <Zap size={32} className="text-slate-600 mx-auto mb-3" />
-            <p className="text-slate-400 font-semibold mb-1">No bias generated yet</p>
-            <p className="text-slate-600 text-sm">Select an asset and click "Generate AI Bias"</p>
+            <p className="text-slate-400 font-semibold mb-1">No pair checked yet</p>
+            <p className="text-slate-600 text-sm">Select a pair and click "View Bias"</p>
           </div>
         )}
 
