@@ -16,6 +16,14 @@ import ArcGauge from '../components/dashboard/ArcGauge'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
+// ── Surface tokens ──────────────────────────────────────────────────────────
+// Three elevation levels, matching MacroCompass so the page reads as one system.
+// PANEL = section container · CARD = a stat inside a section · ROW = a list item.
+// Written as full static strings — never interpolate Tailwind class fragments.
+const PANEL = 'rounded-2xl border border-white/5 bg-white/[0.02] shadow-lg shadow-black/20'
+const CARD = 'rounded-xl border border-white/5 bg-white/[0.03]'
+const ROW = 'rounded-lg border border-white/5 bg-white/[0.02]'
+
 function timeAgo(dateString) {
   const diff = new Date() - new Date(dateString)
   const m = Math.floor(diff / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24)
@@ -244,7 +252,7 @@ export default function Dashboard() {
         </h1>
 
         {/* ── Morning Summary Widget ── */}
-        <div className="bg-gradient-to-r from-cyan-500/5 via-[#020617] to-emerald-500/5 border border-white/10 rounded-2xl p-4 sm:p-5">
+        <div className="bg-gradient-to-r from-cyan-500/5 via-[#020617] to-emerald-500/5 border border-white/5 rounded-2xl shadow-lg shadow-black/20 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-3">
             <Zap size={14} className="text-cyan-400" />
             <h2 className="text-xs font-bold text-white uppercase tracking-wider">Quick Glance</h2>
@@ -254,7 +262,7 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {/* High Impact Events */}
-            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+            <div className={`flex items-center gap-3 p-3 ${CARD}`}>
               <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
                 <Calendar size={16} className="text-amber-400" />
               </div>
@@ -266,7 +274,7 @@ export default function Dashboard() {
               </div>
             </div>
             {/* Next Event */}
-            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+            <div className={`flex items-center gap-3 p-3 ${CARD}`}>
               <div className="w-9 h-9 rounded-lg bg-cyan-500/10 flex items-center justify-center shrink-0">
                 <AlertCircle size={16} className="text-cyan-400" />
               </div>
@@ -280,7 +288,7 @@ export default function Dashboard() {
               </div>
             </div>
             {/* Top Bias */}
-            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+            <div className={`flex items-center gap-3 p-3 ${CARD}`}>
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
                 todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
               }`}>
@@ -304,7 +312,7 @@ export default function Dashboard() {
               </div>
             </div>
             {/* Prop Firm Status */}
-            <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+            <div className={`flex items-center gap-3 p-3 ${CARD}`}>
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${propRisk.bg}`}>
                 <ShieldCheck size={16} className={propRisk.color} />
               </div>
@@ -498,7 +506,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
           {/* Live News */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
+          <div className={`${PANEL} p-4 sm:p-5`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Newspaper size={15} className="text-cyan-400" />
@@ -527,7 +535,7 @@ export default function Dashboard() {
                     : 'text-slate-400 bg-white/5 border-white/10'
                   return (
                     <div key={i} onClick={() => navigate('/news')}
-                      className="flex items-start gap-3 p-3 rounded-lg bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors cursor-pointer">
+                      className={`flex items-start gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer`}>
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 mt-0.5 ${impactColor}`}>
                         {impactLabel}
                       </span>
@@ -547,7 +555,7 @@ export default function Dashboard() {
           </div>
 
           {/* Upcoming Events */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
+          <div className={`${PANEL} p-4 sm:p-5`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Calendar size={15} className="text-cyan-400" />
@@ -577,7 +585,7 @@ export default function Dashboard() {
                   })
                   return (
                     <div key={i} onClick={() => navigate('/calendar')}
-                      className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors cursor-pointer">
+                      className={`flex items-center gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer`}>
                       <div className={`w-1.5 h-8 rounded-full ${impactColor} shrink-0`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-white font-semibold truncate">{item.title}</p>
@@ -607,7 +615,7 @@ export default function Dashboard() {
         </div>
 
         {/* ── Row 3: Currency Strength ── */}
-        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5">
+        <div className={`${PANEL} p-4 sm:p-5`}>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <BarChart2 size={15} className="text-cyan-400" />
@@ -765,7 +773,7 @@ export default function Dashboard() {
                 biasHistory.map((h) => {
                   const isSell = /bear/i.test(h.direction || '')
                   return (
-                    <div key={h.id} className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                    <div key={h.id} className={`p-3 ${CARD}`}>
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
