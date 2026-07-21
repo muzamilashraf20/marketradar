@@ -5,7 +5,7 @@ import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight,
   BarChart2, RefreshCw, Zap, Loader2, History, X,
-  Compass, Bot, Target, Clock, Check, Circle
+  Compass, Bot, Target, Clock, Check, Circle, ChevronDown
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonRow, SkeletonLine } from '../components/common/Skeleton'
@@ -59,6 +59,7 @@ export default function Dashboard() {
   const [eventsLoading, setEventsLoading] = useState(true)
   const [highImpactToday, setHighImpactToday] = useState(0)
   const [showBiasHistory, setShowBiasHistory] = useState(false)
+  const [biasExpanded, setBiasExpanded] = useState(false)
   const [biasHistory, setBiasHistory] = useState([])
   const [biasSummary, setBiasSummary] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -185,7 +186,9 @@ export default function Dashboard() {
           grade: data.tradeGrade,
           reasoning: data.reasoning,
           movePotential: data.movePotential || null,
-          entryQuality: data.bias?.entryQuality || null,
+          // Backend field is entryTiming (FRESH | EXTENDED | LATE). The old entryQuality key
+          // never existed in the response, so this chip had never once rendered.
+          entryQuality: data.bias?.entryTiming || null,
           generatedAt: data.generatedAt || data.updatedAt || data.bias?.generatedAt || null,
           stale: !!data.stale,
           selectionMethod: data.selectionMethod || 'formula',
@@ -264,6 +267,11 @@ export default function Dashboard() {
     : null
 
   const topEvent = events[0]
+
+  // The strength fallback bias carries no confidence or grade. Treated as "not scored" rather
+  // than zero — an empty ring would claim the engine looked and found no conviction.
+  const biasScored = todaysBias?.confidence != null
+  const biasAccent = gradeAccent(todaysBias?.grade)
 
   // Weekend feeds return every currency at 0. Rendering that as a live grid of empty bars looks
   // broken rather than closed, so swap in an explicit state. Deliberately strict: both conditions
@@ -358,19 +366,27 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ── Row 1: Stat Cards ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-
-          {/* Today's Bias */}
-          <div className={`${CARD} p-3 sm:p-4`}>
-            <div className="flex items-center justify-between mb-2 sm:mb-3">
-              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
-              {todaysBias?.selectionMethod === 'ai' && (
-                <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
-                  <Bot size={9} />AI PICKED
-                </span>
-              )}
-              <div className="flex items-center gap-1.5">
+        {/* ── Row 1: Today's Bias — the headline read. Given its own full-width row because its
+            height varies with how much the engine returned; inside the 4-up grid it stretched
+            every sibling card to match its tallest state. ── */}
+        <div className={`${CARD} p-4 sm:p-5`}>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              {/* Two slots only. The method badge lives inside the left group — as a third direct
+                  child of a justify-between row it used to shove the buttons off-centre. */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-xs text-slate-400 font-medium shrink-0">Today's Bias</span>
+                {todaysBias?.selectionMethod === 'v2' && (
+                  <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1 shrink-0">
+                    <Compass size={9} />COMPASS
+                  </span>
+                )}
+                {todaysBias?.selectionMethod === 'ai' && (
+                  <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1 shrink-0">
+                    <Bot size={9} />AI PICKED
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   onClick={openBiasHistory}
                   title="Bias history"
@@ -379,78 +395,127 @@ export default function Dashboard() {
                 >
                   <History size={13} className="text-slate-400" />
                 </button>
-                <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center ${
-                  todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
-                }`}>
+                <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center">
                   {strengthLoading
                     ? <Loader2 size={13} className="text-slate-400 animate-spin" />
-                  : todaysBias?.action === 'SELL'
-                  ? <TrendingDown size={13} className="text-red-400" />
-                  : <TrendingUp size={13} className="text-emerald-400" />
-                }
+                    : todaysBias?.action === 'SELL'
+                    ? <TrendingDown size={13} className="text-red-400" />
+                    : <TrendingUp size={13} className="text-emerald-400" />}
                 </div>
               </div>
             </div>
             {strengthLoading ? (
-              <div className="space-y-1.5">
-                <SkeletonLine width="w-3/4" height="h-4" />
-                <SkeletonLine width="w-1/2" height="h-3" />
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-full bg-white/[0.06] animate-pulse shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <SkeletonLine width="w-40" height="h-5" />
+                  <SkeletonLine width="w-24" height="h-3" />
+                </div>
               </div>
             ) : todaysBias ? (
               <>
-                <p className={`text-xs sm:text-sm font-bold leading-none mb-1 truncate ${
-                  todaysBias.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
-                }`}>
-                  {todaysBias.action} {todaysBias.pair}
-                </p>
-                {todaysBias.ai && todaysBias.confidence ? (
-                  <p className="text-[10px] font-semibold text-cyan-400 mb-0.5">
-                    {todaysBias.confidence}% confidence{todaysBias.grade && todaysBias.grade !== '-' ? ` · Grade ${todaysBias.grade}` : ''}
-                  </p>
-                ) : null}
-                {todaysBias.movePotential?.note ? (
-                  <p className="text-[10px] text-amber-400/90 font-medium mb-0.5 line-clamp-1 flex items-center gap-1">
-                    <Zap size={10} className="shrink-0" />{todaysBias.movePotential.note}
-                  </p>
-                ) : null}
-                {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
-                  <span className={`inline-block text-[10px] font-bold mb-0.5 px-1.5 py-0.5 rounded border ${
-                    todaysBias.entryQuality === 'FRESH' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                      : todaysBias.entryQuality === 'EXTENDED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                      : 'bg-red-500/10 text-red-400 border-red-500/20'
-                  }`}>
-                    {todaysBias.entryQuality === 'FRESH' ? 'FRESH entry' : todaysBias.entryQuality === 'EXTENDED' ? 'EXTENDED' : 'LATE — wait pullback'}
-                  </span>
-                ) : null}
-                <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
-                {todaysBias.selectionReasoning && (
-                  <p className="text-[10px] text-cyan-400/70 line-clamp-2 mt-0.5 flex items-start gap-1">
-                    <Target size={10} className="shrink-0 mt-0.5" />{todaysBias.selectionReasoning}
+                <div className="flex items-start gap-4">
+                  {/* Ring carries conviction; value=null renders the unscored state, never an
+                      empty ring. The strength fallback bias has no score at all. */}
+                  <ArcGauge
+                    variant="ring"
+                    size={64}
+                    value={biasScored ? todaysBias.confidence : null}
+                    stroke={biasAccent.hex}
+                    ariaLabel={biasScored ? `Conviction ${todaysBias.confidence} out of 100` : undefined}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-lg font-bold leading-none ${
+                      todaysBias.action === 'SELL' ? 'text-red-400'
+                        : todaysBias.action === 'BUY' ? 'text-emerald-400'
+                        : 'text-slate-400'
+                    }`}>
+                      {todaysBias.action} {todaysBias.pair}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                      {biasScored && todaysBias.grade && todaysBias.grade !== '-' && (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${biasAccent.chip}`}>
+                          Grade {todaysBias.grade}
+                        </span>
+                      )}
+                      {!biasScored && (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-white/[0.03] text-slate-500 border-white/10">
+                          Not scored
+                        </span>
+                      )}
+                      {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' && (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                          todaysBias.entryQuality === 'FRESH' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            : todaysBias.entryQuality === 'EXTENDED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            : 'bg-red-500/10 text-red-400 border-red-500/20'
+                        }`}>
+                          {todaysBias.entryQuality === 'FRESH' ? 'FRESH entry'
+                            : todaysBias.entryQuality === 'EXTENDED' ? 'EXTENDED'
+                            : 'LATE — wait pullback'}
+                        </span>
+                      )}
+                    </div>
+                    {todaysBias.movePotential?.note && (
+                      <p className="text-[10px] text-amber-400/90 font-medium mt-1.5 flex items-center gap-1">
+                        <Zap size={10} className="shrink-0" />{todaysBias.movePotential.note}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* The reasoning is the product. It used to be one truncated 10px line. */}
+                {todaysBias.reason && (
+                  <p className={`text-[11px] leading-snug text-slate-400 mt-3 ${biasExpanded ? '' : 'line-clamp-3'}`}>
+                    {todaysBias.reason}
                   </p>
                 )}
-                {todaysBias.ai && biasGeneratedLabel ? (
-                  biasIsStale ? (
-                    <button
-                      onClick={fetchTodayBias}
-                      className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
-                    >
-                      <AlertCircle size={10} />
-                      Stale · {biasGeneratedLabel} · Tap to refresh
-                    </button>
-                  ) : (
-                    <p className="mt-1 text-[10px] text-slate-400 font-medium">
-                      Generated at {biasGeneratedLabel}
+
+                {biasExpanded && todaysBias.selectionReasoning && (
+                  <div className="mt-2 p-2 rounded-lg bg-cyan-500/[0.06] border border-cyan-500/15">
+                    <p className="text-[10px] text-cyan-300/90 leading-snug flex items-start gap-1">
+                      <Target size={10} className="shrink-0 mt-0.5" />{todaysBias.selectionReasoning}
                     </p>
-                  )
-                ) : null}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
+                  {todaysBias.reason || todaysBias.selectionReasoning ? (
+                    <button
+                      onClick={() => setBiasExpanded(v => !v)}
+                      aria-expanded={biasExpanded}
+                      className="text-[10px] font-semibold text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+                    >
+                      {biasExpanded ? 'Less' : 'Details'}
+                      <ChevronDown size={11} className={`transition-transform ${biasExpanded ? 'rotate-180' : ''}`} />
+                    </button>
+                  ) : <span />}
+                  {todaysBias.ai && biasGeneratedLabel ? (
+                    biasIsStale ? (
+                      <button
+                        onClick={fetchTodayBias}
+                        className="flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+                      >
+                        <AlertCircle size={10} />
+                        Stale · {biasGeneratedLabel} · Tap to refresh
+                      </button>
+                    ) : (
+                      <p className="text-[10px] text-slate-400 font-medium">
+                        Generated at {biasGeneratedLabel}
+                      </p>
+                    )
+                  ) : null}
+                </div>
               </>
             ) : (
               <>
-                <p className="text-xs sm:text-sm font-bold text-slate-400 leading-none mb-1">Market Closed</p>
+                <p className="text-sm font-bold text-slate-400 leading-none mb-1">Market Closed</p>
                 <p className="text-[10px] text-slate-500">Opens Monday</p>
               </>
             )}
-          </div>
+        </div>
+
+        {/* ── Row 1b: Supporting stats ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
 
           {/* Next Event */}
           <div className={`${CARD} p-3 sm:p-4`}>
@@ -498,8 +563,9 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Prop Risk */}
-          <div className={`${CARD} p-3 sm:p-4`}>
+          {/* Prop Risk — spans the full width on mobile so three cards in a 2-col grid
+              don't leave an orphan half-width cell. */}
+          <div className={`${CARD} p-3 sm:p-4 col-span-2 lg:col-span-1`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Prop Risk</span>
               <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
