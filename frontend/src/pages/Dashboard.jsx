@@ -347,7 +347,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
               {todaysBias?.selectionMethod === 'ai' && (
-                <span className="text-[9px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
+                <span className="text-[10px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
                   <Bot size={9} />AI PICKED
                 </span>
               )}
@@ -394,7 +394,7 @@ export default function Dashboard() {
                   </p>
                 ) : null}
                 {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
-                  <span className={`inline-block text-[9px] font-bold mb-0.5 px-1.5 py-0.5 rounded border ${
+                  <span className={`inline-block text-[10px] font-bold mb-0.5 px-1.5 py-0.5 rounded border ${
                     todaysBias.entryQuality === 'FRESH' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                       : todaysBias.entryQuality === 'EXTENDED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                       : 'bg-red-500/10 text-red-400 border-red-500/20'
@@ -759,21 +759,21 @@ export default function Dashboard() {
                     <div className={`text-base font-bold ${biasSummary.winRate == null ? 'text-slate-500' : biasSummary.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
                       {biasSummary.winRate != null ? `${biasSummary.winRate}%` : '—'}
                     </div>
-                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Win Rate</div>
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500">Win Rate</div>
                   </div>
                   <div className="flex-1 px-3 py-2.5 text-center">
                     <div className={`text-base font-bold ${biasSummary.avgPips == null ? 'text-slate-500' : biasSummary.avgPips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                       {biasSummary.avgPips != null ? `${biasSummary.avgPips > 0 ? '+' : ''}${biasSummary.avgPips}` : '—'}
                     </div>
-                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Avg Pips</div>
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500">Avg Pips</div>
                   </div>
                   <div className="flex-1 px-3 py-2.5 text-center">
                     <div className="text-base font-bold text-cyan-400">{biasSummary.wins}/{biasSummary.scored}</div>
-                    <div className="text-[9px] uppercase tracking-wide text-slate-500">Correct</div>
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500">Correct</div>
                   </div>
                 </div>
                 {biasSummary.live > 0 ? (
-                  <p className="text-[9px] text-amber-400/70 text-center pb-2 -mt-1">
+                  <p className="text-[10px] text-amber-400/70 text-center pb-2 -mt-1">
                     {biasSummary.live} bias{biasSummary.live > 1 ? 'es' : ''} still inside 24h window — not yet counted
                   </p>
                 ) : null}
@@ -832,16 +832,16 @@ export default function Dashboard() {
                           </span>
                           <span className="text-[10px] text-slate-500">MFE +{h.performance.mfePips}</span>
                           <span className="text-[10px] text-slate-500">MAE -{h.performance.maePips}</span>
-                          {h.performance.status === 'live' ? <span className="text-[9px] text-amber-400/70">24h window open</span> : null}
+                          {h.performance.status === 'live' ? <span className="text-[10px] text-amber-400/70">24h window open</span> : null}
                         </div>
                       ) : h.performance && h.performance.status === 'live' ? (
-                        <p className="text-[9px] text-amber-400/70 mt-2 pt-2 border-t border-white/5 flex items-center gap-1">
+                        <p className="text-[10px] text-amber-400/70 mt-2 pt-2 border-t border-white/5 flex items-center gap-1">
                           <Clock size={9} className="shrink-0" />Awaiting candles — scores once 24h window closes
                         </p>
                       ) : h.performance && h.performance.status === 'pending' ? (
-                        <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score pending — refresh shortly</p>
+                        <p className="text-[10px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score pending — refresh shortly</p>
                       ) : h.performance && h.performance.status === 'error' ? (
-                        <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score unavailable (market closed / no data)</p>
+                        <p className="text-[10px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score unavailable (market closed / no data)</p>
                       ) : null}
                     </div>
                   )
