@@ -4,7 +4,8 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight,
-  BarChart2, RefreshCw, Zap, Loader2, History, X
+  BarChart2, RefreshCw, Zap, Loader2, History, X,
+  Compass, Bot, Target, Clock, Check, Circle
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonRow } from '../components/common/Skeleton'
@@ -14,11 +15,6 @@ import MacroCompass from '../components/dashboard/MacroCompass'
 import ArcGauge from '../components/dashboard/ArcGauge'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
-
-const FLAG = {
-  USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
-  AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭'
-}
 
 function timeAgo(dateString) {
   const diff = new Date() - new Date(dateString)
@@ -298,11 +294,13 @@ export default function Dashboard() {
                 }`}>
                   {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
                 </p>
-                <p className="text-[10px] text-slate-500 truncate">{
-                  todaysBias?.selectionMethod === 'v2' ? '🧭 Macro Compass'
-                    : todaysBias?.selectionMethod === 'ai' ? '🤖 AI Selected Pair'
-                    : 'Top Bias from Strength'
-                }</p>
+                <p className="text-[10px] text-slate-500 truncate flex items-center gap-1">
+                  {todaysBias?.selectionMethod === 'v2' ? (
+                    <><Compass size={10} className="shrink-0 text-cyan-400" />Macro Compass</>
+                  ) : todaysBias?.selectionMethod === 'ai' ? (
+                    <><Bot size={10} className="shrink-0 text-cyan-400" />AI Selected Pair</>
+                  ) : 'Top Bias from Strength'}
+                </p>
               </div>
             </div>
             {/* Prop Firm Status */}
@@ -334,7 +332,9 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
               {todaysBias?.selectionMethod === 'ai' && (
-                <span className="text-[9px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded">🤖 AI PICKED</span>
+                <span className="text-[9px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
+                  <Bot size={9} />AI PICKED
+                </span>
               )}
               <div className="flex items-center gap-1.5">
                 <button
@@ -374,16 +374,24 @@ export default function Dashboard() {
                   </p>
                 ) : null}
                 {todaysBias.movePotential?.note ? (
-                  <p className="text-[10px] text-amber-400/90 font-medium mb-0.5 line-clamp-1">⚡ {todaysBias.movePotential.note}</p>
+                  <p className="text-[10px] text-amber-400/90 font-medium mb-0.5 line-clamp-1 flex items-center gap-1">
+                    <Zap size={10} className="shrink-0" />{todaysBias.movePotential.note}
+                  </p>
                 ) : null}
                 {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
-                  <span className={`inline-block text-[9px] font-bold mb-0.5 ${todaysBias.entryQuality === 'FRESH' ? 'text-emerald-400' : todaysBias.entryQuality === 'EXTENDED' ? 'text-amber-400' : 'text-red-400'}`}>
-                    {todaysBias.entryQuality === 'FRESH' ? '🟢 FRESH entry' : todaysBias.entryQuality === 'EXTENDED' ? '🟡 EXTENDED' : '🔴 LATE — wait pullback'}
+                  <span className={`inline-block text-[9px] font-bold mb-0.5 px-1.5 py-0.5 rounded border ${
+                    todaysBias.entryQuality === 'FRESH' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                      : todaysBias.entryQuality === 'EXTENDED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                      : 'bg-red-500/10 text-red-400 border-red-500/20'
+                  }`}>
+                    {todaysBias.entryQuality === 'FRESH' ? 'FRESH entry' : todaysBias.entryQuality === 'EXTENDED' ? 'EXTENDED' : 'LATE — wait pullback'}
                   </span>
                 ) : null}
                 <p className="text-[10px] text-slate-500 line-clamp-1">{todaysBias.reason}</p>
                 {todaysBias.selectionReasoning && (
-                  <p className="text-[10px] text-cyan-400/70 line-clamp-2 mt-0.5">🎯 {todaysBias.selectionReasoning}</p>
+                  <p className="text-[10px] text-cyan-400/70 line-clamp-2 mt-0.5 flex items-start gap-1">
+                    <Target size={10} className="shrink-0 mt-0.5" />{todaysBias.selectionReasoning}
+                  </p>
                 )}
                 {todaysBias.ai && biasGeneratedLabel ? (
                   biasIsStale ? (
@@ -638,9 +646,8 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                 {strength.currencies.map(c => (
                   <div key={c.currency} className="rounded-lg p-2 sm:p-3 border bg-white/5 border-white/10 text-center">
-                    <div className="text-base sm:text-lg mb-0.5">🏳️</div>
-                    <div className="text-[10px] sm:text-xs font-black text-white">{c.currency}</div>
-                    <div className="text-[10px] sm:text-xs font-bold mt-0.5 text-slate-400">--</div>
+                    <div className="text-xs sm:text-sm font-black text-white tracking-wide">{c.currency}</div>
+                    <div className="text-[10px] sm:text-xs font-bold mt-1 text-slate-400">--</div>
                   </div>
                 ))}
               </div>
@@ -662,8 +669,7 @@ export default function Dashboard() {
                         isWeak ? 'bg-red-500/10 border-red-500/20' :
                         'bg-white/5 border-white/10'
                       }`}>
-                      <div className="text-base sm:text-lg mb-0.5 sm:mb-1">{FLAG[c.currency] || '🏳️'}</div>
-                      <div className="text-[10px] sm:text-xs font-black text-white">{c.currency}</div>
+                      <div className="text-xs sm:text-sm font-black text-white tracking-wide">{c.currency}</div>
                       <div className={`text-[10px] sm:text-xs font-bold mt-0.5 sm:mt-1 ${
                         isStrong ? 'text-emerald-400' :
                         isWeak ? 'text-red-400' : 'text-amber-400'
@@ -691,7 +697,10 @@ export default function Dashboard() {
 
               {strength.marketClosed && (
                 <div className="mt-3 pt-3 border-t border-white/10">
-                  <p className="text-xs text-slate-500 text-center">🔴 Forex market closed (Weekend) — Data will update Monday</p>
+                  <p className="text-xs text-slate-500 text-center flex items-center justify-center gap-1.5">
+                    <Circle size={9} className="fill-red-400 text-red-400 shrink-0" />
+                    Forex market closed (Weekend) — Data will update Monday
+                  </p>
                 </div>
               )}
             </>
@@ -784,11 +793,14 @@ export default function Dashboard() {
                       {h.performance && (h.performance.status === 'final' || h.performance.status === 'live') && typeof h.performance.pips === 'number' ? (
                         <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 pt-2 border-t border-white/5">
                           {h.performance.status === 'final' ? (
-                            <span className={`text-[10px] font-bold ${h.performance.correct ? 'text-emerald-400' : 'text-red-400'}`}>
-                              {h.performance.correct ? '✓ Correct' : '✗ Wrong'}
+                            <span className={`text-[10px] font-bold flex items-center gap-1 ${h.performance.correct ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {h.performance.correct ? <Check size={11} /> : <X size={11} />}
+                              {h.performance.correct ? 'Correct' : 'Wrong'}
                             </span>
                           ) : (
-                            <span className="text-[10px] font-bold text-amber-400">⏳ Running</span>
+                            <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                              <Clock size={10} />Running
+                            </span>
                           )}
                           <span className={`text-[10px] font-semibold ${h.performance.pips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {h.performance.pips > 0 ? '+' : ''}{h.performance.pips} pips
@@ -798,7 +810,9 @@ export default function Dashboard() {
                           {h.performance.status === 'live' ? <span className="text-[9px] text-amber-400/70">24h window open</span> : null}
                         </div>
                       ) : h.performance && h.performance.status === 'live' ? (
-                        <p className="text-[9px] text-amber-400/70 mt-2 pt-2 border-t border-white/5">⏳ Awaiting candles — scores once 24h window closes</p>
+                        <p className="text-[9px] text-amber-400/70 mt-2 pt-2 border-t border-white/5 flex items-center gap-1">
+                          <Clock size={9} className="shrink-0" />Awaiting candles — scores once 24h window closes
+                        </p>
                       ) : h.performance && h.performance.status === 'pending' ? (
                         <p className="text-[9px] text-slate-600 mt-2 pt-2 border-t border-white/5">Score pending — refresh shortly</p>
                       ) : h.performance && h.performance.status === 'error' ? (
