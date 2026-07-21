@@ -779,25 +779,35 @@ export default function Dashboard() {
                 {strength.currencies.map(c => {
                   const isStrong = c.label === 'Strong'
                   const isWeak = c.label === 'Weak'
+                  // The scale is normalised across the eight, so the weakest currency lands on a
+                  // real 0 every day — that is a reading, not missing data, and it still gets a
+                  // stub. An absent score gets no fill and a dash, so the two never look alike.
+                  const scored = c.strength !== null && c.strength !== undefined
+                    && c.strength !== '' && !Number.isNaN(Number(c.strength))
+                  const pct = scored ? Math.max(0, Math.min(100, Number(c.strength))) : null
                   return (
                     <div key={c.currency}
                       className={`rounded-lg p-2 sm:p-3 border text-center ${
+                        !scored ? 'bg-white/[0.03] border-white/10' :
                         isStrong ? 'bg-emerald-500/10 border-emerald-500/20' :
                         isWeak ? 'bg-red-500/10 border-red-500/20' :
                         'bg-white/5 border-white/10'
                       }`}>
                       <div className="text-xs sm:text-sm font-black text-white tracking-wide">{c.currency}</div>
                       <div className={`text-[10px] sm:text-xs font-bold mt-0.5 sm:mt-1 ${
+                        !scored ? 'text-slate-600' :
                         isStrong ? 'text-emerald-400' :
                         isWeak ? 'text-red-400' : 'text-amber-400'
-                      }`}>{c.strength}</div>
+                      }`} title={scored ? undefined : 'No strength reading for this currency'}>
+                        {scored ? pct : '—'}
+                      </div>
                       <div className="w-full bg-white/10 rounded-full h-1 mt-1">
-                        {/* minWidth keeps a small non-zero reading visible; a true 0 stays empty
-                            so "no data" and "very weak" don't render identically. */}
-                        <div className={`h-1 rounded-full transition-[width] duration-300 ${
-                          isStrong ? 'bg-emerald-500' :
-                          isWeak ? 'bg-red-500' : 'bg-amber-500'
-                        }`} style={{ width: `${c.strength}%`, minWidth: Number(c.strength) > 0 ? '3px' : '0px' }} />
+                        {scored && (
+                          <div className={`h-1 rounded-full transition-[width] duration-300 ${
+                            isStrong ? 'bg-emerald-500' :
+                            isWeak ? 'bg-red-500' : 'bg-amber-500'
+                          }`} style={{ width: `${pct}%`, minWidth: '3px' }} />
+                        )}
                       </div>
                     </div>
                   )
