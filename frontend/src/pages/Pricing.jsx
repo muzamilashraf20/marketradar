@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, Sparkles, Zap, Crown, ArrowRight, Bitcoin, Loader2 } from 'lucide-react'
+import { Check, Sparkles, Zap, Crown, ArrowRight, Bitcoin, Loader2, CreditCard } from 'lucide-react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import { useAuth } from '../context/AuthContext'
 
@@ -11,6 +11,8 @@ export default function Pricing() {
   const [isAnnual, setIsAnnual] = useState(false)
   const [cryptoLoading, setCryptoLoading] = useState(false)
   const [cryptoError, setCryptoError] = useState('')
+  // Whether the payment-method choice is expanded under the primary CTA. Presentation only.
+  const [showPayChoice, setShowPayChoice] = useState(false)
   const { isTrialActive, trialDaysLeft, user } = useAuth()
 
   const handleCheckout = () => {
@@ -135,56 +137,58 @@ export default function Pricing() {
             )}
           </div>
 
-          {/* CTAs */}
+          {/* CTAs — the primary button reveals the payment methods rather than picking one */}
           <div className="mb-6">
-            {/* Primary — card via Gumroad */}
             <button
-              onClick={handleCheckout}
+              onClick={() => setShowPayChoice(v => !v)}
+              aria-expanded={showPayChoice}
               className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black font-bold text-sm hover:opacity-90 transition-all shadow-lg shadow-cyan-500/20 cursor-pointer"
             >
               Upgrade to Pro <ArrowRight className="w-4 h-4" />
             </button>
 
-            {/* Divider */}
-            <div className="flex items-center gap-3 my-3">
-              <div className="h-px flex-1 bg-slate-700/50" />
-              <span className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold">or</span>
-              <div className="h-px flex-1 bg-slate-700/50" />
-            </div>
-
-            {/* Secondary — premium crypto button (depth + hover lift, ui-ux-pro-max guided) */}
-            <button
-              onClick={handleCryptoCheckout}
-              disabled={cryptoLoading}
-              aria-busy={cryptoLoading}
-              className="group relative w-full flex items-center justify-center gap-2 py-4 rounded-xl
-                         bg-gradient-to-b from-slate-800/90 to-slate-900/95 border border-cyan-500/30
-                         text-cyan-300 font-bold text-sm cursor-pointer overflow-hidden
-                         shadow-[0_4px_16px_rgba(6,182,212,0.15),inset_0_1px_0_rgba(255,255,255,0.06)]
-                         transition-all duration-200 ease-out
-                         hover:-translate-y-0.5 hover:border-cyan-400/50 hover:text-cyan-200
-                         hover:shadow-[0_10px_30px_rgba(6,182,212,0.28),inset_0_1px_0_rgba(255,255,255,0.09)]
-                         active:translate-y-0 active:shadow-[0_2px_10px_rgba(6,182,212,0.2)]
-                         disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0
-                         motion-reduce:transition-none motion-reduce:hover:translate-y-0"
-            >
-              {/* subtle top sheen for depth */}
-              <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent" />
-              {cryptoLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Redirecting...
-                </>
-              ) : (
-                <>
-                  <Bitcoin className="w-4 h-4 text-cyan-400 transition-transform duration-200 group-hover:scale-110" />
-                  Pay with Crypto
-                </>
-              )}
-            </button>
-            <p className="text-center text-[11px] text-slate-500 mt-2">BTC · USDT · USDC accepted</p>
-            {cryptoError && (
-              <p className="text-center text-xs text-red-400 mt-2" role="alert">{cryptoError}</p>
+            {showPayChoice && (
+              <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    onClick={handleCheckout}
+                    className="flex items-center justify-center gap-2 py-3 px-3 rounded-lg border border-white/15 bg-white/5
+                               text-slate-200 font-semibold text-xs cursor-pointer
+                               hover:bg-white/10 hover:border-white/25 transition-colors duration-200
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+                  >
+                    <CreditCard className="w-4 h-4 text-slate-300" />
+                    Pay with card
+                  </button>
+                  <button
+                    onClick={handleCryptoCheckout}
+                    disabled={cryptoLoading}
+                    aria-busy={cryptoLoading}
+                    className="group flex items-center justify-center gap-2 py-3 px-3 rounded-lg
+                               border border-cyan-500/30 bg-gradient-to-b from-slate-800/90 to-slate-900/95
+                               text-cyan-300 font-semibold text-xs cursor-pointer
+                               hover:border-cyan-400/50 hover:text-cyan-200 transition-colors duration-200
+                               disabled:opacity-60 disabled:cursor-not-allowed
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+                  >
+                    {cryptoLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Redirecting...
+                      </>
+                    ) : (
+                      <>
+                        <Bitcoin className="w-4 h-4 text-cyan-400" />
+                        Pay with crypto
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-center text-[11px] text-slate-500 mt-2">BTC · USDT · USDC accepted</p>
+                {cryptoError && (
+                  <p className="text-center text-xs text-red-400 mt-2" role="alert">{cryptoError}</p>
+                )}
+              </div>
             )}
           </div>
 

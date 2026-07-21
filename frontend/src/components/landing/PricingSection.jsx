@@ -34,39 +34,46 @@ const trustItems = [
   { icon: <Shield size={14} />, text: 'GDPR Compliant' },
 ]
 
-// Premium crypto CTA — same depth/hover styling as the Pricing page (ui-ux-pro-max guided)
-function CryptoPayButton({ plan, loading, error, onClick }) {
+// Inline payment-method choice, revealed by the plan's primary CTA. Neither button changes what
+// checkout does — they call the same two handlers the separate buttons used to call.
+function PayChoice({ plan, loading, error, onCard, onCrypto }) {
   return (
-    <div>
-      <button
-        onClick={() => onClick(plan)}
-        disabled={loading}
-        aria-busy={loading}
-        className="group relative w-full flex items-center justify-center gap-2 py-4 rounded-xl
-                   bg-gradient-to-b from-slate-800/90 to-slate-900/95 border border-cyan-500/30
-                   text-cyan-300 font-bold text-sm cursor-pointer overflow-hidden
-                   shadow-[0_4px_16px_rgba(6,182,212,0.15),inset_0_1px_0_rgba(255,255,255,0.06)]
-                   transition-all duration-200 ease-out
-                   hover:-translate-y-0.5 hover:border-cyan-400/50 hover:text-cyan-200
-                   hover:shadow-[0_10px_30px_rgba(6,182,212,0.28),inset_0_1px_0_rgba(255,255,255,0.09)]
-                   active:translate-y-0 active:shadow-[0_2px_10px_rgba(6,182,212,0.2)]
-                   disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0
-                   motion-reduce:transition-none motion-reduce:hover:translate-y-0"
-      >
-        {/* subtle top sheen for depth */}
-        <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent" />
-        {loading ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            Redirecting...
-          </>
-        ) : (
-          <>
-            <Bitcoin className="w-4 h-4 text-cyan-400 transition-transform duration-200 group-hover:scale-110" />
-            Pay with Crypto
-          </>
-        )}
-      </button>
+    <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <button
+          onClick={onCard}
+          className="flex items-center justify-center gap-2 py-3 px-3 rounded-lg border border-white/15 bg-white/5
+                     text-slate-200 font-semibold text-xs cursor-pointer
+                     hover:bg-white/10 hover:border-white/25 transition-colors duration-200
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+        >
+          <CreditCard className="w-4 h-4 text-slate-300" />
+          Pay with card
+        </button>
+        <button
+          onClick={() => onCrypto(plan)}
+          disabled={loading}
+          aria-busy={loading}
+          className="group flex items-center justify-center gap-2 py-3 px-3 rounded-lg
+                     border border-cyan-500/30 bg-gradient-to-b from-slate-800/90 to-slate-900/95
+                     text-cyan-300 font-semibold text-xs cursor-pointer
+                     hover:border-cyan-400/50 hover:text-cyan-200 transition-colors duration-200
+                     disabled:opacity-60 disabled:cursor-not-allowed
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Redirecting...
+            </>
+          ) : (
+            <>
+              <Bitcoin className="w-4 h-4 text-cyan-400" />
+              Pay with crypto
+            </>
+          )}
+        </button>
+      </div>
       <p className="text-center text-[11px] text-slate-500 mt-2">BTC · USDT · USDC accepted</p>
       {error && (
         <p className="text-center text-xs text-red-400 mt-2" role="alert">{error}</p>
@@ -80,6 +87,9 @@ export default function PricingSection() {
   const { user } = useAuth()
   const [cryptoLoadingPlan, setCryptoLoadingPlan] = useState(null)
   const [cryptoErrorPlan, setCryptoErrorPlan] = useState(null)
+  // Which plan card currently has its payment-method choice expanded. Presentation only.
+  const [openPlan, setOpenPlan] = useState(null)
+  const togglePlan = (plan) => setOpenPlan(current => (current === plan ? null : plan))
 
   // Card checkout via Gumroad — require an account first (matches the Gumroad flow expectation)
   const handleCheckout = () => {
@@ -154,11 +164,11 @@ export default function PricingSection() {
               ))}
             </ul>
 
-            {/* CTAs */}
+            {/* CTAs — the primary button reveals the payment methods rather than picking one */}
             <div>
-              {/* Primary — card via Gumroad */}
               <button
-                onClick={handleCheckout}
+                onClick={() => togglePlan('monthly')}
+                aria-expanded={openPlan === 'monthly'}
                 className="w-full px-6 py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-sm font-bold hover:opacity-90 transition-opacity shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
               >
                 <Zap size={16} />
@@ -166,20 +176,15 @@ export default function PricingSection() {
                 <ArrowRight size={16} />
               </button>
 
-              {/* Divider */}
-              <div className="flex items-center gap-3 my-3">
-                <div className="h-px flex-1 bg-slate-700/50" />
-                <span className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold">or</span>
-                <div className="h-px flex-1 bg-slate-700/50" />
-              </div>
-
-              {/* Secondary — crypto */}
-              <CryptoPayButton
-                plan="monthly"
-                loading={cryptoLoadingPlan === 'monthly'}
-                error={cryptoErrorPlan === 'monthly' ? cryptoError : ''}
-                onClick={handleCryptoCheckout}
-              />
+              {openPlan === 'monthly' && (
+                <PayChoice
+                  plan="monthly"
+                  loading={cryptoLoadingPlan === 'monthly'}
+                  error={cryptoErrorPlan === 'monthly' ? cryptoError : ''}
+                  onCard={handleCheckout}
+                  onCrypto={handleCryptoCheckout}
+                />
+              )}
             </div>
           </div>
 
@@ -206,31 +211,26 @@ export default function PricingSection() {
               ))}
             </ul>
 
-            {/* CTAs */}
+            {/* CTAs — the primary button reveals the payment methods rather than picking one */}
             <div>
-              {/* Primary — card via Gumroad */}
               <button
-                onClick={handleCheckout}
+                onClick={() => togglePlan('annual')}
+                aria-expanded={openPlan === 'annual'}
                 className="w-full px-6 py-4 rounded-xl border border-emerald-500/40 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/10 transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
               >
                 GET ANNUAL
                 <ArrowRight size={16} />
               </button>
 
-              {/* Divider */}
-              <div className="flex items-center gap-3 my-3">
-                <div className="h-px flex-1 bg-slate-700/50" />
-                <span className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold">or</span>
-                <div className="h-px flex-1 bg-slate-700/50" />
-              </div>
-
-              {/* Secondary — crypto */}
-              <CryptoPayButton
-                plan="annual"
-                loading={cryptoLoadingPlan === 'annual'}
-                error={cryptoErrorPlan === 'annual' ? cryptoError : ''}
-                onClick={handleCryptoCheckout}
-              />
+              {openPlan === 'annual' && (
+                <PayChoice
+                  plan="annual"
+                  loading={cryptoLoadingPlan === 'annual'}
+                  error={cryptoErrorPlan === 'annual' ? cryptoError : ''}
+                  onCard={handleCheckout}
+                  onCrypto={handleCryptoCheckout}
+                />
+              )}
             </div>
           </div>
 
