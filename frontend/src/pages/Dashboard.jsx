@@ -221,6 +221,7 @@ export default function Dashboard() {
         entryQuality: aiBias.entryQuality,
         generatedAt: aiBias.generatedAt,
         stale: aiBias.stale,
+        selectionMethod: aiBias.selectionMethod,
         ai: true,
       }
     : getBiasFromStrength()
@@ -310,8 +311,12 @@ export default function Dashboard() {
                 <ShieldCheck size={16} className={propRisk.color} />
               </div>
               <div className="min-w-0">
-                <p className={`text-sm font-bold leading-tight ${propRisk.color}`}>{propRisk.status}</p>
-                <p className="text-[10px] text-slate-500">Drawdown: {propRisk.drawdown}% used</p>
+                <p className={`text-sm font-bold leading-tight ${propRisk.configured ? propRisk.color : 'text-slate-400'}`}>
+                  {propRisk.configured ? propRisk.status : 'Not set up'}
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  {propRisk.configured ? `Drawdown: ${propRisk.drawdown}% used` : 'No limits configured'}
+                </p>
               </div>
             </div>
           </div>
