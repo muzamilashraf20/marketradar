@@ -11,6 +11,7 @@ import { SkeletonRow } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
 import MacroCompass from '../components/dashboard/MacroCompass'
+import ArcGauge from '../components/dashboard/ArcGauge'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -65,7 +66,8 @@ export default function Dashboard() {
 
   const [propRisk, setPropRisk] = useState({
     status: 'SAFE', color: 'text-emerald-400',
-    bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: '0.0'
+    bg: 'bg-emerald-500/10', border: 'border-emerald-500/20',
+    drawdown: '0.0', pct: 0, hex: '#10b981', configured: false
   })
 
   useEffect(() => {
@@ -181,11 +183,11 @@ export default function Dashboard() {
         const maxDaily = parseFloat(settings.maxDailyDrawdown) || 5
         const pct = maxDaily > 0 ? (dailyUsed / maxDaily) * 100 : 0
         if (pct >= 80) {
-          setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', drawdown: dailyUsed.toFixed(1) })
+          setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#f87171', configured: true })
         } else if (pct >= 50) {
-          setPropRisk({ status: 'CAUTION', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', drawdown: dailyUsed.toFixed(1) })
+          setPropRisk({ status: 'CAUTION', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#fbbf24', configured: true })
         } else {
-          setPropRisk({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: dailyUsed.toFixed(1) })
+          setPropRisk({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#10b981', configured: true })
         }
       }
     } catch (e) {
@@ -456,8 +458,24 @@ export default function Dashboard() {
                 <ShieldCheck size={13} className={propRisk.color} />
               </div>
             </div>
-            <p className={`text-base sm:text-lg font-bold leading-none mb-1 ${propRisk.color}`}>{propRisk.status}</p>
-            <p className="text-[10px] text-slate-500">{propRisk.drawdown}% drawdown used</p>
+            {propRisk.configured ? (
+              <ArcGauge
+                value={propRisk.pct}
+                label={propRisk.status}
+                sub={`${propRisk.drawdown}% drawdown used`}
+                stroke={propRisk.hex}
+              />
+            ) : (
+              <div className="flex flex-col items-center py-2">
+                <p className="text-sm font-bold text-slate-400 leading-none">Not set up</p>
+                <button
+                  onClick={() => navigate('/prop-firm')}
+                  className="mt-2 text-[10px] font-semibold text-cyan-400 hover:text-cyan-300 transition-colors"
+                >
+                  Set your limits →
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
