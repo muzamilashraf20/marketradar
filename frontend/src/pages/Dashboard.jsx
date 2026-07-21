@@ -82,6 +82,15 @@ export default function Dashboard() {
     loadPropRisk()
   }, [])
 
+  // Escape closes the history modal — a dialog you can only dismiss with the mouse traps
+  // keyboard users, since there is nothing else focusable behind the overlay.
+  useEffect(() => {
+    if (!showBiasHistory) return
+    const onKey = (e) => { if (e.key === 'Escape') setShowBiasHistory(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showBiasHistory])
+
   const fetchNews = async () => {
     try {
       setNewsLoading(true)
@@ -355,7 +364,8 @@ export default function Dashboard() {
                 <button
                   onClick={openBiasHistory}
                   title="Bias history"
-                  className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors"
+                  aria-label="Open bias history"
+                  className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
                 >
                   <History size={13} className="text-slate-400" />
                 </button>
@@ -412,7 +422,7 @@ export default function Dashboard() {
                   biasIsStale ? (
                     <button
                       onClick={fetchTodayBias}
-                      className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors"
+                      className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
                     >
                       <AlertCircle size={10} />
                       Stale · {biasGeneratedLabel} · Tap to refresh
@@ -498,7 +508,7 @@ export default function Dashboard() {
                 <p className="text-sm font-bold text-slate-400 leading-none">Not set up</p>
                 <button
                   onClick={() => navigate('/prop-firm')}
-                  className="mt-2 text-[10px] font-semibold text-cyan-400 hover:text-cyan-300 transition-colors"
+                  className="mt-2 text-[10px] font-semibold text-cyan-400 hover:text-cyan-300 transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
                 >
                   Set your limits →
                 </button>
@@ -519,9 +529,9 @@ export default function Dashboard() {
                 <Newspaper size={15} className="text-cyan-400" />
                 <h2 className="text-sm font-bold text-white">Live News</h2>
               </div>
-              <span onClick={() => navigate('/news')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+              <button onClick={() => navigate('/news')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70">
                 View all →
-              </span>
+              </button>
             </div>
 
            {newsLoading && (
@@ -542,7 +552,9 @@ export default function Dashboard() {
                     : 'text-slate-400 bg-white/5 border-white/10'
                   return (
                     <div key={i} onClick={() => navigate('/news')}
-                      className={`flex items-start gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer`}>
+                      role="button" tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/news') } }}
+                      className={`flex items-start gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70`}>
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 mt-0.5 ${impactColor}`}>
                         {impactLabel}
                       </span>
@@ -568,9 +580,9 @@ export default function Dashboard() {
                 <Calendar size={15} className="text-cyan-400" />
                 <h2 className="text-sm font-bold text-white">Upcoming Events</h2>
               </div>
-              <span onClick={() => navigate('/calendar')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+              <button onClick={() => navigate('/calendar')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70">
                 View all →
-              </span>
+              </button>
             </div>
 
             {eventsLoading && (
@@ -592,7 +604,9 @@ export default function Dashboard() {
                   })
                   return (
                     <div key={i} onClick={() => navigate('/calendar')}
-                      className={`flex items-center gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer`}>
+                      role="button" tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/calendar') } }}
+                      className={`flex items-center gap-3 p-3 ${ROW} hover:border-white/15 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70`}>
                       <div className={`w-1.5 h-8 rounded-full ${impactColor} shrink-0`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-white font-semibold truncate">{item.title}</p>
@@ -629,12 +643,16 @@ export default function Dashboard() {
               <h2 className="text-sm font-bold text-white">Currency Strength</h2>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={fetchStrength} className="text-slate-500 hover:text-white transition-colors">
+              <button
+                onClick={fetchStrength}
+                aria-label="Refresh currency strength"
+                className="text-slate-500 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+              >
                 <RefreshCw size={13} className={strengthLoading ? 'animate-spin' : ''} />
               </button>
-              <span onClick={() => navigate('/strength')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors">
+              <button onClick={() => navigate('/strength')} className="text-xs text-slate-500 hover:text-cyan-400 cursor-pointer transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70">
                 View all →
-              </span>
+              </button>
             </div>
           </div>
 
@@ -652,7 +670,7 @@ export default function Dashboard() {
                 <Lock size={20} className="text-cyan-400" />
                 <p className="text-sm font-bold text-white">Pro Feature</p>
                 <p className="text-xs text-slate-400">Currency strength analysis</p>
-                <button onClick={() => navigate('/pricing')} className="mt-1 px-4 py-2 bg-cyan-500 text-black text-xs font-bold rounded-lg hover:bg-cyan-400 transition-colors">
+                <button onClick={() => navigate('/pricing')} className="mt-1 px-4 py-2 bg-cyan-500 text-black text-xs font-bold rounded-lg hover:bg-cyan-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#030712]">
                   Upgrade to Pro
                 </button>
               </div>
@@ -738,16 +756,19 @@ export default function Dashboard() {
       {showBiasHistory && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => setShowBiasHistory(false)}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bias-history-title"
             className="w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl bg-[#030712] border border-white/10 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between p-4 border-b border-white/5">
               <div className="flex items-center gap-2">
                 <History size={16} className="text-cyan-400" />
-                <h3 className="text-sm font-bold text-white">Bias History</h3>
+                <h3 id="bias-history-title" className="text-sm font-bold text-white">Bias History</h3>
                 <span className="text-[10px] text-slate-500">Last 14 days</span>
               </div>
-              <button onClick={() => setShowBiasHistory(false)} className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors">
+              <button onClick={() => setShowBiasHistory(false)} aria-label="Close bias history" className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70">
                 <X size={14} className="text-slate-400" />
               </button>
             </div>
