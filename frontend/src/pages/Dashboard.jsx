@@ -87,7 +87,7 @@ export default function Dashboard() {
   const [propRisk, setPropRisk] = useState({
     status: 'SAFE', color: 'text-emerald-400',
     bg: 'bg-emerald-500/10', border: 'border-emerald-500/20',
-    drawdown: '0.0', pct: 0, hex: '#10b981', configured: false
+    sub: '', pct: 0, hex: '#10b981', configured: false
   })
 
   useEffect(() => {
@@ -207,19 +207,35 @@ export default function Dashboard() {
 
   const loadPropRisk = () => {
     try {
-      const saved = localStorage.getItem('bf_prop_settings')
-      if (saved) {
-        const settings = JSON.parse(saved)
-        const dailyUsed = parseFloat(settings.dailyDrawdownUsed) || 0
-        const maxDaily = parseFloat(settings.maxDailyDrawdown) || 5
-        const pct = maxDaily > 0 ? (dailyUsed / maxDaily) * 100 : 0
-        if (pct >= 80) {
-          setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#f87171', configured: true })
-        } else if (pct >= 50) {
-          setPropRisk({ status: 'CAUTION', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#fbbf24', configured: true })
-        } else {
-          setPropRisk({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', drawdown: dailyUsed.toFixed(1), pct, hex: '#10b981', configured: true })
-        }
+      // Must match PropFirm.jsx's STORAGE_KEY. Reading a different key is why this card could
+      // never render a gauge — getItem always returned null, so it sat on "Not set up" forever.
+      const saved = localStorage.getItem('biasforge_propfirm_settings')
+      if (!saved) return
+      const s = JSON.parse(saved)
+
+      // Mirrors PropFirm.jsx's own calculations exactly (its lines 103/110/116) so the two pages
+      // can never quote different numbers. The fields it persists are accountSize,
+      // dailyDrawdownPercent and currentDailyPnl. The old code read dailyDrawdownUsed and
+      // maxDailyDrawdown — those names belong to the /api/trade-check request body, not to
+      // anything ever stored, so both parseFloats resolved to NaN.
+      const accountSize = Number(s.accountSize)
+      const dailyPct = Number(s.dailyDrawdownPercent)
+      if (!Number.isFinite(accountSize) || !Number.isFinite(dailyPct)) return
+
+      const maxDailyLoss = (accountSize * dailyPct) / 100
+      if (!Number.isFinite(maxDailyLoss) || maxDailyLoss <= 0) return   // no divide-by-zero
+
+      // Only losses count against the limit; a profitable day is not drawdown.
+      const dailyLossUsed = Math.abs(Math.min(Number(s.currentDailyPnl) || 0, 0))
+      const pct = Math.min(100, (dailyLossUsed / maxDailyLoss) * 100)
+      const sub = `$${dailyLossUsed.toFixed(0)} of $${maxDailyLoss.toFixed(0)} daily limit`
+
+      if (pct >= 80) {
+        setPropRisk({ status: 'DANGER', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', sub, pct, hex: '#f87171', configured: true })
+      } else if (pct >= 50) {
+        setPropRisk({ status: 'CAUTION', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', sub, pct, hex: '#fbbf24', configured: true })
+      } else {
+        setPropRisk({ status: 'SAFE', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', sub, pct, hex: '#10b981', configured: true })
       }
     } catch (e) {
       console.error('Prop risk load error:', e)
@@ -359,7 +375,7 @@ export default function Dashboard() {
                   {propRisk.configured ? propRisk.status : 'Not set up'}
                 </p>
                 <p className="text-[10px] text-slate-500">
-                  {propRisk.configured ? `Drawdown: ${propRisk.drawdown}% used` : 'No limits configured'}
+                  {propRisk.configured ? propRisk.sub : 'No limits configured'}
                 </p>
               </div>
             </div>
@@ -576,7 +592,7 @@ export default function Dashboard() {
               <ArcGauge
                 value={propRisk.pct}
                 label={propRisk.status}
-                sub={`${propRisk.drawdown}% drawdown used`}
+                sub={propRisk.sub}
                 stroke={propRisk.hex}
               />
             ) : (
