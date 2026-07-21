@@ -242,6 +242,13 @@ export default function Dashboard() {
   const biasWidgetLoading = aiBiasLoading && strengthLoading
   const topEvent = events[0]
 
+  // Weekend feeds return every currency at 0. Rendering that as a live grid of empty bars looks
+  // broken rather than closed, so swap in an explicit state. Deliberately strict: both conditions
+  // must hold, otherwise a genuine flat-but-open market would be hidden.
+  const strengthAllZero = !!strength?.currencies?.length
+    && strength.currencies.every(c => !Number(c.strength))
+  const strengthOffline = strengthAllZero && !!strength?.marketClosed
+
   return (
     <DashboardLayout title="Overview" subtitle="Your macro intelligence hub">
       <div className="space-y-5">
@@ -632,9 +639,9 @@ export default function Dashboard() {
           </div>
 
           {strengthLoading && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            <div className="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-8 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8].map(i => (
-                <div key={i} className="h-20 bg-white/5 rounded-lg animate-pulse" />
+                <div key={i} className="h-16 bg-white/5 rounded-lg animate-pulse" />
               ))}
             </div>
           )}
@@ -651,7 +658,7 @@ export default function Dashboard() {
               </div>
               <div className="filter blur-sm pointer-events-none">
               {/* Blurred preview for free users */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+              <div className="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                 {strength.currencies.map(c => (
                   <div key={c.currency} className="rounded-lg p-2 sm:p-3 border bg-white/5 border-white/10 text-center">
                     <div className="text-xs sm:text-sm font-black text-white tracking-wide">{c.currency}</div>
@@ -663,10 +670,18 @@ export default function Dashboard() {
             </div>
           )}
 
-          {!strengthLoading && strength && isPro && (
+          {!strengthLoading && strength && isPro && strengthOffline && (
+            <div className="py-8 text-center">
+              <BarChart2 size={22} className="mx-auto text-slate-600 mb-2" />
+              <p className="text-xs text-slate-400 font-medium">Markets closed — no strength to read</p>
+              <p className="text-[11px] text-slate-500 mt-1">Live currency strength resumes when forex reopens Monday</p>
+            </div>
+          )}
+
+          {!strengthLoading && strength && isPro && !strengthOffline && (
             <>
-              {/* FIX: 4 cols mobile → 8 cols desktop, smaller padding on mobile */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+              {/* 4 cols mobile → 8 cols desktop, smaller padding on mobile */}
+              <div className="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-8 gap-2">
                 {strength.currencies.map(c => {
                   const isStrong = c.label === 'Strong'
                   const isWeak = c.label === 'Weak'
@@ -683,10 +698,12 @@ export default function Dashboard() {
                         isWeak ? 'text-red-400' : 'text-amber-400'
                       }`}>{c.strength}</div>
                       <div className="w-full bg-white/10 rounded-full h-1 mt-1">
-                        <div className={`h-1 rounded-full ${
+                        {/* minWidth keeps a small non-zero reading visible; a true 0 stays empty
+                            so "no data" and "very weak" don't render identically. */}
+                        <div className={`h-1 rounded-full transition-[width] duration-300 ${
                           isStrong ? 'bg-emerald-500' :
                           isWeak ? 'bg-red-500' : 'bg-amber-500'
-                        }`} style={{ width: `${c.strength}%` }} />
+                        }`} style={{ width: `${c.strength}%`, minWidth: Number(c.strength) > 0 ? '3px' : '0px' }} />
                       </div>
                     </div>
                   )
