@@ -2456,6 +2456,16 @@ app.get('/api/macro-compass', async (req, res) => {
     const rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
     const active = rows.filter(r => r.status === 'running' && r.direction !== 'FLAT')
 
+    // A query that succeeds but returns nothing is indistinguishable from a healthy empty table,
+    // so it used to fail silently — the panel sat blank for 20 minutes with nothing in the logs
+    // until a Railway restart cleared it. Log the row counts at each stage so the next occurrence
+    // says whether Supabase returned nothing or the pair filter ate everything.
+    if ((data || []).length === 0) {
+      console.warn('⚠️ [macro-compass] supabase returned 0 rows — client may be stale')
+    } else if (rows.length === 0) {
+      console.warn(`⚠️ [macro-compass] ${data.length} raw rows but 0 survived the pair filter`)
+    }
+
     // The headline is whatever was actually PUBLISHED to Today's Bias, not a fresh re-derivation.
     // Today's Bias is cached for TODAY_BIAS_TTL and is subject to the churn guard, so re-deriving
     // here would let the panel flag a different pair than the dashboard card is showing for up to
