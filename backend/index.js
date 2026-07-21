@@ -2658,7 +2658,9 @@ app.post('/api/crypto/create-payment', async (req, res) => {
     const { data } = await axios.post('https://api.nowpayments.io/v1/invoice', {
       price_amount: price,
       price_currency: 'usd',
-      pay_currency: null, // customer picks BTC / USDT / USDC on the NOWPayments page
+      // pay_currency is deliberately omitted, not sent as null — NOWPayments rejects a null with
+      // INVALID_REQUEST_PARAMS ("pay_currency must be a string"). Leaving the field out is what
+      // lets the customer pick BTC / USDT / USDC on the hosted NOWPayments page.
       order_id: `biasforge_${plan}_${buyerEmail}_${Date.now()}`,
       order_description: `BiasForge Pro ${plan}`,
       ipn_callback_url: 'https://marketradar-production.up.railway.app/api/crypto/webhook',
