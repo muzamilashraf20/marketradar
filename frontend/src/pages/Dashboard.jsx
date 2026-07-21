@@ -24,6 +24,21 @@ const PANEL = 'rounded-2xl border border-white/5 bg-white/[0.02] shadow-lg shado
 const CARD = 'rounded-xl border border-white/5 bg-white/[0.03]'
 const ROW = 'rounded-lg border border-white/5 bg-white/[0.02]'
 
+// ── Conviction accent ───────────────────────────────────────────────────────
+// Colour carries CONVICTION, never direction. Direction is already stated twice — in the word
+// BUY/SELL and in the arrow icon — so spending colour on it too would waste the only channel
+// left for "how much do we believe this", and make a weak SELL shout louder than a strong BUY.
+// Mirrors MacroCompass GRADE_STYLE. Duplicated rather than imported because that file does not
+// export it and is intentionally frozen; worth de-duplicating after launch.
+const GRADE_ACCENT = {
+  'A':  { hex: '#10b981', text: 'text-emerald-400', chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25' },
+  'A-': { hex: '#10b981', text: 'text-emerald-400', chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25' },
+  'B':  { hex: '#06b6d4', text: 'text-cyan-400',    chip: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/25' },
+  'C':  { hex: '#eab308', text: 'text-yellow-400',  chip: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/25' },
+  'D':  { hex: '#64748b', text: 'text-slate-400',   chip: 'bg-slate-500/15 text-slate-400 border-slate-500/25' },
+}
+const gradeAccent = g => GRADE_ACCENT[g] || GRADE_ACCENT.D
+
 function timeAgo(dateString) {
   const diff = new Date() - new Date(dateString)
   const m = Math.floor(diff / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24)
@@ -306,19 +321,15 @@ export default function Dashboard() {
             </div>
             {/* Top Bias */}
             <div className={`flex items-center gap-3 p-3 ${CARD}`}>
-              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                todaysBias?.action === 'SELL' ? 'bg-red-500/10' : 'bg-emerald-500/10'
-              }`}>
+              <div className="w-9 h-9 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
                 {todaysBias?.action === 'SELL'
-                  ? <TrendingDown size={16} className="text-red-400" />
-                  : <TrendingUp size={16} className="text-emerald-400" />}
+                  ? <TrendingDown size={16} className={gradeAccent(todaysBias?.grade).text} />
+                  : <TrendingUp size={16} className={gradeAccent(todaysBias?.grade).text} />}
               </div>
               <div className="min-w-0">
                 {strengthLoading
                   ? <SkeletonLine width="w-24" height="h-[14px]" />
-                  : <p className={`text-sm font-bold leading-tight ${
-                      todaysBias?.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
-                    }`}>
+                  : <p className="text-sm font-bold leading-tight text-white">
                       {todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
                     </p>}
                 <p className="text-[10px] text-slate-500 truncate flex items-center gap-1">
@@ -351,11 +362,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
 
           {/* Today's Bias */}
-          <div className={`rounded-xl p-3 sm:p-4 border ${
-            todaysBias?.action === 'SELL'
-              ? 'bg-red-500/10 border-red-500/20'
-              : 'bg-emerald-500/10 border-emerald-500/20'
-          }`}>
+          <div className={`${CARD} p-3 sm:p-4`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
               {todaysBias?.selectionMethod === 'ai' && (
@@ -446,7 +453,7 @@ export default function Dashboard() {
           </div>
 
           {/* Next Event */}
-          <div className="rounded-xl p-3 sm:p-4 border bg-amber-500/10 border-amber-500/20">
+          <div className={`${CARD} p-3 sm:p-4`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Next Event</span>
               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-amber-500/10 flex items-center justify-center">
@@ -469,7 +476,7 @@ export default function Dashboard() {
           </div>
 
           {/* Top News */}
-          <div className="rounded-xl p-3 sm:p-4 border bg-cyan-500/10 border-cyan-500/20">
+          <div className={`${CARD} p-3 sm:p-4`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Top News</span>
               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-cyan-500/10 flex items-center justify-center">
@@ -492,7 +499,7 @@ export default function Dashboard() {
           </div>
 
           {/* Prop Risk */}
-          <div className={`rounded-xl p-3 sm:p-4 border ${propRisk.bg} ${propRisk.border}`}>
+          <div className={`${CARD} p-3 sm:p-4`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Prop Risk</span>
               <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
