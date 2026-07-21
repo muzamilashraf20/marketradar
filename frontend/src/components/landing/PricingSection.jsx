@@ -16,7 +16,7 @@ const proFeatures = [
   { text: 'Unlimited news with AI scoring' },
   { text: 'Currency Strength meter' },
   { text: 'Trade Journal with cloud sync' },
-  { text: 'Email + Discord support' },
+  { text: 'Email support' },
 ]
 
 const eliteFeatures = [
@@ -25,7 +25,6 @@ const eliteFeatures = [
   { text: 'Priority support' },
   { text: 'Early access to new features' },
   { text: 'Annual strategy review call' },
-  { text: 'Discord VIP role' },
 ]
 
 const trustItems = [

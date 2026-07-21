@@ -83,7 +83,7 @@ export default function Changelog() {
 
         {/* Bottom Note */}
         <div className="p-4 rounded-xl border border-white/10 bg-white/5 text-slate-500 text-sm text-center">
-          More updates coming soon — follow us on Discord for live announcements.
+          More updates coming soon — follow us on X for live announcements.
         </div>
 
       </div>

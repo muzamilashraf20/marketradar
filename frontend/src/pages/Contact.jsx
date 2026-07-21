@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, MessageSquare, Send } from 'lucide-react';
+import { Mail, Send } from 'lucide-react';
 import SimplePageLayout from '../components/common/SimplePageLayout';
 
 export default function Contact() {
@@ -28,8 +28,8 @@ export default function Contact() {
     >
       <div className="max-w-2xl mx-auto space-y-10">
         {/* Quick Contact Options */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <a 
+        <div className="grid grid-cols-1 gap-6">
+          <a
             href="mailto:support@biasforge.co"
             className="group flex items-center gap-4 p-6 rounded-2xl border border-white/10 bg-white/5 hover:border-cyan-500/50 hover:bg-white/10 transition-all duration-300"
           >
@@ -42,20 +42,6 @@ export default function Contact() {
             </div>
           </a>
 
-          <a 
-            href="https://discord.gg/biasforge"
-            target="_blank"
-            rel="noreferrer"
-            className="group flex items-center gap-4 p-6 rounded-2xl border border-white/10 bg-white/5 hover:border-purple-500/50 hover:bg-white/10 transition-all duration-300"
-          >
-            <div className="w-12 h-12 rounded-xl bg-purple-500/10 group-hover:bg-purple-500/20 transition-colors flex items-center justify-center">
-              <MessageSquare className="w-6 h-6 text-purple-400" />
-            </div>
-            <div>
-              <div className="text-white font-semibold">Discord Community</div>
-              <div className="text-slate-400 text-sm mt-1">Join for live support</div>
-            </div>
-          </a>
         </div>
 
         {/* Contact Form */}

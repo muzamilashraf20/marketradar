@@ -54,7 +54,7 @@ export default function FAQSection() {
             Questions? We've Got Answers.
           </h2>
           <p className="text-base sm:text-lg text-slate-300 max-w-2xl mx-auto">
-            If you still can't find what you're looking for, you can always reach us on Discord or email.
+            If you still can't find what you're looking for, you can always reach us by email.
           </p>
         </div>
 

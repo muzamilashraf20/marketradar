@@ -53,7 +53,7 @@ export default function Pricing() {
     'Currency Strength Meter (advanced)',
     'Prop Firm Mode (drawdown tracker)',
     'Trade Journal with cloud sync',
-    'Email + Discord support',
+    'Email support',
   ]
 
   return (

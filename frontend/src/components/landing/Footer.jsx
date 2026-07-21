@@ -1,4 +1,4 @@
-import { Activity, Mail, MessageCircle } from 'lucide-react'
+import { Activity, Mail } from 'lucide-react'
 
 const productLinks = [
   { label: 'Features', href: '#features' },
@@ -31,9 +31,8 @@ const XIcon = () => (
 )
 
 const socials = [
-  { icon: <XIcon />, href: '#', label: 'Twitter / X' },
-  { icon: <MessageCircle size={16} />, href: '#', label: 'Discord' },
-  { icon: <Mail size={16} />, href: '#', label: 'Email' },
+  { icon: <XIcon />, href: 'https://x.com/MuzamilAshraf_1', label: 'Twitter / X', external: true },
+  { icon: <Mail size={16} />, href: 'mailto:support@biasforge.co', label: 'Email' },
 ]
 
 export default function Footer() {
@@ -64,6 +63,7 @@ export default function Footer() {
                   key={s.label}
                   href={s.href}
                   aria-label={s.label}
+                  {...(s.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
                   className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:border-cyan-500/30 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
                 >
                   {s.icon}

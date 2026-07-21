@@ -49,7 +49,7 @@ const rows = [
   },
   {
     feature: 'Customer Support',
-    biasforge: { text: 'Discord + Email', type: 'good', icon: 'check' },
+    biasforge: { text: 'Email', type: 'good', icon: 'check' },
     other: { text: 'Email Only', type: 'neutral' },
   },
 ]
