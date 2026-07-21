@@ -8,7 +8,7 @@ import {
   Compass, Bot, Target, Clock, Check, Circle
 } from 'lucide-react'
 import { useEffect } from 'react'
-import { SkeletonRow } from '../components/common/Skeleton'
+import { SkeletonRow, SkeletonLine } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
 import MacroCompass from '../components/dashboard/MacroCompass'
@@ -248,7 +248,6 @@ export default function Dashboard() {
     ? new Date(todaysBias.generatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
     : null
 
-  const biasWidgetLoading = aiBiasLoading && strengthLoading
   const topEvent = events[0]
 
   // Weekend feeds return every currency at 0. Rendering that as a live grid of empty bars looks
@@ -283,9 +282,9 @@ export default function Dashboard() {
                 <Calendar size={16} className="text-amber-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-lg font-black text-white leading-none">
-                  {eventsLoading ? '...' : highImpactToday}
-                </p>
+                {eventsLoading
+                  ? <SkeletonLine width="w-6" height="h-[18px]" />
+                  : <p className="text-lg font-black text-white leading-none">{highImpactToday}</p>}
                 <p className="text-[10px] text-slate-500 truncate">High-Impact Events Today</p>
               </div>
             </div>
@@ -295,9 +294,11 @@ export default function Dashboard() {
                 <AlertCircle size={16} className="text-cyan-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-bold text-white leading-tight truncate">
-                  {eventsLoading ? '...' : topEvent ? topEvent.title || topEvent.event || 'No events' : 'No events'}
-                </p>
+                {eventsLoading
+                  ? <SkeletonLine width="w-28" height="h-[14px]" />
+                  : <p className="text-sm font-bold text-white leading-tight truncate">
+                      {topEvent ? topEvent.title || topEvent.event || 'No events' : 'No events'}
+                    </p>}
                 <p className="text-[10px] text-slate-500 truncate">
                   {topEvent?.time ? `at ${topEvent.time}` : 'Next event'}
                 </p>
@@ -313,11 +314,13 @@ export default function Dashboard() {
                   : <TrendingUp size={16} className="text-emerald-400" />}
               </div>
               <div className="min-w-0">
-                <p className={`text-sm font-bold leading-tight ${
-                  todaysBias?.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
-                }`}>
-                  {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
-                </p>
+                {strengthLoading
+                  ? <SkeletonLine width="w-24" height="h-[14px]" />
+                  : <p className={`text-sm font-bold leading-tight ${
+                      todaysBias?.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
+                    }`}>
+                      {todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
+                    </p>}
                 <p className="text-[10px] text-slate-500 truncate flex items-center gap-1">
                   {todaysBias?.selectionMethod === 'v2' ? (
                     <><Compass size={10} className="shrink-0 text-cyan-400" />Macro Compass</>
@@ -382,10 +385,10 @@ export default function Dashboard() {
               </div>
             </div>
             {strengthLoading ? (
-              <>
-                <div className="h-4 bg-white/10 rounded animate-pulse mb-1 w-3/4" />
-                <div className="h-3 bg-white/10 rounded animate-pulse w-1/2" />
-              </>
+              <div className="space-y-1.5">
+                <SkeletonLine width="w-3/4" height="h-4" />
+                <SkeletonLine width="w-1/2" height="h-3" />
+              </div>
             ) : todaysBias ? (
               <>
                 <p className={`text-xs sm:text-sm font-bold leading-none mb-1 truncate ${
@@ -451,10 +454,10 @@ export default function Dashboard() {
               </div>
             </div>
             {eventsLoading ? (
-              <>
-                <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
-                <div className="h-3 bg-white/10 rounded animate-pulse w-2/3" />
-              </>
+              <div className="space-y-1.5">
+                <SkeletonLine width="w-full" height="h-4" />
+                <SkeletonLine width="w-2/3" height="h-3" />
+              </div>
             ) : topEvent ? (
               <>
                 <p className="text-xs sm:text-sm font-bold text-amber-400 leading-none mb-1 truncate">{topEvent.title}</p>
@@ -474,10 +477,10 @@ export default function Dashboard() {
               </div>
             </div>
             {newsLoading ? (
-              <>
-                <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
-                <div className="h-3 bg-white/10 rounded animate-pulse w-1/2" />
-              </>
+              <div className="space-y-1.5">
+                <SkeletonLine width="w-full" height="h-4" />
+                <SkeletonLine width="w-1/2" height="h-3" />
+              </div>
             ) : news[0] ? (
               <>
                 <p className="text-[11px] sm:text-xs font-bold text-cyan-400 leading-snug line-clamp-2">{news[0].title}</p>
