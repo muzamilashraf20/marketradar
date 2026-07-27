@@ -3579,7 +3579,7 @@ app.listen(5000, () => {
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
   if (process.env.V2_SHADOW_CRON === 'on') {
-    const mins = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '30', 10)
+    const mins = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '120', 10)
     setInterval(() => { runV2Shadow('cron').catch(e => console.error('v2 shadow cron error:', e?.message)) }, mins * 60 * 1000)
     console.log(`🔬 v2 shadow cron ON (every ${mins}min → bias_state_v2 / bias_history_v2)`)
   } else {
