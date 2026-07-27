@@ -59,8 +59,8 @@ export default function Terms() {
 
         <div className="mt-12 p-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-slate-400 text-sm">
           Questions about our terms? Contact us at{' '}
-          <a href="mailto:legal@biasforge.co" className="text-cyan-400 hover:underline">
-            legal@biasforge.co
+          <a href="mailto:support@biasforge.co" className="text-cyan-400 hover:underline">
+            support@biasforge.co
           </a>
         </div>
       </div>

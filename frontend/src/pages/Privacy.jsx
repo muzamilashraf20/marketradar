@@ -29,7 +29,7 @@ const sections = [
   {
     title: '6. Your Rights',
     content:
-      'You have the right to access, correct, or delete your personal data at any time. To make a request, contact us at privacy@biasforge.co. We will respond within 30 days.',
+      'You have the right to access, correct, or delete your personal data at any time. To make a request, contact us at support@biasforge.co. We will respond within 30 days.',
   },
   {
     title: '7. Data Retention',
@@ -59,8 +59,8 @@ export default function Privacy() {
 
         <div className="mt-12 p-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-slate-400 text-sm">
           Privacy concerns? Contact us at{' '}
-          <a href="mailto:privacy@biasforge.co" className="text-cyan-400 hover:underline">
-            privacy@biasforge.co
+          <a href="mailto:support@biasforge.co" className="text-cyan-400 hover:underline">
+            support@biasforge.co
           </a>
         </div>
       </div>
