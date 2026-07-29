@@ -33,6 +33,13 @@ Previous: ${event.previous}
 Actual: ${event.actual !== '-' ? event.actual : 'Not yet released'}
 Release Time: ${new Date(event.date).toLocaleString()}
 
+CURRENT MACRO CONTEXT (use this, do not rely on training data):
+- Fed Chair is Kevin Warsh (since May 2026), NOT Jerome Powell. Never mention Powell as current chair.
+- Fed funds rate is 3.50%-3.75%, held since 2026 amid sticky inflation (core PCE ~3.3%).
+- Warsh is viewed as hawkish; market hike odds for the upcoming meeting have risen sharply.
+- ECB steady/on hold, SNB at 0%, BoJ gradually normalizing.
+Use these facts. Any reference to 'Powell' as the sitting chair is wrong.
+
 Return ONLY a valid JSON object like this (no markdown, no explanation):
 The JSON below shows the required STRUCTURE only. Do NOT copy the bias values — every bias must come from YOUR analysis of THIS specific event's forecast, previous, and current macro backdrop (rate differentials, central bank stance). Fill each bias independently.
 {
