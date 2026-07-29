@@ -34,31 +34,32 @@ Actual: ${event.actual !== '-' ? event.actual : 'Not yet released'}
 Release Time: ${new Date(event.date).toLocaleString()}
 
 Return ONLY a valid JSON object like this (no markdown, no explanation):
+The JSON below shows the required STRUCTURE only. Do NOT copy the bias values — every bias must come from YOUR analysis of THIS specific event's forecast, previous, and current macro backdrop (rate differentials, central bank stance). Fill each bias independently.
 {
-  "overallBias": "BEARISH USD",
-  "biasDirection": "bearish",
-  "probability": 68,
+  "overallBias": "",
+  "biasDirection": "",
+  "probability": 0,
   "summary": "2-3 sentence summary of what this event means for markets",
   "forex": [
-    {"pair": "EUR/USD", "bias": "bullish", "reason": "short reason"},
-    {"pair": "GBP/USD", "bias": "bullish", "reason": "short reason"},
-    {"pair": "USD/JPY", "bias": "bearish", "reason": "short reason"},
-    {"pair": "USD/CHF", "bias": "bearish", "reason": "short reason"},
-    {"pair": "AUD/USD", "bias": "neutral", "reason": "short reason"},
-    {"pair": "XAU/USD", "bias": "bullish", "reason": "short reason"}
+    {"pair": "EUR/USD", "bias": "", "reason": "short reason"},
+    {"pair": "GBP/USD", "bias": "", "reason": "short reason"},
+    {"pair": "USD/JPY", "bias": "", "reason": "short reason"},
+    {"pair": "USD/CHF", "bias": "", "reason": "short reason"},
+    {"pair": "AUD/USD", "bias": "", "reason": "short reason"},
+    {"pair": "XAU/USD", "bias": "", "reason": "short reason"}
   ],
   "indices": [
-    {"name": "S&P 500", "bias": "bearish", "reason": "short reason"},
-    {"name": "NASDAQ", "bias": "bearish", "reason": "short reason"},
-    {"name": "DOW", "bias": "neutral", "reason": "short reason"}
+    {"name": "S&P 500", "bias": "", "reason": "short reason"},
+    {"name": "NASDAQ", "bias": "", "reason": "short reason"},
+    {"name": "DOW", "bias": "", "reason": "short reason"}
   ],
   "crypto": [
-    {"name": "BTC/USD", "bias": "bullish", "reason": "short reason"},
-    {"name": "ETH/USD", "bias": "bullish", "reason": "short reason"}
+    {"name": "BTC/USD", "bias": "", "reason": "short reason"},
+    {"name": "ETH/USD", "bias": "", "reason": "short reason"}
   ],
   "commodities": [
-    {"name": "Gold (XAU)", "bias": "bullish", "reason": "short reason"},
-    {"name": "Oil (WTI)", "bias": "neutral", "reason": "short reason"}
+    {"name": "Gold (XAU)", "bias": "", "reason": "short reason"},
+    {"name": "Oil (WTI)", "bias": "", "reason": "short reason"}
   ],
   "preEventPlan": [
     "Avoid entering trades 15 minutes before release",
