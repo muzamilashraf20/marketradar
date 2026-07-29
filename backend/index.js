@@ -3580,8 +3580,13 @@ app.listen(5000, () => {
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
   if (process.env.V2_SHADOW_CRON === 'on') {
     const mins = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '120', 10)
+    // setInterval ka pehla tick poore interval baad aata hai — har restart ~2h blind window chhodta
+    // tha (aur us window mein dobara restart hua to run aur aage khisak jaata). Boot ke thodi der baad
+    // ek run khud kick karo taake restart kabhi biases freeze na kare. 90s delay se v1 pehle shared
+    // candle cache warm kar leta hai.
+    setTimeout(() => { runV2Shadow('boot').catch(e => console.error('v2 shadow boot error:', e?.message)) }, 90 * 1000)
     setInterval(() => { runV2Shadow('cron').catch(e => console.error('v2 shadow cron error:', e?.message)) }, mins * 60 * 1000)
-    console.log(`🔬 v2 shadow cron ON (every ${mins}min → bias_state_v2 / bias_history_v2)`)
+    console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run → bias_state_v2 / bias_history_v2)`)
   } else {
     console.log('🔬 v2 shadow cron OFF (set V2_SHADOW_CRON=on to enable)')
   }
