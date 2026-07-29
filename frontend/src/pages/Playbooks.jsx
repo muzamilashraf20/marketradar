@@ -31,7 +31,7 @@ const PLAYBOOKS = [
       'Identify direction: Hawkish = USD up, Dovish = USD down',
       'Enter on retest of breakout level (NOT the initial spike)',
       'Use 1.5x normal stop loss due to extended volatility',
-      'Powell press conference at 2:30 PM = second wave — be ready',
+      'Fed Chair press conference at 2:30 PM = second wave — be ready',
     ],
 
     riskRules: [
@@ -44,14 +44,14 @@ const PLAYBOOKS = [
 
     commonMistakes: [
       'Trading the initial 1-5 minute spike (97% lose on this)',
-      'Holding losing position through Powell press conference',
+      'Holding losing position through the Fed Chair press conference',
       'Ignoring Dot Plot — hawkish hold can still tank USD if dots dovish',
       'Using normal lot size — drawdown can hit limits instantly',
     ],
 
     keyTimes: [
       { time: '2:00 PM ET', event: 'Rate decision + statement release' },
-      { time: '2:30 PM ET', event: 'Powell press conference begins' },
+      { time: '2:30 PM ET', event: 'Fed Chair press conference begins' },
       { time: '3:30 PM ET', event: 'Press conference typically ends' },
     ],
     historicalData: [
