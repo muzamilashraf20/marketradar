@@ -532,6 +532,12 @@ async function checkAndSendNewsAlerts() {
       lastTier2OverrideAt = Date.now()
       console.log(`🔴 TIER 2 MARKET-SHAKER: "${trigger.title.slice(0, 70)}" (impact ${trigger.impact}${mover ? ', ' + mover.name : ''}) → FULL re-pick`)
       computeTodaysAIBias(true, true).catch(() => {})
+      // v2 reacts to the same shaker instead of waiting for the 2h cron.
+      // Rate-limited by the TIER2_COOLDOWN gate above — no extra cooldown needed.
+      if (process.env.V2_SHADOW_CRON === 'on') {
+        console.log('🔬 [v2-shadow] shaker trigger → immediate re-run')
+        runV2Shadow('shaker').catch(e => console.error('v2 shaker run error:', e?.message))
+      }
     } else {
       // ⚡ TIER 1 — normal catalyst: locked pair reasoning refresh only, NO pair switch
       console.log(`⚡ Tier 1 catalyst: "${hi[0].title.slice(0, 60)}" (impact ${hi[0].impact}) → locked pair refresh only`)
@@ -3406,7 +3412,13 @@ function buildV2Feeds() {
     async getNewsHeadlines() {
       const n = getCached('latest_news')
       if (!Array.isArray(n)) return []
-      return n.filter(a => (a.impact || 0) >= 7).map(a => `[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`)
+      // Prefix MarketMovers Radar context so Haiku extraction + Sonnet scoring know which headline
+      // is a market-shaker and which assets it hits (MOVERS_SRV / matchMoverSrv hoisted above).
+      return n.filter(a => (a.impact || 0) >= 7).map(a => {
+        const m = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+        const mv = m ? `[MOVER ${m.emoji} ${m.name} → ${m.assets.slice(0, 3).join(', ')} | impact ${a.impact || 0}/10] ` : ''
+        return `${mv}[${a.category || a.source}] ${a.title}${a.oneliner ? ' — ' + a.oneliner : ''}`
+      })
     },
     async getCOT() {
       let out = {}

@@ -4,20 +4,34 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight,
-  BarChart2, RefreshCw, Zap, Loader2, History, X
+  BarChart2, RefreshCw, Zap, Loader2, History, X, Radar
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonRow } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
 import MacroCompass from '../components/dashboard/MacroCompass'
-import ArcGauge from '../components/dashboard/ArcGauge'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
 const FLAG = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
   AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭'
+}
+
+// Mirrors backend MOVERS_SRV (backend/index.js) — keep ids/keywords/assets in sync
+const MOVERS = [
+  { id: 'trump', name: 'Donald Trump', emoji: '🇺🇸', kw: ['trump', 'tariff', 'tariffs', 'trade war', 'truth social', 'white house'], assets: ['USD', 'Gold', 'S&P500', 'Oil'] },
+  { id: 'powell', name: 'Kevin Warsh', emoji: '🏦', kw: ['warsh', 'federal reserve', 'fed chair', 'fomc', 'fed rate', 'fed policy'], assets: ['USD', 'Gold', 'Bonds'] },
+  { id: 'lagarde', name: 'Christine Lagarde', emoji: '🇪🇺', kw: ['lagarde', 'ecb', 'european central bank'], assets: ['EUR', 'EUR/USD', 'DAX'] },
+  { id: 'musk', name: 'Elon Musk', emoji: '🚀', kw: ['elon musk', 'musk', 'tesla', 'spacex', 'doge '], assets: ['TSLA', 'BTC', 'DOGE'] },
+  { id: 'bailey', name: 'Andrew Bailey', emoji: '🇬🇧', kw: ['bailey', 'bank of england', 'boe rate', 'boe governor'], assets: ['GBP', 'GBP/USD', 'FTSE'] },
+  { id: 'ueda', name: 'Kazuo Ueda', emoji: '🇯🇵', kw: ['ueda', 'bank of japan', 'boj rate', 'boj governor'], assets: ['JPY', 'USD/JPY', 'Nikkei'] },
+  { id: 'geo', name: 'Geopolitics', emoji: '🌐', kw: ['war', 'sanction', 'sanctions', 'opec', 'ceasefire', 'invasion', 'missile', 'nuclear', 'middle east', 'conflict', 'airstrike', 'embargo', 'oil supply', 'strikes', 'iran'], assets: ['Gold', 'Oil', 'USD', 'Safe Havens'] },
+]
+function matchMover(text) {
+  const t = (text || '').toLowerCase()
+  return MOVERS.find(m => m.kw.some(k => t.includes(k))) || null
 }
 
 function timeAgo(dateString) {
@@ -253,6 +267,14 @@ export default function Dashboard() {
 
   const biasWidgetLoading = aiBiasLoading && strengthLoading
   const topEvent = events[0]
+  // news is already sorted desc by impact → first match = highest-impact active mover
+  const topMover = (() => {
+    for (const a of news) {
+      const m = matchMover(`${a.title} ${a.summary || ''}`)
+      if (m) return { ...m, article: a }
+    }
+    return null
+  })()
 
   return (
     <DashboardLayout title="Overview" subtitle="Your macro intelligence hub">
@@ -471,31 +493,37 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Prop Risk */}
-          <div className={`rounded-xl p-3 sm:p-4 border ${propRisk.bg} ${propRisk.border}`}>
+          {/* Market Mover */}
+          <div
+            onClick={() => navigate('/market-movers')}
+            className={`rounded-xl p-3 sm:p-4 border cursor-pointer transition-colors ${topMover ? 'bg-red-500/10 border-red-500/20 hover:border-red-500/40' : 'bg-white/[0.03] border-white/10 hover:border-white/20'}`}
+          >
             <div className="flex items-center justify-between mb-2 sm:mb-3">
-              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Prop Risk</span>
-              <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg ${propRisk.bg} flex items-center justify-center`}>
-                <ShieldCheck size={13} className={propRisk.color} />
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Market Mover</span>
+              <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center ${topMover ? 'bg-red-500/10' : 'bg-white/5'}`}>
+                <Radar size={13} className={topMover ? 'text-red-400' : 'text-slate-400'} />
               </div>
             </div>
-            {propRisk.configured ? (
-              <ArcGauge
-                value={propRisk.pct}
-                label={propRisk.status}
-                sub={propRisk.sub}
-                stroke={propRisk.hex}
-              />
+            {newsLoading ? (
+              <>
+                <div className="h-4 bg-white/10 rounded animate-pulse mb-1" />
+                <div className="h-3 bg-white/10 rounded animate-pulse w-2/3" />
+              </>
+            ) : topMover ? (
+              <>
+                <p className="text-xs sm:text-sm font-bold text-red-400 leading-none mb-1 truncate">
+                  {topMover.emoji} {topMover.name}
+                </p>
+                <p className="text-[10px] text-slate-400 leading-snug line-clamp-2">{topMover.article.title}</p>
+                <p className="text-[10px] text-slate-500 mt-1 truncate">
+                  {topMover.assets.slice(0, 3).join(' · ')} · {topMover.article.impact || 0}/10
+                </p>
+              </>
             ) : (
-              <div className="flex flex-col items-center py-2">
-                <p className="text-sm font-bold text-slate-400 leading-none">Not set up</p>
-                <button
-                  onClick={() => navigate('/prop-firm')}
-                  className="mt-2 text-[10px] font-semibold text-cyan-400 hover:text-cyan-300 transition-colors"
-                >
-                  Set your limits →
-                </button>
-              </div>
+              <>
+                <p className="text-xs sm:text-sm font-bold text-slate-400 leading-none mb-1">Radar clear</p>
+                <p className="text-[10px] text-slate-500">No active market movers</p>
+              </>
             )}
           </div>
         </div>
