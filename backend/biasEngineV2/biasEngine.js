@@ -379,10 +379,39 @@ async function runEngine({ supabase, feeds, onUsage }) {
       // This is a state refresh, NOT a bias change: no history row, no thesis call.
       if (state && state.direction !== "FLAT") {
         await feeds.updateRunning?.(pair, price);
+
+        // TRAILING (ratchet) invalidation. Pehle invalidation sirf OPEN/FLIP pe set hoti thi aur HOLD pe
+        // kabhi refresh nahi hoti — toh multi-day bias apne open-din ka PDL/PDH pakde rakhti thi, current
+        // daily structure se door drift kar jaati (stale + too loose dikhti). Ab aaj ke PDL/PDH se recompute
+        // karo, par level sirf FAVOURABLE direction mein move karo (BUY = upar, SELL = neeche) aur sirf tab
+        // jab wo price ke sahi side rahe. Kabhi loosen nahi, risk widen nahi, khud ko instant-invalidate nahi.
+        const freshInval = invalidationLevel(state.direction, market);
+        let ratchetInval = state.invalidation_level;
+        if (freshInval != null) {
+          if (state.direction === "BUY" && freshInval < price && (ratchetInval == null || freshInval > ratchetInval)) {
+            ratchetInval = freshInval;
+          } else if (state.direction === "SELL" && freshInval > price && (ratchetInval == null || freshInval < ratchetInval)) {
+            ratchetInval = freshInval;
+          }
+        }
+        const invalMoved = ratchetInval != null && ratchetInval !== state.invalidation_level;
+
+        // Number aur prose ko in-sync rakho — card kabhi aisa level na dikhaye jo apni text se disagree kare.
+        // Sirf tab overwrite karo jab level actually move hua; warna original AI-written reasoning rehne do.
+        const dp = pair.includes("JPY") ? 3 : pair === "XAUUSD" ? 2 : 5;
+        const invalText = invalMoved
+          ? `A daily close ${state.direction === "BUY" ? "below" : "above"} ${ratchetInval.toFixed(dp)} would break the ${state.direction === "BUY" ? "bullish" : "bearish"} structure and invalidate this bias.`
+          : state.invalidation_text;
+
+        const patch = { confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, updated_at: new Date().toISOString() };
+        if (ratchetInval != null) patch.invalidation_level = ratchetInval;
+        if (invalMoved) patch.invalidation_text = invalText;
+
         const { error } = await supabase.from("bias_state_v2")
-          .update({ confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, updated_at: new Date().toISOString() })
+          .update(patch)
           .eq("pair", pair);
         if (error) console.error(`⚠️ [v2 db] confidence refresh(${pair}) failed: ${error.message}`);
+        if (invalMoved) console.log(`   [v2 trail] ${pair} invalidation ${state.direction === "BUY" ? "↑" : "↓"} ${Number(state.invalidation_level).toFixed(dp)} → ${ratchetInval.toFixed(dp)}`);
       }
     }
 
