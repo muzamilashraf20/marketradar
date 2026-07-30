@@ -92,7 +92,7 @@ async function fetchFFFeed(feed) {
     } catch (e) {
       const status = e?.response?.status
       console.error(`⚠️ FF ${feed.name} attempt ${attempt} failed: ${status || ''} ${e?.message}`)
-      if (status === 404) break // dead URL — retrying won't help
+      if (status === 404 || status === 429) break // 404 = dead URL; 429 = rate-limited, an instant retry only makes the CDN angrier
       if (attempt < 2) await new Promise(r => setTimeout(r, 1500))
     }
   }
@@ -147,11 +147,25 @@ async function fetchFMPCalendar() {
   return null
 }
 
+// Calendar-specific failure backoff. Without it, a failed FF fetch leaves ff_calendar stale, so every
+// caller (5-min cal cron, news alerts, bias engine, /api/trade-check, v2 feeds) re-hammers FF → 429 storm.
+// Separate from the shared 10-min CACHE_TTL, which also governs prices/news/strength.
+let calendarCooldownUntil = 0
+const CALENDAR_FAIL_COOLDOWN = 30 * 60 * 1000
+
 async function getEconomicCalendar() {
   if (isCacheFresh('ff_calendar')) return getCached('ff_calendar')
+  // Inside the failure backoff → serve stale, hit no source. One quiet line instead of the 6-line red cascade.
+  if (Date.now() < calendarCooldownUntil) {
+    const stale = getCached('ff_calendar')
+    if (stale) {
+      console.log(`📦 Calendar sources rate-limited — using stale cache (backoff ${Math.ceil((calendarCooldownUntil - Date.now()) / 60000)}min)`)
+      return stale
+    }
+  }
   // 1) PRIMARY: FMP (forward-looking, weekend-safe)
   const fmp = await fetchFMPCalendar()
-  if (fmp && fmp.length) { setCache('ff_calendar', fmp); return fmp }
+  if (fmp && fmp.length) { setCache('ff_calendar', fmp); calendarCooldownUntil = 0; return fmp }
   // 2) FALLBACK: ForexFactory thisweek
   try {
     console.log('↩️ FMP unavailable — falling back to ForexFactory')
@@ -164,11 +178,17 @@ async function getEconomicCalendar() {
     const future = deduped.filter(e => new Date(e.time) >= new Date()).length
     console.log(`📅 FF calendar (fallback): ${deduped.length} events (${future} upcoming)`)
     setCache('ff_calendar', deduped)
+    calendarCooldownUntil = 0   // source healthy again → clear any failure backoff
     return deduped
   } catch (err) {
-    console.error('❌ Calendar fetch failed (FMP + FF):', err.message)
     const stale = getCached('ff_calendar')
-    if (stale) { console.log('📦 Using stale calendar cache'); return stale }
+    if (stale) {
+      // Back off before returning stale, otherwise the next caller retries immediately (429 storm).
+      calendarCooldownUntil = Date.now() + CALENDAR_FAIL_COOLDOWN
+      console.log(`📦 Calendar sources rate-limited — using stale cache (backoff ${CALENDAR_FAIL_COOLDOWN / 60000}min)`)
+      return stale
+    }
+    console.error('❌ Calendar fetch failed (FMP + FF), no stale cache:', err.message)
     throw err
   }
 }
