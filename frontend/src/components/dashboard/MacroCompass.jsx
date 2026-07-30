@@ -121,7 +121,7 @@ function PairCard({ p, expanded, onToggle }) {
             {scored && p.grade && !isFlat && (
               <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${gs.chip}`}>{p.grade}</span>
             )}
-            {!scored && (
+            {!scored && !isFlat && (
               <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-white/[0.03] text-slate-500 border-white/10">
                 Scoring pending
               </span>
@@ -136,7 +136,7 @@ function PairCard({ p, expanded, onToggle }) {
       </div>
 
       {/* Age */}
-      {p.updatedAt && (
+      {p.updatedAt && !isFlat && (
         <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>{timeAgo(p.updatedAt)}</p>
       )}
 
