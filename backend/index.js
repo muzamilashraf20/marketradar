@@ -974,9 +974,9 @@ function buildCrossAssetContext(room, liveAssets, yields) {
     if (liveAssets.DXY) lines.push(`DXY (US Dollar Index): ${liveAssets.DXY.price} (${liveAssets.DXY.change > 0 ? '+' : ''}${liveAssets.DXY.change}% — ${liveAssets.DXY.change > 0 ? 'USD STRENGTHENING → bearish for gold/XAU & risk currencies' : liveAssets.DXY.change < 0 ? 'USD WEAKENING → bullish for gold/XAU & risk currencies' : 'flat'}${liveAssets.DXY.price > 100 ? ' | DXY ABOVE 100 = strong-dollar regime, structural headwind for gold' : ''})`)
     if (liveAssets.VIX) lines.push(`VIX (Fear Index): ${liveAssets.VIX.price} — ${liveAssets.VIX.price > 25 ? 'HIGH FEAR' : liveAssets.VIX.price > 18 ? 'ELEVATED' : 'LOW/CALM'}`)
     if (liveAssets.SPY) lines.push(`S&P 500 proxy (SPY): ${liveAssets.SPY.price} (${liveAssets.SPY.change > 0 ? '+' : ''}${liveAssets.SPY.change}%)`)
-    if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% intraday — NOTE: single-day TLT move is noise; trust FRED 2Y/10Y yields below for true rate direction, not this)`)
+    if (liveAssets.TLT) lines.push(`US Bonds proxy (TLT): ${liveAssets.TLT.price} (${liveAssets.TLT.change > 0 ? '+' : ''}${liveAssets.TLT.change}% intraday — NOTE: single-day TLT move is noise; trust the US 2Y/10Y yields below for true rate direction, not this)`)
   }
-  // ── US Treasury yields (FRED) — real-time USD rate-expectations driver ──
+  // ── US Treasury yields (TwelveData US2Y/US10Y, FRED fallback) — USD rate-expectations driver ──
   if (yields) {
     if (yields.y2) {
       const bps = Math.round(yields.y2.change * 100)
@@ -1008,34 +1008,57 @@ function buildCrossAssetContext(room, liveAssets, yields) {
 
 // Fetch real cross-asset data from TwelveData — 30min cache. UUP (dollar ETF) and VIXY (VIX ETF)
 // are added as proxies for DXY/VIX, which the TwelveData Basic plan does not serve as indices.
+// US2Y/US10Y (Treasury yield quotes) ride along in the SAME batch — market-sourced and same-day,
+// they are the primary source for fetchYields() (FRED publishes 1-2 business days late).
+const CROSS_ASSET_CORE = 'DXY,VIX,SPY,TLT,UUP,VIXY'
+const CROSS_ASSET_BONDS = 'US2Y,US10Y'
+let _tdBondFails = 0             // consecutive batches that came back with no US2Y/US10Y data
+const TD_BOND_MAX_FAILS = 3      // after this, stop paying credits for them (FRED fallback takes over)
 async function fetchCrossAssetLive() {
   if (isCacheFreshFor('cross_asset_live', 30 * 60 * 1000)) return getCached('cross_asset_live')
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) return null
+  const withBonds = _tdBondFails < TD_BOND_MAX_FAILS
+  const symbols = withBonds ? `${CROSS_ASSET_CORE},${CROSS_ASSET_BONDS}` : CROSS_ASSET_CORE
   try {
-    const symbols = 'DXY,VIX,SPY,TLT,UUP,VIXY'
+    // 8 symbols = 8 credits, exactly the Basic-8 per-minute allowance. tdAcquire clamps the
+    // reservation to TD_CAP (7) — safe here, because logging 7 locks out every other TwelveData
+    // call for the rest of the window, so the 1 credit of headroom absorbs the 8th symbol.
     await tdAcquire(String(symbols).split(',').length)
     const r = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 })
     const result = {}
     for (const sym of symbols.split(',')) {
       const d = r.data[sym] || r.data
-      if (d && d.close && !d.code) {
+      // bond quotes (US2Y/US10Y) may key the level as `price` rather than `close` — accept either
+      const px = d && d.close != null && d.close !== '' ? d.close : d?.price
+      if (d && px && !d.code) {
         result[sym] = {
-          price: parseFloat(d.close),
+          price: parseFloat(px),
           change: parseFloat(d.percent_change || 0),
-          prev: parseFloat(d.previous_close || d.close)
+          prev: parseFloat(d.previous_close || px),
+          absChange: d.change != null && d.change !== '' ? parseFloat(d.change) : null,  // raw-unit change (= percentage points for yields)
+          datetime: d.datetime || null                                                   // last print — freshness check
         }
       }
     }
     if (Object.keys(result).length > 0) {
+      if (withBonds) {
+        if (result.US2Y || result.US10Y) _tdBondFails = 0
+        else if (++_tdBondFails >= TD_BOND_MAX_FAILS) console.log(`📈 Cross-asset: ${CROSS_ASSET_BONDS} returned no data ${TD_BOND_MAX_FAILS}x — dropped from batch, yields fall back to FRED`)
+      }
       setCache('cross_asset_live', result)
       console.log(`📈 Cross-asset live: ${Object.keys(result).join(', ')}`)
       return result
     }
     // empty result — never overwrite a good cache; fall back to stale
+    if (withBonds) _tdBondFails++   // a plan/symbol rejection can fail the whole batch — don't keep it forever
     const staleEmpty = getCached('cross_asset_live')
     if (staleEmpty) { console.log('📈 Cross-asset empty — using stale cache'); return staleEmpty }
   } catch (e) {
+    // Only blame the bond symbols for a request-level rejection (unknown symbol / not on plan) —
+    // not for a network hiccup or a 429, which would otherwise drop them for the whole process.
+    const st = e?.response?.status
+    if (withBonds && st >= 400 && st < 500 && st !== 429) _tdBondFails++
     const stale = getCached('cross_asset_live')
     if (stale) { console.log(`📈 Cross-asset fetch failed (${e?.message}) — using stale cache`); return stale }
     console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`)
@@ -1043,11 +1066,56 @@ async function fetchCrossAssetLive() {
   return null
 }
 
-// Fetch US Treasury yields (2yr + 10yr) from FRED — 6h cache. Real-time USD rate-expectations read.
+// Fetch US Treasury yields (2yr + 10yr) — 30min cache, matching the cross-asset batch cadence.
+// PRIMARY: TwelveData US2Y/US10Y. Market-sourced and same-day, and they ride along in the
+// cross-asset batch, so this path costs no extra TwelveData credits.
+// FALLBACK: FRED DGS2/DGS10 — accurate levels, but the US government publishes them 1-2 BUSINESS
+// DAYS late, which anchored the engine on pre-event yields and made the bias flip late. Kept for
+// TwelveData outages only; `fred_stale` is true only on this path.
+// Shape is identical either way: { y2:{value,change,date}, y10:{...}, source, fred_date, fred_stale }
+const YIELDS_TTL = 30 * 60 * 1000
 async function fetchYields() {
-  if (isCacheFreshFor('yields_fred', 6 * 60 * 60 * 1000)) return getCached('yields_fred')
+  const cachedY = getCached('yields_fred')
+  if (isCacheFreshFor('yields_fred', YIELDS_TTL) && cachedY) return cachedY
+  const fmt = (o) => o ? `${o.value}% (${o.change > 0 ? '+' : ''}${Math.round(o.change * 100)}bps) @ ${o.datetime || o.date}` : 'n/a'
+  // ── PRIMARY: TwelveData US2Y / US10Y ──
+  try {
+    const x = await fetchCrossAssetLive()
+    const fromTd = (q) => {
+      const v = q?.price
+      if (v == null || isNaN(v)) return null
+      // Guard: must look like a YIELD (percent), not a bond price. If TwelveData ever serves a
+      // price (~99) here, reject it and let FRED answer rather than feed "99%" to the scorer.
+      if (v <= 0 || v > 20) { console.warn(`🏦 Yields: TwelveData level ${v} outside plausible yield range — ignoring`); return null }
+      // FRED's `change` is the 1-day move in PERCENTAGE POINTS — mirror that, NOT percent_change.
+      // previous_close is in the same unit as the level, so its difference is unambiguous; prefer it
+      // over the vendor `change` field, whose unit (points vs bps) isn't guaranteed for bond quotes.
+      let chg = (q.prev != null && !isNaN(q.prev) && q.prev !== v) ? v - q.prev
+        : (q.absChange != null && !isNaN(q.absChange)) ? q.absChange : 0
+      // A >1.5pp single-day move in a Treasury yield is not real — assume a unit mismatch and
+      // report no day-change rather than a bogus bps figure (live TLT+UUP still carries direction).
+      if (Math.abs(chg) > 1.5) { console.warn(`🏦 Yields: implausible day-change ${chg} on level ${v} — reporting 0`); chg = 0 }
+      return {
+        value: +v.toFixed(3),
+        change: +chg.toFixed(3),
+        date: (q.datetime || '').slice(0, 10) || new Date().toISOString().slice(0, 10),
+        datetime: q.datetime || null
+      }
+    }
+    const tdY2 = fromTd(x?.US2Y), tdY10 = fromTd(x?.US10Y)
+    if (tdY2 || tdY10) {
+      const result = { y2: tdY2, y10: tdY10, source: 'twelvedata', fred_date: null, fred_stale: false }
+      setCache('yields_fred', result)
+      console.log(`🏦 Yields FRESHNESS: source=twelvedata · 2Y ${fmt(tdY2)} · 10Y ${fmt(tdY10)}`)
+      return result
+    }
+    console.log('🏦 Yields: TwelveData US2Y/US10Y not in cross-asset batch — trying FRED fallback')
+  } catch (e) {
+    console.log(`🏦 Yields: TwelveData US2Y/US10Y failed (${e?.message}) — trying FRED fallback`)
+  }
+  // ── FALLBACK: FRED DGS2 / DGS10 (1-2 business day publication lag) ──
   const key = process.env.FRED_API_KEY?.trim()
-  if (!key) { console.warn('🏦 FRED: FRED_API_KEY not set in env'); return null }
+  if (!key) { console.warn('🏦 FRED: FRED_API_KEY not set in env — no yields fallback'); return cachedY || null }
   const getSeries = async (id) => {
     const maskedUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=***&file_type=json&sort_order=desc&limit=8`
     try {
@@ -1064,12 +1132,12 @@ async function fetchYields() {
   }
   try {
     const [y2, y10] = await Promise.all([getSeries('DGS2'), getSeries('DGS10')])
-    if (!y2 && !y10) { const stale = getCached('yields_fred'); if (stale) { console.log('🏦 Yields empty — using stale cache'); return stale } return null }
-    const result = { y2, y10 }
+    if (!y2 && !y10) { if (cachedY) { console.log('🏦 Yields empty (TwelveData + FRED) — using stale cache'); return cachedY } return null }
+    const result = { y2, y10, source: 'fred-fallback', fred_date: y2?.date || y10?.date || null, fred_stale: true }
     setCache('yields_fred', result)
-    console.log(`🏦 Yields (FRED): 2yr ${y2?.value ?? 'n/a'}% · 10yr ${y10?.value ?? 'n/a'}%`)
+    console.log(`🏦 Yields FRESHNESS: source=fred-fallback (1-2 business day govt lag) · 2Y ${fmt(y2)} · 10Y ${fmt(y10)}`)
     return result
-  } catch (e) { const stale = getCached('yields_fred'); if (stale) { console.log(`🏦 Yields fetch failed (${e?.message}) — using stale cache`); return stale } console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
+  } catch (e) { if (cachedY) { console.log(`🏦 Yields fetch failed (${e?.message}) — using stale cache`); return cachedY } console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
 }
 
 // Fetch latest US economic ACTUALS from FRED (free) — fills the surprise gap the FF feed lacks. 12h cache.
@@ -3496,29 +3564,34 @@ function buildV2Feeds() {
       try { return await fetchRateDifferentials() } catch (e) { console.warn(`⚠️ [v2 rates] failed: ${e?.message}`); return {} }
     },
     async getYields() {
-      // Primary: FRED US2Y/US10Y. FRED is flaky, so on failure fall back to a TLT proxy from the
-      // (working, cached, rate-limited) cross-asset feed. Keep a last-good snapshot either way.
+      // Primary: TwelveData US2Y/US10Y (market-sourced, same-day) — fetchYields() falls back to FRED
+      // on failure. On failure of both, fall back to a TLT proxy from the (working, cached,
+      // rate-limited) cross-asset feed. Keep a last-good snapshot either way.
       let y = null, src = null
       try { y = await fetchYields() } catch (e) {}
 
-      // FRED gives accurate LEVELS but lags 1-2 days, so it cannot convey TODAY's direction.
-      // Always derive DIRECTION from the live TLT+UUP feed and attach it; keep FRED's level for
-      // context and flag staleness so the scorer trusts the live direction over the stale day-change.
+      // Always derive DIRECTION from the live TLT+UUP feed and attach it. FRED-sourced levels lag
+      // 1-2 days and cannot convey TODAY's direction — flag that so the scorer trusts the live
+      // direction over the stale day-change. TwelveData levels are same-day, so their own
+      // day-change IS today's direction and nothing is flagged stale.
       let live = null
       try { live = await liveYieldDirection() } catch (e) {}
-      const fredDate = y?.y2?.date || y?.y10?.date || null
-      const fredAgeDays = fredDate ? Math.floor((Date.now() - new Date(fredDate + 'T00:00:00Z').getTime()) / 86400000) : null
-      const fredStale = (fredAgeDays == null) ? true : (fredAgeDays >= 1)
+      const yieldSource = y?.source || 'fred'
+      const levelDate = y?.y2?.date || y?.y10?.date || null
+      const ageDays = levelDate ? Math.floor((Date.now() - new Date(levelDate + 'T00:00:00Z').getTime()) / 86400000) : null
+      const fredStale = (yieldSource === 'twelvedata') ? false : ((ageDays == null) ? true : (ageDays >= 1))
 
       if (y && (y.y2?.value != null || y.y10?.value != null)) {
-        src = live ? 'FRED-level + live-dir' : 'FRED'
+        src = live ? `${yieldSource}-level + live-dir` : yieldSource
         y = {
           ...y,
-          fred_date: fredDate,
+          yield_source: yieldSource,
+          level_date: levelDate,
+          fred_date: yieldSource === 'twelvedata' ? null : levelDate,
           fred_stale: fredStale,
-          real_yield_direction: live?.real_yield_direction ?? '(FRED day-change only — may be 1-2 days stale)',
-          direction_source: live?.source ?? 'FRED (stale)',
-          direction_confidence: live?.direction_confidence ?? 'low',
+          real_yield_direction: live?.real_yield_direction ?? (fredStale ? '(FRED day-change only — may be 1-2 days stale)' : '(same-day US2Y/US10Y day-change)'),
+          direction_source: live?.source ?? (fredStale ? 'FRED (stale)' : 'TwelveData US2Y/US10Y (same-day)'),
+          direction_confidence: live?.direction_confidence ?? (fredStale ? 'low' : 'mixed'),
           tlt_change_pct: live?.tlt_change_pct ?? null,
           uup_change_pct: live?.uup_change_pct ?? null,
         }
