@@ -44,6 +44,10 @@ const CONFIG = {
   INVALIDATION_ATR_BUFFER: 0, // no cushion — invalidation sits exactly at PDL/PDH (tighter, reacts faster)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
+  MIN_HOLD_CONFIDENCE: 50,    // conviction FLOOR for an ALREADY-OPEN bias. Confidence is refreshed every
+                              // run, so a decaying thesis drifts down; below this it stops being a bias
+                              // worth showing and closes to FLAT rather than surfacing a "43% BUY" card.
+                              // HELD biases only — opens/flips stay gated on OPEN_THRESHOLD alone.
   PAIRS: V2_ALL_PAIRS.filter(p => V2_GOLD_ENABLED || p !== "XAUUSD"),
   // pip size per pair for MFE/MAE + invalidation reporting
   PIP: { XAUUSD: 0.1, USDJPY: 0.01, default: 0.0001 },
@@ -348,6 +352,17 @@ async function runEngine({ supabase, feeds, onUsage }) {
       // getPairMarket returns a 0..1 FRACTION; computeConfidence's thresholds are 0..100.
       adrUsedPct: (market.adrUsedPct ?? 0) * 100,
     });
+
+    // CONVICTION FLOOR — an already-open bias whose refreshed conviction has decayed below the floor
+    // is closed to FLAT. Applied only to HELD biases: opens and flips keep their OPEN_THRESHOLD gate,
+    // and the invalidation/flip triggers in decide() are untouched. Turning the HOLD into a CLOSE here
+    // (rather than closing it inline) reuses the existing close path — same history row, same result.
+    if (state && state.direction !== "FLAT" && (d.action === "HOLD" || d.action === "HOLD_FLAT")
+        && conf.confidence < CONFIG.MIN_HOLD_CONFIDENCE) {
+      console.log(`   [v2 floor] ${pair} conviction ${conf.confidence} < ${CONFIG.MIN_HOLD_CONFIDENCE} → CLOSE to FLAT`);
+      d.action = "CLOSE";
+      d.reason = "conviction_floor";
+    }
 
     if (d.action === "OPEN" || d.action === "FLIP") {
       const thesis = await writeThesis({                                    // Sonnet 5, only on change
