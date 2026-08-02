@@ -3705,7 +3705,20 @@ app.listen(5000, () => {
     // candle cache warm kar leta hai.
     setTimeout(() => { runV2Shadow('boot').catch(e => console.error('v2 shadow boot error:', e?.message)) }, 90 * 1000)
     setInterval(() => { runV2Shadow('cron').catch(e => console.error('v2 shadow cron error:', e?.message)) }, mins * 60 * 1000)
-    console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run → bias_state_v2 / bias_history_v2)`)
+    // Market-open catch-up: fixed 2h tick weekly open se decoupled hai — Sunday 17:00 ET pe biases
+    // ~2h tak frozen reh sakte the jab tak koi tick open-hours mein na aaye. Har 5min check karo aur
+    // jaise hi market closed→open flip kare, EK run fire karo. runV2Shadow ka closed-gate abhi bhi
+    // closed hours protect karta hai; ye sirf transition pe chalega.
+    let v2PrevClosed = isForexClosed()
+    setInterval(() => {
+      const closedNow = isForexClosed()
+      if (v2PrevClosed && !closedNow) {
+        console.log('🔬 v2 shadow: market just opened (closed→open) — firing catch-up run')
+        runV2Shadow('open').catch(e => console.error('v2 shadow open-run error:', e?.message))
+      }
+      v2PrevClosed = closedNow
+    }, 5 * 60 * 1000)
+    console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run + open catch-up → bias_state_v2 / bias_history_v2)`)
   } else {
     console.log('🔬 v2 shadow cron OFF (set V2_SHADOW_CRON=on to enable)')
   }
