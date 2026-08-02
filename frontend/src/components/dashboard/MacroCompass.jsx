@@ -140,10 +140,12 @@ function PairCard({ p, expanded, onToggle }) {
         <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>{timeAgo(p.updatedAt)}</p>
       )}
 
-      {/* A flat pair still needs to say something — otherwise the card reads as a loading failure. */}
+      {/* A flat pair still needs to say something — otherwise the card reads as a loading failure.
+          noBiasReason is the engine's real per-pair read (range spent / how far short of threshold);
+          it's null until the backend's first v2 run of the boot, so keep the generic line as fallback. */}
       {isFlat && (
         <p className="text-[11px] leading-snug text-slate-500 mt-2">
-          Signals too close to call — neither side has the edge.
+          {p.noBiasReason || 'Signals too close to call — neither side has the edge.'}
         </p>
       )}
 

@@ -2581,6 +2581,23 @@ app.get('/api/macro-compass', async (req, res) => {
     const headline = publishedIsLive ? published.pair : derived
     const headlineSource = publishedIsLive ? 'published' : 'derived'
 
+    // Why is this pair flat? bias_state_v2 can't answer it: a pair that was FLAT and stayed FLAT
+    // persists no new row, so its stored diff/reason is frozen at whenever it last closed. runV2Shadow
+    // stashes every run's fresh read in memory — read that instead. Cold cache (fresh boot, no run
+    // yet) → null, and the client keeps its generic fallback line.
+    const freshReads = getCached('v2_fresh_reads') || {}
+    const T = V2_CONFIG.OPEN_THRESHOLD
+    const noBiasReasonFor = pair => {
+      const f = freshReads[pair]
+      if (!f) return null
+      // Engine had a real edge but the day's range is already spent — entering here is chasing.
+      if (f.reason === 'adr_exhausted') return "Macro edge is there, but today's range is already spent — no clean entry left."
+      // Otherwise the honest answer is the score itself: how far short of the open threshold it fell.
+      const edge = Math.abs(f.diff ?? NaN)
+      if (Number.isFinite(edge) && edge < T) return `Macro edge ${edge.toFixed(1)} vs ${T.toFixed(1)} needed — too evenly matched.`
+      return null
+    }
+
     const shape = r => ({
       pair: r.pair,
       direction: r.direction,                       // 'BUY' | 'SELL' | 'FLAT'
@@ -2593,13 +2610,14 @@ app.get('/api/macro-compass', async (req, res) => {
       regime: r.regime || null,
       isHeadline: r.pair === headline,
       updatedAt: r.updated_at || null,
+      noBiasReason: null,                           // flat pairs only — filled in below
     })
 
     // Active pairs first (strongest conviction leading), then anything currently flat/closed.
     const activeOut = active
       .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
       .map(shape)
-    const flatOut = rows.filter(r => !active.includes(r)).map(shape)
+    const flatOut = rows.filter(r => !active.includes(r)).map(r => ({ ...shape(r), noBiasReason: noBiasReasonFor(r.pair) }))
 
     res.json({
       success: true,
@@ -3675,6 +3693,17 @@ async function runV2Shadow(trigger) {
   }
   // One grep-friendly summary line for whipsaw review: `grep "v2-CHANGES"` gives every bias transition.
   if (changes.length) console.log(`   ⚑ v2-CHANGES ${ts}: ${changes.map(c => `${c.pair} ${c.action} ${c.direction || ''}${c.reason ? '/' + c.reason : ''}`.trim()).join(', ')}`)
+
+  // Stash each pair's FRESH read (this run's diff/action/reason) in memory. A pair that is FLAT and
+  // stays FLAT deliberately persists no new bias_state_v2 row (whipsaw guard), so /api/macro-compass
+  // has nothing current to explain WHY it isn't tradeable — the engine computes exactly that here and
+  // then throws it away. Memory only: no DB write, no migration, bias_state_v2 untouched. On restart
+  // the cache is empty until the next run repopulates it (consumers treat cold as "no reason").
+  const freshReads = {}
+  for (const r of out.results) {
+    freshReads[r.pair] = { diff: r.diff ?? null, action: r.action || null, reason: r.reason || null, at: ts }
+  }
+  setCache('v2_fresh_reads', freshReads)
   return out
 }
 
