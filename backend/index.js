@@ -232,6 +232,9 @@ async function sendTG(chatId, text) {
     return true
   } catch (e) { console.error(`❌ TG error ${chatId}:`, e.message); return false }
 }
+// UNUSED since the /api/strength push was removed — its only caller was the strength route, and
+// strength is viewer-only, not a bias source. Kept (with lastBiasKey) rather than deleted; the v2
+// engine's publishTodayBias is what pushes bias changes now.
 async function notifyBiasChange(bp) {
   if (!bp || !bp.pair) return
   const newKey = `${bp.action} ${bp.pair}`
@@ -3108,7 +3111,10 @@ app.get('/api/strength', async (req, res) => {
       })
       if(best)bp.push(best)
     }
-    const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ){if(bp[0])notifyBiasChange(bp[0]);setCache('strength',result)}res.json(result)
+    // NOTE: no bias push from here. Currency strength is deliberately EXCLUDED from the bias engine
+    // (lagging — viewer-only), so pushing a strength-derived "Bias Change Alert" to Telegram/email
+    // contradicted the engine. Bias pushes come from the v2 engine (publishTodayBias) only.
+    const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ){setCache('strength',result)}res.json(result)
   } catch(e){if(stale)return res.json(stale);res.status(500).json({success:false,error:'Strength failed'})}
 })
 
