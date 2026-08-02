@@ -3645,6 +3645,14 @@ function buildV2Feeds() {
 }
 
 async function runV2Shadow(trigger) {
+  // Forex closed (weekend) → skip: prices are frozen at Friday's close, so re-scoring produces
+  // nothing new and just burns Haiku (extraction) + Sonnet (scoring) credits every 2h. The cron
+  // keeps ticking; the first tick after Sunday 5PM ET passes this gate on its own. Manual trigger
+  // (/api/v2/shadow/run — explicit user action, used for testing) always runs.
+  if (isForexClosed() && trigger !== 'manual') {
+    console.log(`🔬 [v2-shadow:${trigger}] skipped — forex market closed (weekend)`)
+    return { regime: 'closed', results: [], skipped: true }
+  }
   const started = Date.now()
   const feeds = buildV2Feeds()
   const onUsage = (label, model, usage) => { try { trackAI(label, model, usage) } catch (e) {} }
