@@ -44,9 +44,9 @@ const CONFIG = {
   INVALIDATION_ATR_BUFFER: 0, // no cushion — invalidation sits exactly at PDL/PDH (tighter, reacts faster)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
-  MIN_HOLD_CONFIDENCE: 50,    // conviction FLOOR for an ALREADY-OPEN bias. Confidence is refreshed every
-                              // run, so a decaying thesis drifts down; below this it stops being a bias
-                              // worth showing and closes to FLAT rather than surfacing a "43% BUY" card.
+  MIN_HOLD_CONFIDENCE: 55,    // conviction FLOOR for an ALREADY-OPEN bias, set at the Grade-C line (55) —
+                              // a held bias below Grade C (i.e. Grade D) has no real edge, so go FLAT
+                              // instead of showing a confusing sub-C directional card.
                               // HELD biases only — opens/flips stay gated on OPEN_THRESHOLD alone.
   PAIRS: V2_ALL_PAIRS.filter(p => V2_GOLD_ENABLED || p !== "XAUUSD"),
   // pip size per pair for MFE/MAE + invalidation reporting
