@@ -87,6 +87,11 @@ const fmtDate = (iso) => {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 };
 
+// Posts flagged `topLevel: true` live at the site root (/<slug>) instead of
+// /blog/<slug> — used for evergreen landing pages we refresh in place, where
+// a short URL carries the target keyword on its own.
+const postUrl = (p) => (p.topLevel ? `${SITE_URL}/${p.slug}` : `${SITE_URL}/blog/${p.slug}`);
+
 // guard JSON-LD against </script> breakouts
 const jsonld = (obj) =>
   `<script type="application/ld+json">${JSON.stringify(obj).replace(/</g, '\\u003c')}</script>`;
@@ -170,6 +175,40 @@ thead th{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transf
 tbody tr:hover{background:var(--surface)}
 
 hr{border:0;border-top:1px solid var(--border);margin:44px 0}
+
+/* freshness stamp — update-in-place pages live or die on this signal */
+.updated{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--emerald);display:inline-flex;align-items:center;gap:7px;
+  border:1px solid rgba(16,185,129,.28);background:rgba(16,185,129,.07);
+  border-radius:999px;padding:5px 12px;margin:0 0 22px}
+.updated .dot{width:6px;height:6px;border-radius:50%;background:var(--emerald)}
+
+/* weekly events block */
+.events{margin:36px 0 8px}
+.events-head{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);border-bottom:1px solid var(--border-strong);padding-bottom:10px;margin:0 0 22px}
+.events-head b{color:var(--strong);font-weight:600}
+.ev{border:1px solid var(--border);border-radius:14px;background:var(--surface);
+  padding:20px 22px;margin:0 0 16px}
+.ev-top{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:0 0 6px}
+.ev-name{font-family:var(--sans);font-weight:700;color:var(--strong);font-size:18.5px;line-height:1.3}
+.ev-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  border-radius:4px;padding:3px 7px;border:1px solid currentColor;white-space:nowrap}
+.ev-tag.high{color:#f0806a}
+.ev-tag.medium{color:var(--cyan)}
+.ev-tag.backdrop{color:var(--muted)}
+.ev-when{font-family:var(--mono);font-size:12.5px;color:var(--cyan);margin:0 0 14px}
+.ev-row{font-family:var(--sans);font-size:15.5px;line-height:1.6;margin:0 0 9px;
+  display:grid;grid-template-columns:104px 1fr;gap:12px}
+.ev-row:last-child{margin:0}
+.ev-k{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding-top:4px}
+.ev-row.compass .ev-k{color:var(--emerald)}
+@media (max-width:560px){
+  .ev{padding:17px 16px}
+  .ev-row{grid-template-columns:1fr;gap:2px}
+  .ev-k{padding-top:0}
+}
 
 /* FAQ */
 .faq{margin:48px 0 0;border-top:1px solid var(--border);padding-top:8px}
@@ -274,8 +313,38 @@ addEventListener('scroll',u,{passive:true});u();})();
 </body></html>`;
 
 /* ------------------------------ RENDER ----------------------------- */
+// Renders the `events:` frontmatter array into the article, swapped in wherever
+// the markdown contains an <!-- EVENTS --> marker. Weekly refresh = edit the
+// array in frontmatter; the prose around it stays evergreen.
+function renderEvents(post) {
+  const events = Array.isArray(post.events) ? post.events : [];
+  if (!events.length) return '';
+
+  const row = (k, v, cls = '') =>
+    v ? `<p class="ev-row ${cls}"><span class="ev-k">${k}</span><span>${esc(v)}</span></p>` : '';
+
+  return `
+<section class="events">
+  ${post.weekOf ? `<p class="events-head">Week of <b>${esc(post.weekOf)}</b> — all times ET</p>` : ''}
+  ${events.map(e => {
+    const impact = String(e.impact || 'high').toLowerCase();
+    return `
+  <div class="ev">
+    <div class="ev-top">
+      <span class="ev-name">${esc(e.name)}</span>
+      <span class="ev-tag ${impact}">${esc(impact === 'backdrop' ? 'backdrop' : impact + ' impact')}</span>
+    </div>
+    ${e.when ? `<p class="ev-when">${esc(e.when)}</p>` : ''}
+    ${row('What', e.what)}
+    ${row('Watch', e.watch)}
+    ${row('Compass', e.compass, 'compass')}
+  </div>`;
+  }).join('')}
+</section>`;
+}
+
 function renderPost(post) {
-  const url = `${SITE_URL}/blog/${post.slug}`;
+  const url = postUrl(post);
   const og  = post.ogImage ? (post.ogImage.startsWith('http') ? post.ogImage : SITE_URL + post.ogImage) : DEFAULT_OG;
   const tags = Array.isArray(post.tags) ? post.tags : [];
 
@@ -315,11 +384,16 @@ ${jsonld({
 ${jsonld({
   '@context': 'https://schema.org',
   '@type': 'BreadcrumbList',
-  itemListElement: [
-    { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL + '/' },
-    { '@type': 'ListItem', position: 2, name: SECTION, item: SITE_URL + '/blog' },
-    { '@type': 'ListItem', position: 3, name: post.title, item: url },
-  ],
+  itemListElement: post.topLevel
+    ? [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL + '/' },
+        { '@type': 'ListItem', position: 2, name: post.title, item: url },
+      ]
+    : [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL + '/' },
+        { '@type': 'ListItem', position: 2, name: SECTION, item: SITE_URL + '/blog' },
+        { '@type': 'ListItem', position: 3, name: post.title, item: url },
+      ],
 })}
 ${post.faq && post.faq.length ? jsonld({
   '@context': 'https://schema.org',
@@ -336,6 +410,17 @@ ${post.faq && post.faq.length ? jsonld({
   ${post.faq.map(f => `<details><summary>${esc(f.q)}</summary><p>${esc(f.a)}</p></details>`).join('')}
 </section>` : '';
 
+  // Swap the <!-- EVENTS --> marker for the rendered events block. marked may
+  // wrap a lone comment in a <p>, so tolerate that.
+  const articleHtml = post.html.replace(
+    /<p>\s*<!--\s*EVENTS\s*-->\s*<\/p>|<!--\s*EVENTS\s*-->/,
+    () => renderEvents(post)
+  );
+
+  const updatedStamp = post.updated
+    ? `<p class="updated"><span class="dot"></span>Updated ${fmtDate(post.updated)}</p>`
+    : '';
+
   const body = `
 <main><div class="wrap">
   <article>
@@ -346,7 +431,8 @@ ${post.faq && post.faq.length ? jsonld({
     </p>
     <h1>${esc(post.title)}</h1>
     <div class="rule"></div>
-    ${post.html}
+    ${updatedStamp}
+    ${articleHtml}
     ${faqHtml}
     ${ctaBox()}
   </article>
@@ -377,7 +463,7 @@ ${jsonld({
   name: `${BRAND} ${SECTION}`, url,
   blogPost: posts.map(p => ({
     '@type': 'BlogPosting', headline: p.title, description: p.description,
-    url: `${SITE_URL}/blog/${p.slug}`, datePublished: p.date,
+    url: postUrl(p), datePublished: p.date,
     author: { '@type': 'Person', name: AUTHOR },
   })),
 })}`;
@@ -387,7 +473,7 @@ ${jsonld({
   ${posts.map(p => `
   <li>
     <p class="meta">${p.category ? `<span>${esc(p.category)}</span>` : ''}<span class="muted">${fmtDate(p.date)}</span><span class="muted">${p.readMins} min</span></p>
-    <h2><a href="${SITE_URL}/blog/${p.slug}">${esc(p.title)}</a></h2>
+    <h2><a href="${postUrl(p)}">${esc(p.title)}</a></h2>
     <p>${esc(p.description)}</p>
   </li>`).join('')}
 </ul>` : `<p class="empty">New pieces are on the way.</p>`;
@@ -409,7 +495,13 @@ function renderSitemap(posts) {
   const today = new Date().toISOString().slice(0, 10);
   const urls = [
     ...STATIC_ROUTES.map(r => ({ loc: SITE_URL + r.loc, lastmod: today, changefreq: r.changefreq, priority: r.priority })),
-    ...posts.map(p => ({ loc: `${SITE_URL}/blog/${p.slug}`, lastmod: p.updated || p.date, changefreq: 'monthly', priority: '0.7' })),
+    // Update-in-place pages refresh weekly and sit at the root — crawl them harder.
+    ...posts.map(p => ({
+      loc: postUrl(p),
+      lastmod: p.updated || p.date,
+      changefreq: p.topLevel ? 'weekly'  : 'monthly',
+      priority:   p.topLevel ? '0.9'     : '0.7',
+    })),
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -433,7 +525,7 @@ function renderLlms(posts) {
 - Pricing: ${SITE_URL}/pricing
 
 ## ${SECTION} (education)
-${posts.map(p => `- [${p.title}](${SITE_URL}/blog/${p.slug}): ${p.description}`).join('\n')}
+${posts.map(p => `- [${p.title}](${postUrl(p)}): ${p.description}`).join('\n')}
 `;
 }
 
@@ -472,10 +564,13 @@ function run() {
   fs.mkdirSync(OUT_BLOG, { recursive: true });
 
   for (const p of posts) {
-    const dir = path.join(OUT_BLOG, p.slug);
+    // topLevel posts land at dist/<slug>/, everything else at dist/blog/<slug>/.
+    // Vercel checks the filesystem before the SPA rewrite, so these win over
+    // the React catch-all and are served as real prerendered HTML.
+    const dir = p.topLevel ? path.join(DIST, p.slug) : path.join(OUT_BLOG, p.slug);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'index.html'), renderPost(p));
-    console.log(`  ✓ /blog/${p.slug}`);
+    console.log(`  ✓ ${p.topLevel ? '' : '/blog'}/${p.slug}`);
   }
 
   fs.writeFileSync(path.join(OUT_BLOG, 'index.html'), renderIndex(posts));
