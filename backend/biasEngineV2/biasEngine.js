@@ -161,7 +161,95 @@ async function writeThesis(args, onUsage) {
   return parsed ?? { thesis: "", invalidation_text: "" };
 }
 
-// composite score per currency, using the active regime weights (done in CODE)
+// ---------------------------------------------------------------------------
+// 3b. CROSS-SECTIONAL MACRO RATE SCORE — computed in CODE, not by the model.
+//
+// The old design asked the model to score each currency's OWN 2Y change. G10 yields move together,
+// so on a global bond rally every currency scored the same sign and `diff = base - quote` annihilated
+// the signal. Rate differentials are inherently RELATIVE, so the score is now each currency's
+// 3-session change expressed as a DEVIATION from the cross-sectional mean.
+//
+// Two distinct failure modes, deliberately NOT collapsed into one:
+//   freshCount < MIN  → the cross-section cannot be computed → macro is UNKNOWN → null
+//                       (callers drop macro's weight and redistribute; no phantom neutral leg)
+//   spread < FLOOR    → the cross-section WAS computed and says no differential exists → a real
+//                       measurement of "flat" → 0, macro keeps its weight and contributes nothing
+// ---------------------------------------------------------------------------
+const RATE_XSECTION = ["USD", "EUR", "JPY", "CAD", "AUD"];  // GBP/CHF/NZD have no true daily 2Y source
+const RATE_LOOKBACK = 3;          // sessions
+const RATE_MIN_XSECTION = 4;      // below this the mean is meaningless → null, not 0
+const RATE_FLOOR_BPS = 3.0;       // measured at the 2.5th pct of 19 months of history — near-inert by design
+const RATE_SHADOW_FLOOR_BPS = 6.9;// p25: logged only, never applied — evidence for a later floor decision
+const RATE_MAX_STALE_SESSIONS = 3;// a currency whose newest print is older than this leaves the cross-section
+// GUESS — not calibrated against outcomes. Edges were back-solved from "what macro spread clears
+// OPEN_THRESHOLD 1.8", then sanity-checked against 19 months of history (score 0 lands on 36.7% of
+// currency-days, ±1 on 30.1%, ±2 on 22.0%, ±3 on 8.3%, ±4/±5 on 2.9%). Do not treat as empirical.
+const RATE_BANDS = [
+  { max: 2, score: 0 }, { max: 4, score: 1 }, { max: 7, score: 2 },
+  { max: 11, score: 3 }, { max: 16, score: 4 }, { max: Infinity, score: 5 },
+];
+function bandScore(devBps) {
+  const s = RATE_BANDS.find((b) => Math.abs(devBps) < b.max).score;
+  return devBps < 0 ? -s : s;
+}
+
+function computeMacroRateScores(rates) {
+  const changes = {}, dropped = {};
+  for (const c of RATE_XSECTION) {
+    const h = rates?.[c]?.history;
+    if (!Array.isArray(h) || h.length < RATE_LOOKBACK + 1) { dropped[c] = `history ${h?.length ?? 0}/${RATE_LOOKBACK + 1}`; continue; }
+    // Staleness: the cross-section must be CONTEMPORANEOUS. Comparing one currency's week-old change
+    // against another's same-day change is not a cross-section, so a lagging source is dropped, not
+    // stretched. (AUD/RBA publishes ~6 business days late and is expected to fail this.)
+    const ageDays = Math.floor((Date.now() - new Date(h[0].d + "T00:00:00Z").getTime()) / 86400000);
+    if (ageDays > RATE_MAX_STALE_SESSIONS + 4) { dropped[c] = `stale ${ageDays}d`; continue; }
+    changes[c] = +((h[0].v - h[RATE_LOOKBACK].v) * 100).toFixed(2);
+  }
+
+  const present = Object.keys(changes);
+  const base = {
+    scores: Object.fromEntries(RATE_XSECTION.map((c) => [c, null])),
+    xsection: present, dropped, bps: changes,
+    spread: null, mean: null, floor: null, shadow_floor: null,
+  };
+  if (present.length < RATE_MIN_XSECTION) {
+    return { ...base, status: "INSUFFICIENT", reason: `xsection ${present.length} < ${RATE_MIN_XSECTION}` };
+  }
+
+  const vals = present.map((c) => changes[c]);
+  const mean = vals.reduce((s, x) => s + x, 0) / vals.length;
+  const spread = +(Math.max(...vals) - Math.min(...vals)).toFixed(2);
+  const shadow = spread < RATE_SHADOW_FLOOR_BPS ? "WOULD_BLOCK" : "WOULD_PASS";
+  if (spread < RATE_FLOOR_BPS) {
+    // measured flat → 0 for everyone IN the cross-section (weight retained), null for those outside
+    const scores = Object.fromEntries(RATE_XSECTION.map((c) => [c, present.includes(c) ? 0 : null]));
+    return { ...base, scores, spread, mean: +mean.toFixed(2), status: "FLOOR_FLAT", floor: "BLOCKED", shadow_floor: shadow };
+  }
+  const scores = Object.fromEntries(
+    RATE_XSECTION.map((c) => [c, present.includes(c) ? bandScore(+(changes[c] - mean).toFixed(2)) : null]),
+  );
+  return { ...base, scores, spread, mean: +mean.toFixed(2), status: "OK", floor: "PASSED", shadow_floor: shadow };
+}
+
+// Composite for ONE pair. When either leg's macro is null the macro weight is removed and
+// redistributed proportionally across orderflow/sentiment — for BOTH legs, so the two composites
+// stay on the same basis and subtracting them remains meaningful. Weights always re-normalise to 1,
+// so a redistributed composite sits on the same -5..+5 scale and OPEN_THRESHOLD keeps its meaning.
+function pairComposite(scores, weights, base, quote, macroRate) {
+  const macroNull = macroRate?.scores?.[base] == null || macroRate?.scores?.[quote] == null;
+  const w = macroNull
+    ? { w1: 0, w2: weights.w2 / (weights.w2 + weights.w3), w3: weights.w3 / (weights.w2 + weights.w3) }
+    : weights;
+  const of = (c) => {
+    const s = scores[c] || { macro: 0, orderflow: 0, sentiment: 0 };
+    return w.w1 * (s.macro ?? 0) + w.w2 * (s.orderflow ?? 0) + w.w3 * (s.sentiment ?? 0);
+  };
+  const nulls = [base, quote].filter((c) => macroRate?.scores?.[c] == null);
+  return { diff: of(base) - of(quote), basis: macroNull ? "REDIST" : "FULL", weights: w, nullLegs: nulls };
+}
+
+// composite score per currency, using the active regime weights (done in CODE).
+// Kept for the XAU diagnostic line and any non-pair reporting; pair decisions use pairComposite.
 function composite(scores, weights) {
   const out = {};
   for (const c of CURRENCIES) {
@@ -325,8 +413,27 @@ async function runEngine({ supabase, feeds, onUsage }) {
 
   const regime = detectRegime(calendar);
 
+  // Cross-sectional macro rate scores are computed HERE, in code, before the model runs — the model
+  // receives them as a given and may only nudge by ±1 for CB stance / data surprises. Asking it to
+  // do the cross-sectional maths is what produced the all-zero collapse this replaces.
+  const macroRate = computeMacroRateScores(rates);
+  const warnings = [];
+
+  // Observability is not optional here: the live cross-section is only 4 currencies deep against a
+  // MIN of 4, so ONE source failing nulls macro for every pair. That must never happen quietly.
+  console.log(`   [v2 macro] regime=${regime.label} status=${macroRate.status} xsection=${macroRate.xsection.length}/${RATE_XSECTION.length}`
+    + ` spread=${macroRate.spread ?? "n/a"}bps floor=${RATE_FLOOR_BPS}:${macroRate.floor ?? "n/a"}`
+    + ` shadow_floor=${RATE_SHADOW_FLOOR_BPS}:${macroRate.shadow_floor ?? "n/a"}`
+    + `${Object.keys(macroRate.dropped).length ? ` dropped={${Object.entries(macroRate.dropped).map(([c, r]) => `${c}:${r}`).join(" ")}}` : ""}`);
+  console.log(`   [v2 macro] bps=${JSON.stringify(macroRate.bps)} mean=${macroRate.mean ?? "n/a"} scores=${JSON.stringify(macroRate.scores)}`);
+  if (macroRate.status === "INSUFFICIENT") {
+    const msg = `[v2 macro] DEGRADED — ${macroRate.reason} → macro NULL for ALL pairs this run (dropped: ${Object.keys(macroRate.dropped).join(", ") || "none"})`;
+    console.error(`🚨 ${msg}`);
+    warnings.push(msg);
+  }
+
   const digest = await extractSignals({ cbText, newsItems }, onUsage);                                     // Haiku
-  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket, yields, rates } }, onUsage); // Sonnet 5
+  const scores = await scoreCurrencies({ regime, digest, marketData: { cot, riskBasket, yields, rates, macroRate } }, onUsage); // Sonnet 5
   const comp   = composite(scores, regime.weights);
 
   // XAU is scored as its own asset (macro=real-yields/Fed, orderflow=gold COT, sentiment=risk-off),
@@ -338,7 +445,12 @@ async function runEngine({ supabase, feeds, onUsage }) {
   for (const pair of CONFIG.PAIRS) {
     const base = pair.slice(0, 3);
     const quote = pair.slice(3, 6);
-    const diff = (comp[base] ?? 0) - (comp[quote] ?? 0);
+    const pc = pairComposite(scores, regime.weights, base, quote, macroRate);
+    const diff = pc.diff;
+    // Marks whether this pair's diff includes macro or is orderflow+sentiment only, so later
+    // before/after comparisons stay apples-to-apples.
+    console.log(`   [v2 diff] ${pair} diff=${diff >= 0 ? "+" : ""}${diff.toFixed(2)} macro=${pc.basis}${pc.basis === "REDIST" ? `(null:${pc.nullLegs.join(",")})` : ""}`
+      + ` w=${pc.weights.w1.toFixed(2)}/${pc.weights.w2.toFixed(2)}/${pc.weights.w3.toFixed(2)}`);
 
     const market = await feeds.getPairMarket(pair);
     if (!market || market.price == null || market.atr == null) {
@@ -436,7 +548,9 @@ async function runEngine({ supabase, feeds, onUsage }) {
     results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade });
   }
 
-  return { regime: regime.label, scores, results };
+  // macro_rate + warnings ride out in the response so a degraded cross-section is visible from the
+  // shadow endpoint without needing log access — that gap is exactly how this went unnoticed before.
+  return { regime: regime.label, scores, results, macro_rate: macroRate, warnings };
 }
 
 export {

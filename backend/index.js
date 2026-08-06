@@ -1167,12 +1167,23 @@ async function fetchYields() {
 //   USD → FRED DGS2 | EUR → ECB AAA yield curve 2Y | CAD → Bank of Canada Valet (no key needed)
 // We keep BOTH the level and the 1-day change; the CHANGE is what actually moves FX.
 const RATE_TTL = 60 * 60 * 1000   // 1h — these are daily series, no need to hammer them
+// v2's macro scorer needs a 3-SESSION change (today vs 3 sessions back = 4 levels). Keep 8 so a
+// holiday or a single missing print doesn't drop a currency out of the cross-section.
+const RATE_HISTORY_KEEP = 8
 let lastGoodRates = null
 async function fetchRateDifferentials() {
   const cached = getCached('rate_diffs_v2')
   if (isCacheFreshFor('rate_diffs_v2', RATE_TTL) && cached) return cached
+  // `history` (newest first) is what the v2 cross-sectional macro scorer needs: it derives each
+  // currency's 3-SESSION change and then that currency's deviation from the G10 mean. `change`
+  // (1-day) is kept for the prompt's rates block and for v1 compatibility.
   const pick = (rows) => rows.length >= 2
-    ? { value: rows[0].v, change: +(rows[0].v - rows[1].v).toFixed(3), date: rows[0].d }
+    ? {
+        value: rows[0].v,
+        change: +(rows[0].v - rows[1].v).toFixed(3),
+        date: rows[0].d,
+        history: rows.slice(0, RATE_HISTORY_KEEP).map(r => ({ d: r.d, v: r.v })),
+      }
     : null
   const desc = (rows) => rows.sort((a, b) => (a.d < b.d ? 1 : -1))
   const out = {}
@@ -1181,7 +1192,7 @@ async function fetchRateDifferentials() {
     const key = (process.env.FRED_API_KEY || '').trim()
     if (key) {
       const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
-        params: { series_id: 'DGS2', api_key: key, file_type: 'json', sort_order: 'desc', limit: 5 },
+        params: { series_id: 'DGS2', api_key: key, file_type: 'json', sort_order: 'desc', limit: 12 },
         timeout: 12000,
       })
       const rows = (r.data?.observations || [])
@@ -1194,7 +1205,7 @@ async function fetchRateDifferentials() {
   // EUR — ECB SDMX. Observations are index-keyed; the index maps into structure.dimensions.observation[0].values.
   try {
     const r = await axios.get('https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y', {
-      params: { lastNObservations: 5, format: 'jsondata' }, timeout: 12000,
+      params: { lastNObservations: 12, format: 'jsondata' }, timeout: 12000,
     })
     const j = r.data
     const series = j?.dataSets?.[0]?.series
@@ -1213,7 +1224,7 @@ async function fetchRateDifferentials() {
   try {
     const id = 'BD.CDN.2YR.DQ.YLD'
     const r = await axios.get(`https://www.bankofcanada.ca/valet/observations/${id}/json`, {
-      params: { recent: 5 }, timeout: 12000,
+      params: { recent: 12 }, timeout: 12000,
     })
     const rows = (r.data?.observations || [])
       .map(o => ({ d: o.d, v: parseFloat(o[id]?.v) }))
@@ -1245,25 +1256,41 @@ async function fetchRateDifferentials() {
     }
   } catch (e) { console.warn(`⚠️ [rates] GBP/BoE failed: ${e?.message}`) }
 
-  // JPY — Japan MoF daily JGB CSV (current calendar year), no key. Latin-1/Shift-JIS text with a
-  // banner row before the real header, so we locate the 'Date,' header row and read the 2Y column.
-  try {
-    const r = await axios.get('https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv', {
-      timeout: 15000, responseType: 'arraybuffer',
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-    })
-    const text = Buffer.from(r.data).toString('latin1')
-    const lines = text.split(/\r?\n/)
+  // JPY — Japan MoF daily JGB CSV, no key. Latin-1/Shift-JIS text with a banner row before the real
+  // header, so we locate the 'Date,' header row and read the 2Y column.
+  // TWO FILES, and both are needed. `jgbcme.csv` is MONTH-TO-DATE only — on the 6th of a month it
+  // holds 3 rows, which cannot produce a 3-session change, so JPY would silently drop out of the
+  // cross-section for the first days of EVERY month. `historical/jgbcme_all.csv` carries the full
+  // series but publishes a few days late. Read the fresh one first and only pay for the 1.2MB
+  // historical file when the month-to-date file is too short to cover the lookback.
+  const mofParse = (buf) => {
+    const lines = Buffer.from(buf).toString('latin1').split(/\r?\n/)
     const hi = lines.findIndex(l => /^Date,/i.test(l))
     const col = hi >= 0 ? lines[hi].split(',').findIndex(h => h.trim() === '2Y') : -1
-    if (col > 0) {
-      const rows = lines.slice(hi + 1).map(l => {
-        const c = l.split(','), m = (c[0] || '').trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/)
-        if (!m) return null
-        const v = parseFloat(c[col]); return isNaN(v) ? null : { d: `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, v }
-      }).filter(Boolean)
-      out.JPY = pick(desc(rows))
+    if (col <= 0) return []
+    return lines.slice(hi + 1).map(l => {
+      const c = l.split(','), m = (c[0] || '').trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/)
+      if (!m) return null
+      const v = parseFloat(c[col]); return isNaN(v) ? null : { d: `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, v }
+    }).filter(Boolean)
+  }
+  const mofGet = async (path) => (await axios.get(
+    `https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/${path}`,
+    { timeout: 20000, responseType: 'arraybuffer', headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } },
+  )).data
+  try {
+    let rows = mofParse(await mofGet('jgbcme.csv'))
+    const mtdCount = rows.length
+    if (mtdCount < RATE_HISTORY_KEEP) {
+      try {
+        const hist = mofParse(await mofGet('historical/jgbcme_all.csv'))
+        const byDate = new Map(hist.map(r => [r.d, r.v]))
+        for (const r of rows) byDate.set(r.d, r.v)          // month-to-date wins — it's fresher
+        rows = [...byDate.entries()].map(([d, v]) => ({ d, v }))
+        console.log(`   [rates] JPY: month-to-date had ${mtdCount} rows (< ${RATE_HISTORY_KEEP}) — merged MoF historical (${hist.length})`)
+      } catch (e) { console.warn(`⚠️ [rates] JPY/MoF historical failed: ${e?.message}`) }
     }
+    if (rows.length) out.JPY = pick(desc(rows))
   } catch (e) { console.warn(`⚠️ [rates] JPY/MoF failed: ${e?.message}`) }
 
   // AUD — RBA table F2 (daily CSV, no key). Metadata block sits above the data; we locate the

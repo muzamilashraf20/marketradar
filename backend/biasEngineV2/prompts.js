@@ -46,13 +46,22 @@ does that with regime weights.
 
 SCORE THE THREE COMPONENTS INDEPENDENTLY:
 
-1. macro  (-5..+5): PRIMARY driver is the 2-YEAR GOVERNMENT BOND YIELD, because it prices rate
-   expectations and rate differentials are what actually move FX. Score the 1-day CHANGE, not the level:
-   a rising 2Y = the market is repricing that central bank hawkishly = positive for that currency; a
-   falling 2Y = negative. Treat a move of roughly 5bp (0.05) or more as meaningful; smaller is noise → near 0.
-   SECONDARY: central-bank stance (hawkish positive, dovish negative) and data surprises, which should
-   CONFIRM or TEMPER the yield signal rather than override it. If a currency has no 2Y data provided,
-   fall back to CB stance and data alone. Neutral / no news = near 0.
+1. macro  (-5..+5): The rate-differential component is ALREADY COMPUTED FOR YOU in code and given as
+   MACRO RATE SCORES. Do not recompute it and do not second-guess it. Each currency's score is its 2Y
+   3-session change expressed as a DEVIATION from the cross-sectional mean of the other majors —
+   because rate differentials are relative, not absolute. A currency whose yields rose MORE than the
+   pack scores positive even if every yield fell.
+   USE IT LIKE THIS:
+     - value is a NUMBER  → that is your macro starting point. You may adjust by AT MOST ±1 for
+       central-bank stance (hawkish positive, dovish negative) or a fresh data surprise. Nothing else
+       may move it. If stance and data are neutral, output the given number unchanged.
+     - value is 0         → the cross-section was computed and found NO differential. That is a real
+       measurement of "flat", not missing data. Start from 0; only CB stance / data surprises can move
+       it, by at most ±1.
+     - value is null      → no rate data for that currency. Score macro from CB stance and data
+       surprises alone, and keep it small (|1| at most) — you have no rate evidence.
+   Do NOT use the YIELDS block below for any fiat currency's macro; it is XAU-only (see below).
+   FRESHNESS IS MANDATORY for the ±1 adjustment: only a catalyst from TODAY or the last session counts.
    FRESHNESS IS MANDATORY: only score a catalyst that is from TODAY or the last session. A release or
    speech older than ~48h is ALREADY PRICED IN and must NOT be scored as a fresh driver — at most it is
    background context worth |1|. Never describe stale data as a "fresh repricing". If the only inputs you
@@ -110,11 +119,19 @@ ${JSON.stringify(marketData.cot, null, 2)}
 CROSS-ASSET / RISK BASKET:
 ${JSON.stringify(marketData.riskBasket, null, 2)}
 
-2-YEAR GOVERNMENT BOND YIELDS (level + 1-day change, in %). The CHANGE is the rate-repricing signal:
+MACRO RATE SCORES — precomputed in code. 'scores' is what you use for each fiat's macro component
+(number = starting point, 0 = measured flat, null = no rate data). 'bps' and 'mean' are shown only so
+you can see where the number came from; do NOT re-derive from them:
+${JSON.stringify(marketData.macroRate ?? {}, null, 2)}
+
+2-YEAR GOVERNMENT BOND YIELDS (level + 1-day change, in %) — CONTEXT ONLY. The scoring signal is the
+precomputed block above, not this one:
 ${JSON.stringify(marketData.rates ?? {}, null, 2)}
-YIELDS (US2Y / US10Y — real-rate proxy for XAU macro; falling yields = gold-positive). Direction lives in
-'real_yield_direction' and comes from 'y2_3session_bps' (the 2Y's 3-trading-session change in bps); obey
-'direction_confidence' and 'yields_macro_contribution' exactly:
+
+YIELDS (US2Y / US10Y) — ⚠️ XAU-ONLY. Never use this block for USD or any other fiat's macro; doing so
+reintroduces the absolute US-rate move that the cross-sectional scores above deliberately remove.
+Direction lives in 'real_yield_direction' and comes from 'y2_3session_bps' (the 2Y's 3-trading-session
+change in bps); obey 'direction_confidence' and 'yields_macro_contribution' exactly:
 ${JSON.stringify(marketData.yields ?? {}, null, 2)}
 
 Score these assets: ${CURRENCIES.join(", ")}. Remember: components are independent, no combining.`;
