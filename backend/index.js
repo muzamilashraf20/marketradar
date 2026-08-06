@@ -3556,6 +3556,43 @@ function v2SaveSnapshot(key, value) {
     .catch(e => console.error(`⚠️ [v2 db] snapshot save ${key} error: ${e?.message}`))
 }
 
+// ── Step A OBSERVATION LOG ──────────────────────────────────────────────────
+// Every run's macro telemetry, banked as a ring buffer. Without this the data exists only in
+// Railway logs and in the response of a MANUAL run — cron runs (the majority) would be lost, and
+// the two questions this observation window exists to answer would be unanswerable.
+// Records ONLY what is already computed. Changes no threshold, band, or weight.
+const V2_TELEMETRY_KEY = 'v2_macro_telemetry'
+const V2_TELEMETRY_MAX = 400          // ~33 days at the 2h cron cadence
+let v2Telemetry = null
+async function v2RecordTelemetry(trigger, out) {
+  try {
+    if (!Array.isArray(v2Telemetry)) v2Telemetry = (await v2LoadSnapshot(V2_TELEMETRY_KEY)) || []
+    const m = out?.macro_rate || {}
+    const row = {
+      at: new Date().toISOString(), trigger, regime: out?.regime ?? null,
+      macro_status: m.status ?? null,
+      xsection: (m.xsection || []).length,
+      dropped: Object.keys(m.dropped || {}),
+      spread: m.spread ?? null,
+      floor: m.floor ?? null,
+      shadow_floor: m.shadow_floor ?? null,     // what a 6.9bps floor WOULD have done — logged, never applied
+      macro_scores: m.scores ?? null,
+      full: 0, redist: 0, diffs: {}, opens: [],
+    }
+    for (const r of out?.results || []) {
+      // per-pair basis is kept alongside the diff — question 1 is specifically about the FULL pairs,
+      // so a bare count of FULL/REDIST would not be enough to answer it later.
+      row.diffs[r.pair] = { d: r.diff ?? null, b: r.macro_basis ?? null }
+      if (r.macro_basis === 'REDIST') row.redist++
+      else if (r.macro_basis === 'FULL') row.full++
+      if (r.action === 'OPEN' || r.action === 'FLIP') row.opens.push(`${r.pair}:${r.action}:${r.direction || ''}`)
+    }
+    v2Telemetry.push(row)
+    if (v2Telemetry.length > V2_TELEMETRY_MAX) v2Telemetry = v2Telemetry.slice(-V2_TELEMETRY_MAX)
+    v2SaveSnapshot(V2_TELEMETRY_KEY, v2Telemetry)
+  } catch (e) { console.warn(`⚠️ [v2 telemetry] record failed: ${e?.message}`) }
+}
+
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
 // so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
 function v2AdrFromDaily(pair, vals) {
@@ -3788,6 +3825,7 @@ async function runV2Shadow(trigger) {
     freshReads[r.pair] = { diff: r.diff ?? null, action: r.action || null, reason: r.reason || null, at: ts }
   }
   setCache('v2_fresh_reads', freshReads)
+  await v2RecordTelemetry(trigger, out)   // Step A observation window — see V2_TELEMETRY_KEY
   return out
 }
 
@@ -3795,6 +3833,62 @@ async function runV2Shadow(trigger) {
 app.post('/api/v2/shadow/run', async (req, res) => {
   try { const out = await runV2Shadow('manual'); res.json({ success: true, pairs: V2_CONFIG.PAIRS.length, ...out }) }
   catch (e) { console.error('v2 shadow run error:', e?.message); res.status(500).json({ success: false, error: e?.message }) }
+})
+
+// Read-only rollup of the Step A observation window. Answers the two questions the window exists
+// for: (1) do the FULL-macro pairs ever reach OPEN_THRESHOLD, or is the spread never big enough,
+// and (2) how often does the quiet regime actually occur. Reads banked telemetry only — it runs
+// no engine work, spends no model credits, and changes nothing.
+app.get('/api/v2/shadow/telemetry', async (req, res) => {
+  try {
+    const rows = (Array.isArray(v2Telemetry) ? v2Telemetry : await v2LoadSnapshot(V2_TELEMETRY_KEY)) || []
+    const T = V2_CONFIG.OPEN_THRESHOLD
+    const n = rows.length
+    const count = (f) => rows.filter(f).length
+    const pctOf = (k) => (n ? +((k / n) * 100).toFixed(1) : null)
+
+    // per-pair: how close does it get, split by whether macro was included that run
+    const pairs = {}
+    for (const r of rows) {
+      for (const [p, v] of Object.entries(r.diffs || {})) {
+        const d = typeof v === 'object' ? v.d : v, b = typeof v === 'object' ? v.b : null
+        if (d == null) continue
+        const e = pairs[p] || (pairs[p] = { runs: 0, full_runs: 0, redist_runs: 0, max_abs_diff: 0, hits: 0, full_hits: 0 })
+        e.runs++
+        if (b === 'FULL') e.full_runs++; else if (b === 'REDIST') e.redist_runs++
+        e.max_abs_diff = Math.max(e.max_abs_diff, Math.abs(d))
+        if (Math.abs(d) >= T) { e.hits++; if (b === 'FULL') e.full_hits++ }
+      }
+    }
+    for (const e of Object.values(pairs)) {
+      e.max_abs_diff = +e.max_abs_diff.toFixed(2)
+      e.pct_runs_at_threshold = e.runs ? +((e.hits / e.runs) * 100).toFixed(1) : null
+    }
+    const spreads = rows.map((r) => r.spread).filter((x) => x != null).sort((a, b) => a - b)
+    const mid = (a) => (a.length ? a[Math.floor(a.length / 2)] : null)
+
+    res.json({
+      success: true,
+      window: { runs: n, first: rows[0]?.at ?? null, last: rows[n - 1]?.at ?? null, open_threshold: T },
+      q1_do_full_pairs_reach_threshold: {
+        runs_with_any_full_pair_at_threshold: count((r) => Object.values(r.diffs || {}).some((v) => v?.b === 'FULL' && Math.abs(v.d ?? 0) >= T)),
+        pct: pctOf(count((r) => Object.values(r.diffs || {}).some((v) => v?.b === 'FULL' && Math.abs(v.d ?? 0) >= T))),
+        per_pair: pairs,
+        spread_bps: { n: spreads.length, min: spreads[0] ?? null, median: mid(spreads), max: spreads[spreads.length - 1] ?? null },
+      },
+      q2_regime_mix: {
+        event_heavy: count((r) => r.regime === 'event-heavy'), quiet: count((r) => r.regime === 'quiet'),
+        pct_quiet: pctOf(count((r) => r.regime === 'quiet')),
+      },
+      shadow_floor_6_9bps: { would_pass: count((r) => r.shadow_floor === 'WOULD_PASS'), would_block: count((r) => r.shadow_floor === 'WOULD_BLOCK') },
+      live_floor_3bps: { passed: count((r) => r.floor === 'PASSED'), blocked: count((r) => r.floor === 'BLOCKED') },
+      macro_status: { ok: count((r) => r.macro_status === 'OK'), floor_flat: count((r) => r.macro_status === 'FLOOR_FLAT'), insufficient: count((r) => r.macro_status === 'INSUFFICIENT') },
+      xsection_histogram: rows.reduce((a, r) => ((a[r.xsection] = (a[r.xsection] || 0) + 1), a), {}),
+      dropped_counts: rows.reduce((a, r) => { for (const c of r.dropped || []) a[c] = (a[c] || 0) + 1; return a }, {}),
+      opens: rows.flatMap((r) => (r.opens || []).map((o) => `${r.at.slice(0, 16)} ${o}`)),
+      recent: rows.slice(-8),
+    })
+  } catch (e) { res.status(500).json({ success: false, error: e?.message }) }
 })
 
 // Read-only view of the exact yields payload the v2 scorer receives, plus the rolling US2Y session

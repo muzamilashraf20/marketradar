@@ -454,7 +454,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
 
     const market = await feeds.getPairMarket(pair);
     if (!market || market.price == null || market.atr == null) {
-      results.push({ pair, diff: +diff.toFixed(2), action: "SKIP", reason: "no_market_data" });
+      results.push({ pair, diff: +diff.toFixed(2), action: "SKIP", reason: "no_market_data", macro_basis: pc.basis });
       continue;
     }
     const { price, atr } = market;
@@ -545,7 +545,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
       }
     }
 
-    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade });
+    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis });
   }
 
   // macro_rate + warnings ride out in the response so a degraded cross-section is visible from the
