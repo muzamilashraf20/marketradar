@@ -37,11 +37,12 @@ const MODELS = {
 const V2_GOLD_ENABLED = false;
 const V2_ALL_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF"];
 const CONFIG = {
-  OPEN_THRESHOLD: 1.0,     // |diff| needed to open a bias, and the far side needed to flip (dead-band edge).
-                           // Lowered 1.8→1.0 to match the real composite scale: a QUIET-regime weighted
-                           // average of −5..+5 component scores, then base−quote, lands at 0.6–1.4, so 1.8
-                           // never opened anything. Still a ±1.0 dead-band, so near-zero noise won't whipsaw.
-                           // computeConfidence is anchored on this — its slope was re-scaled to match.
+  OPEN_THRESHOLD: 1.8,     // |diff| needed to open a bias, and the far side needed to flip (dead-band edge).
+                           // Reverted 1.0→1.8: the collapsed diffs were an INPUT bug (USD was being scored
+                           // off UUP, a dollar ETF — circular, so USD pinned near 0 and shrank every
+                           // composite), not a scale problem. With the yields direction now off the US2Y
+                           // 3-session change, 1.8 is the right dead-band again.
+                           // computeConfidence is anchored on this — its slope is re-scaled to match.
   ATR_INVALIDATION_MULT: 1.5, // FALLBACK only (when PDH/PDL unavailable): entry ± m*ATR
   INVALIDATION_ATR_BUFFER: 0, // no cushion — invalidation sits exactly at PDL/PDH (tighter, reacts faster)
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
@@ -260,7 +261,7 @@ async function loadState(supabase, pair) {
 // 5b. CONFIDENCE + GRADE — deterministic, derived from data we already have.
 //     This is SIGNAL STRENGTH, not a win rate: how much of the evidence lines up
 //     behind the direction, and whether the entry is still fresh.
-//       |diff|      — how far past the 1.0 open threshold the score sits
+//       |diff|      — how far past the 1.8 open threshold the score sits
 //       alignment   — do macro / orderflow / sentiment agree in sign, or fight each other
 //       adrUsedPct  — a bias found after the day's range is spent is a worse entry
 //                     (expects 0..100 here; getPairMarket returns a 0..1 fraction, so the
@@ -270,9 +271,9 @@ async function loadState(supabase, pair) {
 // ---------------------------------------------------------------------------
 function computeConfidence({ diff, baseScores, quoteScores, adrUsedPct }) {
   const mag = Math.abs(diff);
-  // 1.0 (threshold) → 60, ~3.0+ → 88. Below threshold decays toward 45.
+  // 1.8 (threshold) → 60, 4.5+ → 88. Below threshold decays toward 45.
   let conf = mag >= CONFIG.OPEN_THRESHOLD
-    ? 60 + Math.min(28, (mag - CONFIG.OPEN_THRESHOLD) * 14)
+    ? 60 + Math.min(28, (mag - CONFIG.OPEN_THRESHOLD) * 10.4)
     : 45 + (mag / CONFIG.OPEN_THRESHOLD) * 15;
   // Component alignment: count how many of the three components point the same way as `diff`.
   const sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;

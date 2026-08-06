@@ -67,12 +67,15 @@ SCORE THE THREE COMPONENTS INDEPENDENTLY:
 
 SPECIAL ASSET — XAU (GOLD, priced in USD). Score it on the SAME -5..+5 scale, but its drivers differ from fiat:
 - macro (XAU): REAL YIELDS + Fed stance. Falling real yields / dovish Fed = bullish gold (positive); rising real
-  yields / hawkish Fed = bearish gold (negative). For DIRECTION use the yields object's live
-  'real_yield_direction' field (derived from live TLT+UUP) — NOT the FRED level's day-change, which lags
-  1-2 days. If 'fred_stale' is true, ignore the FRED day-change entirely and score direction from
-  'real_yield_direction'; when 'direction_confidence' is 'high', a clear macro score is justified, when
-  'mixed'/'low', keep the macro score small (near 0). The FRED value is context for the rate LEVEL only.
-  XAU has NO central bank of its own.
+  yields / hawkish Fed = bearish gold (negative). For DIRECTION use ONLY the yields object's
+  'real_yield_direction' field, which is derived from the US 2Y level's 3-TRADING-SESSION change in basis
+  points ('y2_3session_bps') — NOT any single-day change, and NOT any ETF or dollar-index move.
+  Confidence gating is MANDATORY: 'high' (>=8bps) justifies a clear macro score, 'medium' (4-8bps) justifies
+  a small one (|1|-|2|), and 'low' means the move is inside the noise floor — the yields contribution to
+  macro is then EXACTLY 0 (the 'yields_macro_contribution' field says so explicitly). When
+  'real_yield_direction' is 'neutral', yields add nothing to macro in either direction; score macro from the
+  remaining evidence only. The 2Y/10Y values are context for the rate LEVEL only. XAU has NO central bank
+  of its own.
 - orderflow (XAU): gold COT positioning (net non-commercial + week-over-week change), same rule as the fiats.
 - sentiment (XAU): RISK-OFF / safe-haven demand. In risk-off (VIX up, equities down, haven bid) gold scores
   strongly positive; in risk-on, negative. Use the SAME risk basket as the fiat sentiment score.
@@ -109,7 +112,9 @@ ${JSON.stringify(marketData.riskBasket, null, 2)}
 
 2-YEAR GOVERNMENT BOND YIELDS (level + 1-day change, in %). The CHANGE is the rate-repricing signal:
 ${JSON.stringify(marketData.rates ?? {}, null, 2)}
-YIELDS (US2Y / US10Y — real-rate proxy for XAU macro; falling yields = gold-positive):
+YIELDS (US2Y / US10Y — real-rate proxy for XAU macro; falling yields = gold-positive). Direction lives in
+'real_yield_direction' and comes from 'y2_3session_bps' (the 2Y's 3-trading-session change in bps); obey
+'direction_confidence' and 'yields_macro_contribution' exactly:
 ${JSON.stringify(marketData.yields ?? {}, null, 2)}
 
 Score these assets: ${CURRENCIES.join(", ")}. Remember: components are independent, no combining.`;

@@ -1072,16 +1072,39 @@ async function fetchCrossAssetLive() {
 // Fetch US Treasury yields (2yr + 10yr) — 30min cache, matching the cross-asset batch cadence.
 // PRIMARY: TwelveData US2Y/US10Y. Market-sourced and same-day, and they ride along in the
 // cross-asset batch, so this path costs no extra TwelveData credits.
-// FALLBACK: FRED DGS2/DGS10 — accurate levels, but the US government publishes them 1-2 BUSINESS
-// DAYS late, which anchored the engine on pre-event yields and made the bias flip late. Kept for
-// TwelveData outages only; `fred_stale` is true only on this path.
-// Shape is identical either way: { y2:{value,change,date}, y10:{...}, source, fred_date, fred_stale }
+// FALLBACK: FRED DGS2/DGS10, applied PER SERIES. TwelveData routinely serves US2Y but not US10Y,
+// and the old "return as soon as EITHER exists" shape meant y10 stayed null forever and the FRED
+// fallback never fired. Each leg now fills independently. FRED publishes 1-2 BUSINESS DAYS late,
+// which is fine for the 10Y (a LEVEL input only) but not for the 2Y, which carries direction —
+// `fred_stale` therefore tracks the 2Y leg specifically.
+// Shape: { y2:{value,change,date}, y10:{...}, source, fred_date, fred_stale }
 const YIELDS_TTL = 30 * 60 * 1000
 async function fetchYields() {
   const cachedY = getCached('yields_fred')
   if (isCacheFreshFor('yields_fred', YIELDS_TTL) && cachedY) return cachedY
   const fmt = (o) => o ? `${o.value}% (${o.change > 0 ? '+' : ''}${Math.round(o.change * 100)}bps) @ ${o.datetime || o.date}` : 'n/a'
+
+  // ── FRED single-series reader (used as a per-leg gap filler AND as the full fallback) ──
+  const key = process.env.FRED_API_KEY?.trim()
+  if (!key) console.warn('🏦 FRED: FRED_API_KEY not set in env — no yields fallback')
+  const getSeries = async (id) => {
+    if (!key) return null
+    const maskedUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=***&file_type=json&sort_order=desc&limit=8`
+    try {
+      const r = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${key}&file_type=json&sort_order=desc&limit=8`, { timeout: 10000 })
+      const obs = r.data?.observations || []
+      const vals = obs.map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))   // FRED uses "." for holidays
+      if (!vals.length) { console.warn(`🏦 FRED ${id}: HTTP ${r.status}, ${obs.length} obs, 0 numeric — ${maskedUrl}`); return null }
+      const latest = vals[0], prev = vals[1] || vals[0]
+      return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date } // change in percentage points
+    } catch (e) {
+      console.warn(`🏦 FRED ${id} error: status=${e?.response?.status ?? 'n/a'} msg="${e?.message}" body=${JSON.stringify(e?.response?.data || '').slice(0, 120)} — ${maskedUrl}`)
+      return null
+    }
+  }
+
   // ── PRIMARY: TwelveData US2Y / US10Y ──
+  let tdY2 = null, tdY10 = null
   try {
     const x = await fetchCrossAssetLive()
     const fromTd = (q) => {
@@ -1096,7 +1119,8 @@ async function fetchYields() {
       let chg = (q.prev != null && !isNaN(q.prev) && q.prev !== v) ? v - q.prev
         : (q.absChange != null && !isNaN(q.absChange)) ? q.absChange : 0
       // A >1.5pp single-day move in a Treasury yield is not real — assume a unit mismatch and
-      // report no day-change rather than a bogus bps figure (live TLT+UUP still carries direction).
+      // report no day-change rather than a bogus bps figure. The LEVEL is still good, and v2's
+      // direction comes off the multi-session level history anyway, not this field.
       if (Math.abs(chg) > 1.5) { console.warn(`🏦 Yields: implausible day-change ${chg} on level ${v} — reporting 0`); chg = 0 }
       return {
         value: +v.toFixed(3),
@@ -1105,40 +1129,34 @@ async function fetchYields() {
         datetime: q.datetime || null
       }
     }
-    const tdY2 = fromTd(x?.US2Y), tdY10 = fromTd(x?.US10Y)
-    if (tdY2 || tdY10) {
-      const result = { y2: tdY2, y10: tdY10, source: 'twelvedata', fred_date: null, fred_stale: false }
-      setCache('yields_fred', result)
-      console.log(`🏦 Yields FRESHNESS: source=twelvedata · 2Y ${fmt(tdY2)} · 10Y ${fmt(tdY10)}`)
-      return result
-    }
-    console.log('🏦 Yields: TwelveData US2Y/US10Y not in cross-asset batch — trying FRED fallback')
+    tdY2 = fromTd(x?.US2Y); tdY10 = fromTd(x?.US10Y)
+    if (!tdY2 && !tdY10) console.log('🏦 Yields: TwelveData US2Y/US10Y not in cross-asset batch — trying FRED fallback')
+    else if (!tdY10) console.log('🏦 Yields: TwelveData served US2Y but not US10Y — filling 10Y from FRED DGS10')
+    else if (!tdY2) console.log('🏦 Yields: TwelveData served US10Y but not US2Y — filling 2Y from FRED DGS2')
   } catch (e) {
     console.log(`🏦 Yields: TwelveData US2Y/US10Y failed (${e?.message}) — trying FRED fallback`)
   }
-  // ── FALLBACK: FRED DGS2 / DGS10 (1-2 business day publication lag) ──
-  const key = process.env.FRED_API_KEY?.trim()
-  if (!key) { console.warn('🏦 FRED: FRED_API_KEY not set in env — no yields fallback'); return cachedY || null }
-  const getSeries = async (id) => {
-    const maskedUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=***&file_type=json&sort_order=desc&limit=8`
-    try {
-      const r = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${key}&file_type=json&sort_order=desc&limit=8`, { timeout: 10000 })
-      const obs = r.data?.observations || []
-      const vals = obs.map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))   // FRED uses "." for holidays
-      if (!vals.length) { console.warn(`🏦 FRED ${id}: HTTP ${r.status}, ${obs.length} obs, 0 numeric — ${maskedUrl}`); return null }
-      const latest = vals[0], prev = vals[1] || vals[0]
-      return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date } // change in percentage points
-    } catch (e) {
-      console.warn(`🏦 FRED ${id} error: status=${e?.response?.status ?? 'n/a'} msg="${e?.message}" body=${JSON.stringify(e?.response?.data || '').slice(0, 120)} — ${maskedUrl}`)
+
+  // ── PER-LEG FRED FILL (DGS2 / DGS10) ──
+  try {
+    const [fredY2, fredY10] = await Promise.all([
+      tdY2 ? null : getSeries('DGS2'),
+      tdY10 ? null : getSeries('DGS10'),
+    ])
+    const y2 = tdY2 || fredY2, y10 = tdY10 || fredY10
+    if (!y2 && !y10) {
+      if (cachedY) { console.log('🏦 Yields empty (TwelveData + FRED) — using stale cache'); return cachedY }
       return null
     }
-  }
-  try {
-    const [y2, y10] = await Promise.all([getSeries('DGS2'), getSeries('DGS10')])
-    if (!y2 && !y10) { if (cachedY) { console.log('🏦 Yields empty (TwelveData + FRED) — using stale cache'); return cachedY } return null }
-    const result = { y2, y10, source: 'fred-fallback', fred_date: y2?.date || y10?.date || null, fred_stale: true }
+    // fred_date reports which FRED print (if any) is in play; fred_stale tracks the 2Y leg only,
+    // because that is the leg the v2 direction is built from.
+    const fredDate = (tdY2 ? null : fredY2?.date) || (tdY10 ? null : fredY10?.date) || null
+    const source = (tdY2 && tdY10) ? 'twelvedata'
+      : (tdY2 || tdY10) ? 'twelvedata+fred'
+      : 'fred-fallback'
+    const result = { y2, y10, source, fred_date: fredDate, fred_stale: !tdY2 }
     setCache('yields_fred', result)
-    console.log(`🏦 Yields FRESHNESS: source=fred-fallback (1-2 business day govt lag) · 2Y ${fmt(y2)} · 10Y ${fmt(y10)}`)
+    console.log(`🏦 Yields FRESHNESS: source=${source}${!tdY2 ? ' (2Y on 1-2 business day govt lag)' : ''} · 2Y ${fmt(y2)} · 10Y ${fmt(y10)} · fred_date=${fredDate || 'n/a'}`)
     return result
   } catch (e) { if (cachedY) { console.log(`🏦 Yields fetch failed (${e?.message}) — using stale cache`); return cachedY } console.log(`🏦 Yields fetch failed: ${e?.message}`); return null }
 }
@@ -3418,31 +3436,80 @@ let v2LastGoodCOT = null      // last non-empty COT snapshot → durability for 
 let v2LastGoodYields = null   // last-good yields snapshot → durability for XAU macro
 let v2LastGoodBasket = null   // last-good risk basket (per-field) → durability for sentiment
 
-// LIVE real-yield DIRECTION. FRED yields carry accurate LEVELS but publish 1-2 days late (govt lag),
-// so they cannot convey TODAY's direction. TLT (20y+ treasury ETF) moves inverse to long yields in
-// real time; UUP (dollar ETF) confirms. Requiring TLT+UUP AGREEMENT filters TLT's single-day noise —
-// a lone TLT tick is noise, but TLT-down + USD-up together is a real gold-negative signal.
-async function liveYieldDirection() {
-  const x = await fetchCrossAssetLive()   // { DXY, VIX, SPY, TLT, UUP, VIXY } from TwelveData
-  const tlt = x?.TLT, uup = x?.UUP
-  if (!tlt || tlt.price == null) return null
-  // Magnitude gate: moves smaller than this are noise, not signal. Without it a 0.03% TLT tick
-  // was scoring 'high' confidence and driving a directional call off nothing.
-  const MIN_MOVE_PCT = 0.15
-  const sig = v => (v == null || Math.abs(v) < MIN_MOVE_PCT) ? 0 : (v > 0 ? 1 : -1)
-  // express both in GOLD-POSITIVE space: +1 = gold-positive, -1 = gold-negative
-  const tltDir = sig(tlt.change)          // TLT up = long yields DOWN = gold+
-  const uupDir = -sig(uup?.change)        // USD (UUP) up = gold-
-  const agree = tltDir !== 0 && tltDir === uupDir
-  let real_yield_direction, direction_confidence
-  if (agree && tltDir > 0)       { real_yield_direction = 'falling yields + soft USD → gold-positive'; direction_confidence = 'high' }
-  else if (agree && tltDir < 0)  { real_yield_direction = 'rising yields + firm USD → gold-negative';  direction_confidence = 'high' }
-  else if (tltDir < 0 || uupDir < 0) { real_yield_direction = 'leaning gold-negative (rising yields or firm USD)'; direction_confidence = 'mixed' }
-  else if (tltDir > 0 || uupDir > 0) { real_yield_direction = 'leaning gold-positive (falling yields or soft USD)'; direction_confidence = 'mixed' }
-  else                           { real_yield_direction = 'flat / conflicting'; direction_confidence = 'low' }
+// ── v2 real-yield DIRECTION — US2Y level across SESSIONS, never a same-day price feed ──
+// The previous implementation derived direction from TLT + UUP percent-change. UUP is a
+// DOLLAR-INDEX ETF, so scoring USD off it is circular (justifying price with price): USD collapsed
+// to neutral, and because USD is a leg of every major, every composite diff shrank with it. That
+// whole path is gone — no ETF proxy carries direction any more.
+// Direction is now the 3-TRADING-SESSION change in the US 2Y level, in basis points, read off a
+// rolling history of daily 2Y closes (in-memory + app_state, same durability pattern as COT/basket).
+// The 10Y is a LEVEL input only; it contributes no direction.
+const Y2_HISTORY_KEY = 'yield2y_history_v2'
+const Y2_HISTORY_LEN = 6            // keep 6 sessions of headroom; the read needs today + 3 back = 4
+const Y2_LOOKBACK_SESSIONS = 3      // "3 sessions ago" = index 3 in a newest-first history
+const Y2_HIGH_BPS = 8               // |3-session change| >= 8bps → high confidence
+const Y2_MED_BPS = 4                // 4–8bps → medium; below 4bps → low, neutral, component clamped to 0
+const Y2_MAX_STALE_DAYS = 5         // newest banked session older than this (weekend+holiday) → no direction
+let v2Yield2yHistory = null         // [{ date:'YYYY-MM-DD', value: 3.712 }] sorted NEWEST first
+
+// Hydrate the 2Y session history from app_state once per process (cron restarts lose in-memory).
+async function v2Yield2yLoadHistory() {
+  if (Array.isArray(v2Yield2yHistory)) return v2Yield2yHistory
+  const db = await v2LoadSnapshot(Y2_HISTORY_KEY)
+  v2Yield2yHistory = Array.isArray(db)
+    ? db.filter(r => r && r.date && r.value != null && !isNaN(r.value))
+    : []
+  return v2Yield2yHistory
+}
+
+// Record the current 2Y level against its session date, then return the 3-session change in bps.
+// Returns bps=null on COLD START (fewer than 4 distinct sessions banked) — the caller must treat
+// that as 'low' confidence, NOT fall back to a single-day change.
+async function v2Yield2y3SessionBps(y2) {
+  const hist = await v2Yield2yLoadHistory()
+  const date = y2?.date, value = y2?.value
+  if (date && value != null && !isNaN(value)) {
+    const i = hist.findIndex(r => r.date === date)
+    if (i >= 0) hist[i] = { date, value }          // same session, later print — refresh in place
+    else hist.unshift({ date, value })
+    hist.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))   // newest first
+    if (hist.length > Y2_HISTORY_LEN) hist.length = Y2_HISTORY_LEN
+    v2Yield2yHistory = hist
+    v2SaveSnapshot(Y2_HISTORY_KEY, hist)
+  }
+  const latest = hist[0], back = hist[Y2_LOOKBACK_SESSIONS]
+  if (!latest || !back) return { bps: null, sessions: hist.length, from: null, to: latest?.date ?? null }
+  // Staleness guard: if the 2Y leg has been missing long enough that the newest banked session is
+  // older than a weekend-plus-holiday, the history is frozen — report no direction rather than let
+  // a stale change keep scoring 'high' forever.
+  const ageDays = Math.floor((Date.now() - new Date(latest.date + 'T00:00:00Z').getTime()) / 86400000)
+  if (ageDays > Y2_MAX_STALE_DAYS) {
+    console.warn(`   [v2 yields] 2Y history frozen — newest session ${latest.date} is ${ageDays}d old, direction suppressed`)
+    return { bps: null, sessions: hist.length, from: back.date, to: latest.date, stale_days: ageDays }
+  }
   return {
-    source: 'TLT+UUP (live)', real_yield_direction, direction_confidence,
-    tlt_change_pct: tlt.change, uup_change_pct: uup?.change ?? null,
+    bps: +((latest.value - back.value) * 100).toFixed(1),
+    sessions: hist.length, from: back.date, to: latest.date,
+  }
+}
+
+// Map the 3-session bps change onto direction + confidence. Phrased in GOLD-POSITIVE space
+// (rising yields = USD-firm / gold-negative) to match how the scorer already consumes the field.
+function v2YieldDirectionFromBps(bps) {
+  const clamped = {
+    real_yield_direction: 'neutral',
+    direction_confidence: 'low',
+    yields_macro_contribution: 'CLAMP TO 0 — 2Y 3-session change is inside the 4bps noise floor (or history not built yet)',
+  }
+  if (bps == null) return clamped
+  const mag = Math.abs(bps)
+  if (mag < Y2_MED_BPS) return clamped
+  return {
+    real_yield_direction: bps > 0
+      ? `rising 2Y yields over 3 sessions (+${mag}bps) → USD-firm / gold-negative`
+      : `falling 2Y yields over 3 sessions (-${mag}bps) → USD-soft / gold-positive`,
+    direction_confidence: mag >= Y2_HIGH_BPS ? 'high' : 'medium',
+    yields_macro_contribution: 'score from real_yield_direction',
   }
 }
 
@@ -3588,49 +3655,39 @@ function buildV2Feeds() {
       try { return await fetchRateDifferentials() } catch (e) { console.warn(`⚠️ [v2 rates] failed: ${e?.message}`); return {} }
     },
     async getYields() {
-      // Primary: TwelveData US2Y/US10Y (market-sourced, same-day) — fetchYields() falls back to FRED
-      // on failure. On failure of both, fall back to a TLT proxy from the (working, cached,
-      // rate-limited) cross-asset feed. Keep a last-good snapshot either way.
-      let y = null, src = null
+      // LEVELS: TwelveData US2Y/US10Y (market-sourced, same-day), each leg falling back to FRED
+      // DGS2/DGS10 independently inside fetchYields().
+      // DIRECTION: the US2Y 3-TRADING-SESSION change in bps — never a same-day ETF proxy. Below the
+      // 4bps noise floor (or on cold start, before 4 sessions are banked) the direction is 'neutral'
+      // at 'low' confidence and the yields contribution to macro is clamped to 0. No guessing, and
+      // no falling back to a single-day change.
+      let y = null
       try { y = await fetchYields() } catch (e) {}
 
-      // Always derive DIRECTION from the live TLT+UUP feed and attach it. FRED-sourced levels lag
-      // 1-2 days and cannot convey TODAY's direction — flag that so the scorer trusts the live
-      // direction over the stale day-change. TwelveData levels are same-day, so their own
-      // day-change IS today's direction and nothing is flagged stale.
-      let live = null
-      try { live = await liveYieldDirection() } catch (e) {}
-      const yieldSource = y?.source || 'fred'
-      const levelDate = y?.y2?.date || y?.y10?.date || null
-      const ageDays = levelDate ? Math.floor((Date.now() - new Date(levelDate + 'T00:00:00Z').getTime()) / 86400000) : null
-      const fredStale = (yieldSource === 'twelvedata') ? false : ((ageDays == null) ? true : (ageDays >= 1))
-
       if (y && (y.y2?.value != null || y.y10?.value != null)) {
-        src = live ? `${yieldSource}-level + live-dir` : yieldSource
+        let sess = { bps: null, sessions: 0, from: null, to: null }
+        try { sess = await v2Yield2y3SessionBps(y.y2) } catch (e) { console.warn(`⚠️ [v2 yields] 2Y history failed: ${e?.message}`) }
+        const dir = v2YieldDirectionFromBps(sess.bps)
+        const yieldSource = y.source || 'unknown'
+        const levelDate = y.y2?.date || y.y10?.date || null
         y = {
           ...y,
           yield_source: yieldSource,
           level_date: levelDate,
-          fred_date: yieldSource === 'twelvedata' ? null : levelDate,
-          fred_stale: fredStale,
-          real_yield_direction: live?.real_yield_direction ?? (fredStale ? '(FRED day-change only — may be 1-2 days stale)' : '(same-day US2Y/US10Y day-change)'),
-          direction_source: live?.source ?? (fredStale ? 'FRED (stale)' : 'TwelveData US2Y/US10Y (same-day)'),
-          direction_confidence: live?.direction_confidence ?? (fredStale ? 'low' : 'mixed'),
-          tlt_change_pct: live?.tlt_change_pct ?? null,
-          uup_change_pct: live?.uup_change_pct ?? null,
+          fred_date: y.fred_date ?? null,
+          fred_stale: !!y.fred_stale,
+          ...dir,
+          direction_source: `US2Y 3-session change (${sess.from || 'n/a'} → ${sess.to || 'n/a'}, ${sess.bps == null ? 'no history' : `${sess.bps > 0 ? '+' : ''}${sess.bps}bps`})`,
+          y2_3session_bps: sess.bps,
+          y2_history_sessions: sess.sessions,
         }
-      } else if (live) {
-        src = 'live-dir'
-        y = live
-      }
-
-      if (src) {
         v2LastGoodYields = y
-        console.log(`   [v2 yields] fresh (${src}) ${JSON.stringify(y)}`)
+        console.log(`   [v2 yields] fresh (${yieldSource}) dir=${dir.direction_confidence} bps3=${sess.bps ?? 'n/a'} sessions=${sess.sessions}/${Y2_LOOKBACK_SESSIONS + 1} ${JSON.stringify(y)}`)
         return y
       }
+
       if (v2LastGoodYields) { console.warn(`   [v2 yields] cache ${JSON.stringify(v2LastGoodYields)} (fetch empty)`); return v2LastGoodYields }
-      console.warn('   [v2 yields] none (no FRED, no TLT, no snapshot yet)')
+      console.warn('   [v2 yields] none (no TwelveData, no FRED, no snapshot yet)')
       return null
     },
     async getPairMarket(pair) {
