@@ -3770,6 +3770,16 @@ app.post('/api/v2/shadow/run', async (req, res) => {
   catch (e) { console.error('v2 shadow run error:', e?.message); res.status(500).json({ success: false, error: e?.message }) }
 })
 
+// Read-only view of the exact yields payload the v2 scorer receives, plus the rolling US2Y session
+// history the direction is built from. Public market data only — no keys, no user data. Exists so the
+// 2Y 3-session direction and the per-leg FRED fill can be verified without tailing Railway logs.
+app.get('/api/v2/shadow/yields', async (req, res) => {
+  try {
+    const y = await buildV2Feeds().getYields()
+    res.json({ success: true, yields: y, y2_history: v2Yield2yHistory || [], sessions_needed: Y2_LOOKBACK_SESSIONS + 1 })
+  } catch (e) { res.status(500).json({ success: false, error: e?.message }) }
+})
+
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
