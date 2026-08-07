@@ -3208,6 +3208,37 @@ async function fetchPolicyRateAndInflation() {
   return out
 }
 
+// Yield LEVELS for the brief. fetchYields() is the shared path and is tried first so a warm cache
+// costs nothing — but its primary source is the TwelveData cross-asset batch, and tdAcquire() can
+// park it behind the credit budget for minutes. When that happens the request budget expires before
+// the function ever reaches its own FRED fallback, and the brief reports no yields at all despite
+// FRED being up. So: give the shared path a short leash, then read DGS2/DGS10 directly.
+async function briefYields() {
+  const quick = await Promise.race([
+    fetchYields().catch(() => null),
+    new Promise(r => setTimeout(() => r('SLOW'), 8000)),
+  ])
+  if (quick && quick !== 'SLOW' && (quick.y2 || quick.y10)) return quick
+  const key = process.env.FRED_API_KEY?.trim()
+  if (!key) return null
+  const leg = async (id) => {
+    try {
+      const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
+        params: { series_id: id, api_key: key, file_type: 'json', sort_order: 'desc', limit: 8 },
+        timeout: 10000,
+      })
+      const vals = (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
+      if (!vals.length) return null
+      const latest = vals[0], prev = vals[1] || vals[0]
+      return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date }
+    } catch (e) { console.warn(`🏦 [brief] FRED ${id} failed: ${e?.message}`); return null }
+  }
+  const [y2, y10] = await Promise.all([leg('DGS2'), leg('DGS10')])
+  if (!y2 && !y10) return null
+  console.log('🏦 [brief] yields via direct FRED DGS2/DGS10 (shared path was throttled)')
+  return { y2, y10, source: 'fred-direct (1-2 business day govt lag)', fred_stale: true }
+}
+
 // READ-ONLY view of the 2Y history v2 banks. Same 3-session basis as v2Yield2y3SessionBps(), but it
 // does NOT record today's level or write the snapshot — the brief must not mutate v2 state.
 async function briefYield2y3Session() {
@@ -3221,39 +3252,65 @@ async function briefYield2y3Session() {
   } catch (e) { return { bps: null, sessions: 0, reason: e?.message || 'unavailable' } }
 }
 
-// Recent releases that lead this event, WITH their actuals. The shared calendar drops `actual`
-// (see getEconomicCalendar's normalizer), so read the ForexFactory feed raw — it carries it.
+// Recent releases WITH their actuals — the one thing the shared calendar cannot give us.
+// The FF free feed carries only title/country/date/impact/forecast/previous (verified: no `actual`
+// key at all, even on past events), and fetchFMPCalendar() only ever requests from TODAY forward,
+// so neither existing path can answer "what did ADP actually print". This asks FMP for the PAST
+// window and keeps `actual`/`estimate`. 30-min cache, keyed per currency.
+const BRIEF_ACTUALS_TTL = 30 * 60 * 1000
+async function fetchRecentActuals(currency) {
+  const ck = `brief_actuals_${currency}`
+  if (isCacheFreshFor(ck, BRIEF_ACTUALS_TTL)) return getCached(ck)
+  if (!FMP_KEY) return null
+  const to = new Date().toISOString().slice(0, 10)
+  const from = new Date(Date.now() - 14 * 86400 * 1000).toISOString().slice(0, 10)
+  const endpoints = [
+    { label: 'legacy', url: 'https://financialmodelingprep.com/api/v3/economic_calendar' },
+    { label: 'stable', url: 'https://financialmodelingprep.com/stable/economic-calendar' },
+  ]
+  for (const ep of endpoints) {
+    try {
+      const r = await axios.get(ep.url, { params: { from, to, apikey: FMP_KEY }, timeout: 12000 })
+      if (!Array.isArray(r.data) || !r.data.length) continue
+      const rows = r.data.map(e => {
+        const ccy = (e.currency && String(e.currency).toUpperCase()) || CCY_FROM_COUNTRY[String(e.country || '').toUpperCase()] || String(e.country || '').toUpperCase()
+        return {
+          title: e.event || 'Event', currency: ccy, time: parseFMPDate(e.date),
+          actual: (e.actual === null || e.actual === undefined) ? null : String(e.actual),
+          forecast: (() => { const f = e.estimate ?? e.forecast; return (f === null || f === undefined) ? null : String(f) })(),
+          previous: (e.previous === null || e.previous === undefined) ? null : String(e.previous),
+        }
+      }).filter(e => e.time && e.currency === currency && e.actual !== null && String(e.actual).trim() !== '')
+      console.log(`📑 [brief] FMP ${ep.label} past-window: ${rows.length} ${currency} releases with actuals (${from} → ${to})`)
+      if (rows.length) { setCache(ck, rows); return rows }
+    } catch (e) {
+      console.warn(`⚠️ [brief] FMP ${ep.label} past-window failed: ${e?.response?.status || ''} ${e?.message}`)
+    }
+  }
+  return null
+}
+
 async function fetchLeadingIndicators(event) {
   const fam = LEADING_FAMILIES.find(f => f.match.test(event.title))
   if (!fam) return { family: null, items: [], note: `no leading-indicator family maps to "${event.title}"` }
-  let raw = getCached('ff_raw_thisweek')
-  if (!isCacheFreshFor('ff_raw_thisweek', 30 * 60 * 1000)) {
-    const fetched = await fetchFFFeed(FF_FEEDS[0])
-    if (fetched?.length) { raw = fetched; setCache('ff_raw_thisweek', fetched); }
-  }
-  if (!Array.isArray(raw) || !raw.length) return { family: fam.id, items: [], note: 'ForexFactory feed unavailable — no leading data this run' }
+  const rows = await fetchRecentActuals(event.currency)
+  if (!rows) return { family: fam.id, items: [], note: 'no source returned released actuals this run' }
   const now = Date.now()
-  const floor = now - 14 * 24 * 60 * 60 * 1000
-  const items = raw
-    .filter(e => e?.date && e?.title)
-    .filter(e => String(e.country || '').toUpperCase() === event.currency)
-    .filter(e => { const t = new Date(e.date).getTime(); return t < now && t > floor })
+  const items = rows
+    .filter(e => new Date(e.time).getTime() < now)
     .filter(e => fam.leads.test(e.title))
-    .filter(e => e.actual !== null && e.actual !== undefined && String(e.actual).trim() !== '')
     .map(e => {
       const a = parseEconNum(e.actual), f = parseEconNum(e.forecast), p = parseEconNum(e.previous)
       // Only claim a surprise when BOTH sides parsed — otherwise the direction is unknown, not neutral.
       const surprise = (a !== null && f !== null) ? (a > f ? 'beat' : a < f ? 'miss' : 'inline') : null
       return {
-        title: e.title, date: new Date(e.date).toISOString(),
-        actual: String(e.actual), forecast: e.forecast ? String(e.forecast) : null,
-        previous: e.previous ? String(e.previous) : null,
+        title: e.title, date: e.time, actual: e.actual, forecast: e.forecast, previous: e.previous,
         surprise, vsPrevious: (a !== null && p !== null) ? (a > p ? 'higher' : a < p ? 'lower' : 'flat') : null,
       }
     })
     .sort((x, y) => (x.date < y.date ? 1 : -1))
     .slice(0, 8)
-  return { family: fam.id, items, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days` }
+  return { family: fam.id, items, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
 }
 
 // Live price + how much of the typical daily range each affected pair has already spent.
@@ -3261,8 +3318,26 @@ async function fetchLeadingIndicators(event) {
 // "favorable" against yet, so it reports the raw move from open and the range used.
 async function fetchBriefPairContext(symbols) {
   const out = {}
+  // CACHE FIRST. getDailyCandles() → tdAcquire() blocks on the TwelveData credit budget, which the
+  // crons and the bias engine are also drawing on; waiting there costs the whole request budget and
+  // returns nothing. v1/v2 keep tdcandle_d_* warm, so read those keys directly and only pay for a
+  // fetch on the symbols genuinely absent — with its own inner deadline, so whatever WAS cached
+  // still reaches the model instead of being thrown away with the timeout.
+  const candles = {}
+  const absent = []
+  for (const s of symbols) {
+    const v = getCached(`tdcandle_d_${s}`)
+    if (Array.isArray(v) && v.length >= 3) candles[s] = v
+    else absent.push(s)
+  }
+  if (absent.length) {
+    const fresh = await Promise.race([
+      getDailyCandles(absent).catch(() => ({})),
+      new Promise(r => setTimeout(() => r({}), 12000)),
+    ])
+    for (const s of absent) if (Array.isArray(fresh?.[s])) candles[s] = fresh[s]
+  }
   try {
-    const candles = await getDailyCandles(symbols)
     for (const s of symbols) {
       const vals = candles[s]
       if (!Array.isArray(vals) || vals.length < 3) { out[s] = null; continue }
@@ -3334,9 +3409,14 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   const B = BRIEF_FETCH_BUDGET
   // Cross-asset FIRST, on its own: fetchYields() reads US2Y/US10Y out of the same batch, so running
   // the two in parallel would race a cold cache and spend the 8-credit TwelveData batch twice.
-  const cross = await withBudget(fetchCrossAssetLive(), B, 'cross-asset')
+  let cross = await withBudget(fetchCrossAssetLive(), B, 'cross-asset')
+  // Throttled out? Fall back to the last cached batch and SAY it is last-known, rather than dropping
+  // the dollar and volatility read entirely. Each quote carries its own `datetime`, so the model can
+  // still see how old the print is.
+  let crossStale = false
+  if (!cross) { const st = getCached('cross_asset_live'); if (st) { cross = st; crossStale = true; console.log('📈 [brief] cross-asset throttled — using last cached batch') } }
   const [yields, y2sess, macro, cot, pairCtx, leading] = await Promise.all([
-    withBudget(fetchYields(), B, 'yields'),
+    withBudget(briefYields(), B, 'yields'),
     withBudget(briefYield2y3Session(), B, '2Y 3-session'),
     withBudget(fetchPolicyRateAndInflation(), B, 'FRED policy rate / core PCE'),
     withBudget(getCOTData(), B, 'COT'),
@@ -3374,10 +3454,11 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
     const q = (sym, label, proxy) => {
       const d = cross[sym] || (proxy ? cross[proxy] : null)
       const used = cross[sym] ? sym : (d ? `${proxy} (proxy for ${sym})` : null)
-      return d ? `${label}: ${d.price} (${d.change > 0 ? '+' : ''}${d.change}% on the day) [${used}]` : `${label}: ${NA}`
+      return d ? `${label}: ${d.price} (${d.change > 0 ? '+' : ''}${d.change}% on the day) [${used}${d.datetime ? `, print ${d.datetime}` : ''}]` : `${label}: ${NA}`
     }
     const lines = [q('DXY', 'US dollar index', 'UUP'), q('VIX', 'Volatility (VIX)', 'VIXY'), q('SPY', 'S&P 500 (SPY)'), q('TLT', 'Long bonds (TLT)')]
     if (lines.some(l => l.endsWith(NA))) gaps.push('part of cross-asset')
+    if (crossStale) { gaps.push('live cross-asset refresh (using last cached batch)'); lines.unshift('NOTE: this batch is LAST CACHED, not refreshed this request — treat the levels as recent but not current.') }
     return lines.join('\n')
   })()
 
