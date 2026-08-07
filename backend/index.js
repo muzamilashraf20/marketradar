@@ -3600,6 +3600,91 @@ async function v2RecordTelemetry(trigger, out) {
   } catch (e) { console.warn(`⚠️ [v2 telemetry] record failed: ${e?.message}`) }
 }
 
+// ── Step A HEALTH MONITOR ───────────────────────────────────────────────────
+// Reads the banked telemetry once a day and messages the admin's PERSONAL Telegram chat ONLY when
+// something is broken. Silent when healthy — no daily "all good" ping.
+// Strictly read-only: calls no engine code, spends no model credits, and touches nothing in the
+// scoring path (threshold, bands, weights, floor, cadence all untouched).
+const V2_HEALTH_KEY = 'v2_health_alert_state'
+const V2_HEALTH_WINDOW_H = 24     // look-back window per check
+const V2_HEALTH_REALERT_H = 72    // re-remind if the SAME problem is still unresolved after this
+const V2_HEALTH_BASELINE_DROPS = ['AUD']   // RBA publishes ~6 business days late — known and accepted
+
+// The admin chat is deliberately a SEPARATE env var from TG_CHANNEL. Internal alerts must never
+// reach @biasforgeofficial, so this refuses anything that isn't a numeric chat id — channel targets
+// are @handles, personal chats are numeric. No fallback: misconfigured means silent, never public.
+function v2AdminChat() {
+  const id = (process.env.TG_ADMIN_CHAT_ID || '').trim()
+  if (!id) return null
+  if (!/^-?\d+$/.test(id)) {
+    console.error('⚠️ [v2 health] TG_ADMIN_CHAT_ID must be a NUMERIC chat id (an @handle would risk the public channel) — alerts disabled')
+    return null
+  }
+  return id
+}
+
+async function v2HealthCheck() {
+  try {
+    const rows = (Array.isArray(v2Telemetry) ? v2Telemetry : await v2LoadSnapshot(V2_TELEMETRY_KEY)) || []
+    const prev = (await v2LoadSnapshot(V2_HEALTH_KEY)) || {}
+    // The baseline is STATIC on purpose. Folding a new drop into it would make the problem vanish
+    // from the next check, which then reads as "recovered" and fires a recovery message while the
+    // source is still down. Repetition is instead suppressed by the signature dedupe below, so an
+    // unresolved drop stays quiet without ever being falsely declared fixed.
+    const known = new Set(V2_HEALTH_BASELINE_DROPS)
+    const cutoff = Date.now() - V2_HEALTH_WINDOW_H * 3600000
+    const recent = rows.filter((r) => r?.at && new Date(r.at).getTime() >= cutoff)
+    const problems = []
+    let newDrops = []
+
+    if (!recent.length) {
+      // The absence of rows IS the failure. A dead cron writes no bad rows, so every other check
+      // would read as healthy — this is the one condition that would otherwise be invisible.
+      problems.push(`No v2 runs recorded in ${V2_HEALTH_WINDOW_H}h — shadow cron may be down. Last run: ${rows[rows.length - 1]?.at || 'never'}`)
+    } else {
+      const insuff = recent.filter((r) => r.macro_status === 'INSUFFICIENT')
+      if (insuff.length) problems.push(`macro_status=INSUFFICIENT on ${insuff.length}/${recent.length} runs — macro nulled for ALL pairs`)
+      const thin = recent.filter((r) => (r.xsection ?? 99) <= 3)
+      if (thin.length) problems.push(`cross-section fell to ${Math.min(...thin.map((r) => r.xsection))} on ${thin.length}/${recent.length} runs (floor is 4)`)
+      // Only NEW drops. AUD drops on nearly every run and is the accepted baseline; alerting on it
+      // daily would be precisely the noise this check exists to avoid.
+      newDrops = [...new Set(recent.flatMap((r) => r.dropped || []))].filter((c) => !known.has(c))
+      if (newDrops.length) problems.push(`new source drop: ${newDrops.join(', ')} (baseline: ${[...known].join(', ') || 'none'})`)
+    }
+
+    const sig = problems.join(' | ')
+    const chat = v2AdminChat()
+    const now = Date.now()
+    const sinceLast = prev.last_alert_at ? (now - new Date(prev.last_alert_at).getTime()) / 3600000 : Infinity
+
+    if (problems.length) {
+      const repeat = sig === prev.last_sig
+      // New problem → alert. Same problem still unresolved → re-remind only after V2_HEALTH_REALERT_H.
+      if (!repeat || sinceLast >= V2_HEALTH_REALERT_H) {
+        const msg = `🚨 <b>BiasForge v2 — Step A health</b>\n\n${problems.map((p) => `• ${p}`).join('\n')}\n\n`
+          + `<code>runs/${V2_HEALTH_WINDOW_H}h: ${recent.length}</code>${repeat ? '\n\n<i>(still unresolved)</i>' : ''}`
+        console.error(`🚨 [v2 health] ${sig}`)
+        if (chat) await sendTG(chat, msg)
+        else console.error('⚠️ [v2 health] no TG_ADMIN_CHAT_ID set — alert logged only')
+      } else {
+        console.log(`   [v2 health] problem unchanged, next re-alert in ${(V2_HEALTH_REALERT_H - sinceLast).toFixed(1)}h`)
+      }
+      v2SaveSnapshot(V2_HEALTH_KEY, {
+        last_sig: sig,
+        last_alert_at: (!repeat || sinceLast >= V2_HEALTH_REALERT_H) ? new Date().toISOString() : (prev.last_alert_at ?? null),
+      })
+    } else {
+      // Healthy: stay silent. Send ONE recovery note if we were previously alerting, so a fixed
+      // problem doesn't just go quiet with no way to tell it was resolved.
+      if (prev.last_sig) {
+        console.log('   [v2 health] recovered')
+        if (chat) await sendTG(chat, `✅ <b>BiasForge v2 — Step A health recovered</b>\n\nPrevious issue cleared:\n• ${prev.last_sig}`)
+      }
+      v2SaveSnapshot(V2_HEALTH_KEY, { last_sig: null, last_alert_at: null })
+    }
+  } catch (e) { console.error(`⚠️ [v2 health] check failed: ${e?.message}`) }
+}
+
 // Per-pair market is DERIVED from the shared candle caches (getDailyCandles / getWeeklyCandles)
 // so v2 reuses v1's TwelveData fetches instead of hitting the per-symbol rate limit itself.
 function v2AdrFromDaily(pair, vals) {
@@ -4042,6 +4127,12 @@ app.listen(5000, () => {
   console.log('⏰ Calendar cron (5min)')
   setInterval(checkAndSendNewsAlerts, 10 * 60 * 1000)
   console.log('📰 News cron (10min)')
+  // Step A health monitor — reads banked telemetry once a day, messages the ADMIN's personal chat
+  // only when something is broken. Never posts to TG_CHANNEL. First check 10min after boot so a
+  // restart-loop can't spam, then daily.
+  setTimeout(() => { v2HealthCheck().catch(e => console.error('v2 health boot check error:', e?.message)) }, 10 * 60 * 1000)
+  setInterval(() => { v2HealthCheck().catch(e => console.error('v2 health check error:', e?.message)) }, 24 * 60 * 60 * 1000)
+  console.log(`🩺 v2 Step A health monitor (daily, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
