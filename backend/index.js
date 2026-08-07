@@ -3394,18 +3394,35 @@ async function fetchBriefPairContext(symbols) {
   // fetch on the symbols genuinely absent — with its own inner deadline, so whatever WAS cached
   // still reaches the model instead of being thrown away with the timeout.
   const candles = {}
-  const absent = []
+  const ok = (v) => Array.isArray(v) && v.length >= 3
+  let absent = []
   for (const s of symbols) {
-    const v = getCached(`tdcandle_d_${s}`)
-    if (Array.isArray(v) && v.length >= 3) candles[s] = v
+    // Tier 1: v1's shared daily cache. Tier 2: v2's own (6h TTL, so warm far more often). Both are
+    // the same TwelveData daily candles under different keys; reading them is free and read-only.
+    const v1 = getCached(`tdcandle_d_${s}`)
+    const v2 = ok(v1) ? null : getCached(`tdcandle_dv2_${s}`)
+    if (ok(v1)) candles[s] = v1
+    else if (ok(v2)) candles[s] = v2
     else absent.push(s)
   }
+  // Tier 3: v2's DB snapshot, which survives a Railway redeploy — the in-memory tiers do not, and a
+  // fresh instance would otherwise report no prices at all until the next cron run. Read-only select.
+  if (absent.length) {
+    try {
+      const snap = await v2LoadSnapshot('daily_candles_v2')
+      if (snap) {
+        for (const s of absent) if (ok(snap[s])) candles[s] = snap[s]
+        absent = absent.filter(s => !candles[s])
+      }
+    } catch (e) { console.warn(`⚠️ [brief] v2 candle snapshot read failed: ${e?.message}`) }
+  }
+  // Only now pay TwelveData credits, and only for what is genuinely absent.
   if (absent.length) {
     const fresh = await Promise.race([
       getDailyCandles(absent).catch(() => ({})),
       new Promise(r => setTimeout(() => r({}), 12000)),
     ])
-    for (const s of absent) if (Array.isArray(fresh?.[s])) candles[s] = fresh[s]
+    for (const s of absent) if (ok(fresh?.[s])) candles[s] = fresh[s]
   }
   try {
     for (const s of symbols) {
@@ -3421,6 +3438,9 @@ async function fetchBriefPairContext(symbols) {
       const fromOpen = (cur - open) / pip
       out[s] = {
         price: cur,
+        // Candles can come from a cache or a snapshot, so the model must be told HOW CURRENT the
+        // price is rather than assuming it is this second's tick.
+        asOf: t.datetime || null,
         adrPips: +adrPips.toFixed(0),
         fromOpenPips: Math.round(fromOpen),
         moveDirection: fromOpen > 0 ? 'up' : fromOpen < 0 ? 'down' : 'flat',
@@ -3550,7 +3570,7 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
       const c = pairCtx?.[s]
       const disp = `${s.slice(0, 3)}/${s.slice(3)}`
       if (!c) return `${disp}: price ${NA}, ADR usage ${NA}`
-      return `${disp}: ${c.price} | ADR ~${c.adrPips} pips | ${Math.abs(c.fromOpenPips)} pips ${c.moveDirection} from today's open = ${c.pctADRDirectional}% of ADR directionally | ${c.pctADRRange}% of ADR spent as total range`
+      return `${disp}: ${c.price}${c.asOf ? ` (candle as of ${c.asOf})` : ''} | ADR ~${c.adrPips} pips | ${Math.abs(c.fromOpenPips)} pips ${c.moveDirection} from today's open = ${c.pctADRDirectional}% of ADR directionally | ${c.pctADRRange}% of ADR spent as total range`
     })
     if (pairs.every(s => !pairCtx?.[s])) gaps.push('live pair prices / ADR')
     else if (pairs.some(s => !pairCtx?.[s])) gaps.push('ADR for some pairs')
