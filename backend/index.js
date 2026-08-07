@@ -3702,16 +3702,19 @@ from YOUR analysis — the example strings are format hints, not answers):
   try {
     const m = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      // 8192, not 4096: the schema asks for ~14 reasoned entries plus evidence and gap lists, and a
+      // truncated response is unparseable JSON — the whole brief is lost for the sake of a few tokens.
+      max_tokens: 8192,
       system: 'You are a macro analyst for BiasForge. You analyse ONLY the live data provided in the prompt. You never cite a level, rate, or positioning figure from memory, and you say "not available" rather than estimate. Output raw JSON only.',
       messages: [{ role: 'user', content: prompt }],
     })
     trackAI('calendar-brief', 'claude-sonnet-4-6', m.usage)
+    if (m.stop_reason === 'max_tokens') throw new Error(`response truncated at max_tokens (${m.usage?.output_tokens} out)`)
     const text = (m.content?.[0]?.text || '').trim().replace(/```json|```/g, '').trim()
     let analysis
     try { analysis = JSON.parse(text) } catch (e) {
       const s = text.indexOf('{'), t = text.lastIndexOf('}')
-      if (s < 0 || t <= s) throw new Error('model did not return JSON')
+      if (s < 0 || t <= s) throw new Error(`model did not return JSON (stop_reason=${m.stop_reason}, ${text.length} chars: "${text.slice(0, 200)}")`)
       analysis = JSON.parse(text.slice(s, t + 1))
     }
     const payload = {
@@ -3733,8 +3736,10 @@ from YOUR analysis — the example strings are format hints, not answers):
     console.log(`🗓️ [brief] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — bias "${analysis.overallBias}" (${analysis.biasDirection}), tilt "${analysis.leadingIndicators?.tilt}", probability ${analysis.probability ?? 'null'}`)
     res.json(payload)
   } catch (e) {
-    console.error(`❌ [brief] ${event.title}: ${e?.message || e}`)
-    res.status(502).json({ success: false, error: 'Brief generation failed' })
+    // Surface the reason: without it a 502 here is indistinguishable from a dead upstream, and this
+    // endpoint has three distinct failure modes (model error, truncation, unparseable output).
+    console.error(`❌ [brief] ${event.title} after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${e?.message || e}`)
+    res.status(502).json({ success: false, error: 'Brief generation failed', detail: String(e?.message || e).slice(0, 300) })
   }
 })
 
