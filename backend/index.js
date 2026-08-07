@@ -3898,7 +3898,13 @@ app.get('/api/v2/shadow/telemetry', async (req, res) => {
         const g = { FULL: { pair_runs: 0, opens: 0 }, REDIST: { pair_runs: 0, opens: 0 } }
         for (const r of rows) {
           for (const v of Object.values(r.diffs || {})) if (g[v?.b]) g[v.b].pair_runs++
-          for (const o of r.opens || []) if (g[o?.basis]) g[o.basis].opens++
+          for (const o of r.opens || []) {
+            // Rows banked before opens carried their basis are strings ("PAIR:ACTION:DIR"). The basis
+            // is still recoverable from the SAME run's diffs, so those opens are not lost.
+            const pair = typeof o === 'string' ? o.split(':')[0] : o?.pair
+            const basis = (typeof o === 'string' ? null : o?.basis) ?? r.diffs?.[pair]?.b
+            if (g[basis]) g[basis].opens++
+          }
         }
         for (const k of Object.keys(g)) {
           g[k].open_rate_pct = g[k].pair_runs ? +((g[k].opens / g[k].pair_runs) * 100).toFixed(2) : null
