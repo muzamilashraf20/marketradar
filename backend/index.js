@@ -3294,6 +3294,20 @@ function sanitizeBriefField(v, max = 120) {
   return String(v ?? '').replace(/[`\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
 }
 
+// This endpoint is USER-FACING — a modal is spinning while it runs. Several of the live fetches can
+// block far longer than a person will wait: tdAcquire() holds a caller until the TwelveData credit
+// budget frees up (minutes on a busy minute), and the FF/CFTC fetches carry 12s timeouts with retries.
+// So every input gets a hard budget. A timed-out input is simply "not available" — the same contract
+// the prompt already has for a failed fetch — and the underlying promise is left running so it warms
+// the shared cache for the next request.
+function withBudget(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => { console.warn(`⏱️ [brief] ${label} exceeded ${ms / 1000}s budget — treating as not available`); resolve(null) }, ms)),
+  ]).catch(e => { console.warn(`⚠️ [brief] ${label} failed: ${e?.message}`); return null })
+}
+const BRIEF_FETCH_BUDGET = 20 * 1000
+
 const BRIEF_CACHE_TTL = 15 * 60 * 1000
 app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   const event = {
@@ -3317,17 +3331,18 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   console.log(`🗓️ [brief] ${event.title} (${event.currency}) — fetching live inputs…`)
 
   const pairs = BRIEF_PAIRS[event.currency] || ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD']
-  const settled = await Promise.allSettled([
-    fetchYields(),
-    briefYield2y3Session(),
-    fetchPolicyRateAndInflation(),
-    fetchCrossAssetLive(),
-    getCOTData(),
-    fetchBriefPairContext(pairs),
-    fetchLeadingIndicators(event),
+  const B = BRIEF_FETCH_BUDGET
+  // Cross-asset FIRST, on its own: fetchYields() reads US2Y/US10Y out of the same batch, so running
+  // the two in parallel would race a cold cache and spend the 8-credit TwelveData batch twice.
+  const cross = await withBudget(fetchCrossAssetLive(), B, 'cross-asset')
+  const [yields, y2sess, macro, cot, pairCtx, leading] = await Promise.all([
+    withBudget(fetchYields(), B, 'yields'),
+    withBudget(briefYield2y3Session(), B, '2Y 3-session'),
+    withBudget(fetchPolicyRateAndInflation(), B, 'FRED policy rate / core PCE'),
+    withBudget(getCOTData(), B, 'COT'),
+    withBudget(fetchBriefPairContext(pairs), B, 'pair prices / ADR'),
+    withBudget(fetchLeadingIndicators(event), B, 'leading indicators'),
   ])
-  const val = (i) => settled[i].status === 'fulfilled' ? settled[i].value : null
-  const [yields, y2sess, macro, cross, cot, pairCtx, leading] = [val(0), val(1), val(2), val(3), val(4), val(5), val(6)]
 
   // ── Format each block. "not available" is a first-class answer: the model is told to treat it
   //    as unknown rather than fill the gap from training data. ──
@@ -3398,7 +3413,7 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   const seat = POLICY_SEATS[event.currency]
   const seatBlock = [seat, event.currency !== 'USD' ? POLICY_SEATS.USD : null].filter(Boolean).join('\n') || NA
 
-  console.log(`🗓️ [brief] live inputs — yields:${yields?.y2 ? `2Y ${yields.y2.value}%` : 'MISSING'}/${yields?.y10 ? `10Y ${yields.y10.value}%` : 'MISSING'} (src ${yields?.source || 'n/a'}, 3sess ${y2sess?.bps ?? 'n/a'}bps) · fedfunds:${macro?.fedFunds ? `${macro.fedFunds.value}% @${macro.fedFunds.date}` : 'MISSING'} · corePCE:${macro?.corePCE ? `${macro.corePCE.yoy}% @${macro.corePCE.date}` : 'MISSING'} · cross:${cross ? Object.keys(cross).join('/') : 'MISSING'} · COT:${cot?.data?.length ? `${cot.data.length} rows @${cot.reportDate}` : 'MISSING'} · pairs:${pairs.filter(s => pairCtx?.[s]).length}/${pairs.length} priced · leading:${leading?.items?.length || 0} prints (${leading?.family || 'no family'})${gaps.length ? ` · GAPS: ${gaps.join(', ')}` : ' · no gaps'}`)
+  console.log(`🗓️ [brief] live inputs in ${((Date.now() - t0) / 1000).toFixed(1)}s — yields:${yields?.y2 ? `2Y ${yields.y2.value}%` : 'MISSING'}/${yields?.y10 ? `10Y ${yields.y10.value}%` : 'MISSING'} (src ${yields?.source || 'n/a'}, 3sess ${y2sess?.bps ?? 'n/a'}bps) · fedfunds:${macro?.fedFunds ? `${macro.fedFunds.value}% @${macro.fedFunds.date}` : 'MISSING'} · corePCE:${macro?.corePCE ? `${macro.corePCE.yoy}% @${macro.corePCE.date}` : 'MISSING'} · cross:${cross ? Object.keys(cross).join('/') : 'MISSING'} · COT:${cot?.data?.length ? `${cot.data.length} rows @${cot.reportDate}` : 'MISSING'} · pairs:${pairs.filter(s => pairCtx?.[s]).length}/${pairs.length} priced · leading:${leading?.items?.length || 0} prints (${leading?.family || 'no family'})${gaps.length ? ` · GAPS: ${gaps.join(', ')}` : ' · no gaps'}`)
 
   const prompt = `Produce a pre-release trading brief for one economic event.
 
