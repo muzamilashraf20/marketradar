@@ -3098,6 +3098,438 @@ app.get('/api/calendar', async (req, res) => {
 })
 
 // ============================================
+// 🗓️ CALENDAR EVENT BRIEF — POST /api/calendar-brief
+// The prompt used to be built in the browser (EconomicCalendar.jsx) and shipped to the generic
+// /api/ai passthrough, which meant: the prompt was visible in DevTools, anyone could POST an
+// arbitrary prompt to it, and the model saw ONLY the event's title/forecast/previous — every macro
+// fact (chair, policy rate, core PCE, CB stances) was HARDCODED TEXT the model just read back.
+// This endpoint takes the event IDENTIFIER only and fetches the macro state live, per request.
+// v2 is untouched: the one v2 asset read here (the banked 2Y history) is READ-ONLY.
+// ============================================
+
+// Facts no free API publishes. Kept here, NOT inline in the prompt, so there is exactly one place
+// to update them — and the prompt carries the verified date so the model can weigh their age.
+// NAMES ONLY: no rate levels, no policy stance. Everything with a number comes from a live fetch.
+// last verified: 2026-08-07
+const POLICY_SEATS = {
+  lastVerified: '2026-08-07',
+  USD: 'Federal Reserve — Chair: Kevin Warsh (took office May 2026)',
+  EUR: 'European Central Bank — President: Christine Lagarde',
+  GBP: 'Bank of England — Governor: Andrew Bailey',
+  JPY: 'Bank of Japan — Governor: Kazuo Ueda',
+  CHF: 'Swiss National Bank — Chairman: Martin Schlegel',
+  CAD: 'Bank of Canada — Governor: Tiff Macklem',
+  AUD: 'Reserve Bank of Australia — Governor: Michele Bullock',
+  NZD: 'Reserve Bank of New Zealand — Governor: Christian Hawkesby',
+}
+
+// Pairs to analyse for a given event currency — restricted to ROOM_SYMBOL_MAP keys, because that
+// is what getDailyCandles can actually price. XAUUSD is always included (it trades every macro event).
+const BRIEF_PAIRS = {
+  USD: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'XAUUSD'],
+  EUR: ['EURUSD', 'EURGBP', 'EURJPY', 'XAUUSD'],
+  GBP: ['GBPUSD', 'EURGBP', 'GBPJPY', 'XAUUSD'],
+  JPY: ['USDJPY', 'EURJPY', 'GBPJPY', 'AUDJPY', 'XAUUSD'],
+  AUD: ['AUDUSD', 'AUDJPY', 'EURUSD', 'XAUUSD'],
+  CAD: ['USDCAD', 'EURUSD', 'XAUUSD'],
+  CHF: ['USDCHF', 'EURUSD', 'XAUUSD'],
+  NZD: ['NZDUSD', 'AUDUSD', 'EURUSD', 'XAUUSD'],
+  CNY: ['AUDUSD', 'USDJPY', 'XAUUSD'],
+}
+
+// Which already-released prints LEAD a given event. `match` classifies the event the user clicked;
+// `leads` selects the recent releases that inform it. Both run against ForexFactory titles.
+const LEADING_FAMILIES = [
+  { id: 'employment',
+    match: /non.?farm|payroll|\bnfp\b|unemployment rate|employment change|claimant count/i,
+    leads: /\badp\b|jobless claims|unemployment claims|challenger|\bjolts\b|employment (index|change|component)|ism.*employ|average hourly earnings|labou?r cost/i },
+  { id: 'inflation',
+    match: /\bcpi\b|consumer price|inflation rate|core pce|pce price index|\brpi\b/i,
+    leads: /\bppi\b|producer price|import price|average hourly earnings|inflation expectation|prices? (paid|index)|unit labou?r cost/i },
+  { id: 'rate-decision',
+    match: /rate (decision|statement)|interest rate|monetary policy|fomc|official cash rate|cash rate/i,
+    leads: /\bcpi\b|consumer price|core pce|non.?farm|payroll|unemployment rate|\bgdp\b|retail sales|member|speaks|minutes/i },
+  { id: 'growth',
+    match: /\bgdp\b|gross domestic/i,
+    leads: /retail sales|industrial production|\bism\b|\bpmi\b|durable goods|trade balance|construction/i },
+  { id: 'consumption',
+    match: /retail sales|consumer spending|personal spending/i,
+    leads: /consumer (confidence|sentiment|credit)|redbook|average hourly earnings|non.?farm|payroll/i },
+  { id: 'activity',
+    match: /\bism\b|\bpmi\b|manufacturing index|services index/i,
+    leads: /philly fed|philadelphia fed|empire state|richmond|chicago pmi|flash|industrial production|durable goods/i },
+]
+
+// Parse an economic print ("227K", "-0.3%", "3.2", "1.25M") into a number. Returns null when the
+// value isn't comparable — the caller must then report no surprise rather than guess one.
+function parseEconNum(s) {
+  if (s === null || s === undefined) return null
+  const t = String(s).trim().replace(/[,%$]/g, '').replace(/[<>]/g, '')
+  if (!t || t === '-') return null
+  const m = t.match(/^(-?\d*\.?\d+)\s*([KkMmBbTt])?$/)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  if (isNaN(n)) return null
+  const mult = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[(m[2] || '').toLowerCase()] || 1
+  return n * mult
+}
+
+// FEDFUNDS (effective policy rate) + PCEPILFE (core PCE index → YoY) straight from FRED.
+// These two were the worst of the hardcoded facts — "3.50%-3.75%" and "core PCE ~3.3%" were typed
+// into the browser prompt and the model simply recited them. Now they carry their own print date.
+const BRIEF_MACRO_TTL = 12 * 60 * 60 * 1000
+async function fetchPolicyRateAndInflation() {
+  if (isCacheFreshFor('cal_brief_macro', BRIEF_MACRO_TTL)) return getCached('cal_brief_macro')
+  const key = process.env.FRED_API_KEY?.trim()
+  if (!key) return { fedFunds: null, corePCE: null, error: 'FRED_API_KEY not set' }
+  const obs = async (id, limit) => {
+    try {
+      const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
+        params: { series_id: id, api_key: key, file_type: 'json', sort_order: 'desc', limit },
+        timeout: 10000,
+      })
+      return (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
+    } catch (e) { console.warn(`🏦 FRED ${id} (brief) failed: ${e?.message}`); return [] }
+  }
+  const [ff, pce] = await Promise.all([obs('FEDFUNDS', 4), obs('PCEPILFE', 15)])
+  const fedFunds = ff.length
+    ? { value: +ff[0].v.toFixed(2), prev: ff[1] ? +ff[1].v.toFixed(2) : null, date: ff[0].date }
+    : null
+  // Core PCE is published as an INDEX — the headline figure traders quote is its 12-month change.
+  const corePCE = pce.length >= 13
+    ? {
+        yoy: +((pce[0].v / pce[12].v - 1) * 100).toFixed(1),
+        prevYoY: (pce[1] && pce[13]) ? +((pce[1].v / pce[13].v - 1) * 100).toFixed(1) : null,
+        date: pce[0].date,
+      }
+    : null
+  const out = { fedFunds, corePCE }
+  if (fedFunds || corePCE) setCache('cal_brief_macro', out)
+  return out
+}
+
+// READ-ONLY view of the 2Y history v2 banks. Same 3-session basis as v2Yield2y3SessionBps(), but it
+// does NOT record today's level or write the snapshot — the brief must not mutate v2 state.
+async function briefYield2y3Session() {
+  try {
+    const hist = await v2Yield2yLoadHistory()
+    const latest = hist?.[0], back = hist?.[Y2_LOOKBACK_SESSIONS]
+    if (!latest || !back) return { bps: null, sessions: hist?.length || 0, reason: `history not built yet (${hist?.length || 0}/${Y2_LOOKBACK_SESSIONS + 1} sessions banked)` }
+    const ageDays = Math.floor((Date.now() - new Date(latest.date + 'T00:00:00Z').getTime()) / 86400000)
+    if (ageDays > Y2_MAX_STALE_DAYS) return { bps: null, sessions: hist.length, reason: `history frozen — newest banked session ${latest.date} is ${ageDays}d old` }
+    return { bps: +((latest.value - back.value) * 100).toFixed(1), sessions: hist.length, from: back.date, to: latest.date }
+  } catch (e) { return { bps: null, sessions: 0, reason: e?.message || 'unavailable' } }
+}
+
+// Recent releases that lead this event, WITH their actuals. The shared calendar drops `actual`
+// (see getEconomicCalendar's normalizer), so read the ForexFactory feed raw — it carries it.
+async function fetchLeadingIndicators(event) {
+  const fam = LEADING_FAMILIES.find(f => f.match.test(event.title))
+  if (!fam) return { family: null, items: [], note: `no leading-indicator family maps to "${event.title}"` }
+  let raw = getCached('ff_raw_thisweek')
+  if (!isCacheFreshFor('ff_raw_thisweek', 30 * 60 * 1000)) {
+    const fetched = await fetchFFFeed(FF_FEEDS[0])
+    if (fetched?.length) { raw = fetched; setCache('ff_raw_thisweek', fetched); }
+  }
+  if (!Array.isArray(raw) || !raw.length) return { family: fam.id, items: [], note: 'ForexFactory feed unavailable — no leading data this run' }
+  const now = Date.now()
+  const floor = now - 14 * 24 * 60 * 60 * 1000
+  const items = raw
+    .filter(e => e?.date && e?.title)
+    .filter(e => String(e.country || '').toUpperCase() === event.currency)
+    .filter(e => { const t = new Date(e.date).getTime(); return t < now && t > floor })
+    .filter(e => fam.leads.test(e.title))
+    .filter(e => e.actual !== null && e.actual !== undefined && String(e.actual).trim() !== '')
+    .map(e => {
+      const a = parseEconNum(e.actual), f = parseEconNum(e.forecast), p = parseEconNum(e.previous)
+      // Only claim a surprise when BOTH sides parsed — otherwise the direction is unknown, not neutral.
+      const surprise = (a !== null && f !== null) ? (a > f ? 'beat' : a < f ? 'miss' : 'inline') : null
+      return {
+        title: e.title, date: new Date(e.date).toISOString(),
+        actual: String(e.actual), forecast: e.forecast ? String(e.forecast) : null,
+        previous: e.previous ? String(e.previous) : null,
+        surprise, vsPrevious: (a !== null && p !== null) ? (a > p ? 'higher' : a < p ? 'lower' : 'flat') : null,
+      }
+    })
+    .sort((x, y) => (x.date < y.date ? 1 : -1))
+    .slice(0, 8)
+  return { family: fam.id, items, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days` }
+}
+
+// Live price + how much of the typical daily range each affected pair has already spent.
+// Same ADR maths as getPairRoomBatch, but DIRECTION-AGNOSTIC: the brief has no bias to measure
+// "favorable" against yet, so it reports the raw move from open and the range used.
+async function fetchBriefPairContext(symbols) {
+  const out = {}
+  try {
+    const candles = await getDailyCandles(symbols)
+    for (const s of symbols) {
+      const vals = candles[s]
+      if (!Array.isArray(vals) || vals.length < 3) { out[s] = null; continue }
+      const pip = /JPY/.test(s) ? 0.01 : /XAU/.test(s) ? 0.1 : 0.0001
+      const completed = vals.slice(1)
+      const adr = completed.reduce((sum, x) => sum + (parseFloat(x.high) - parseFloat(x.low)), 0) / completed.length
+      const t = vals[0]
+      const open = parseFloat(t.open), cur = parseFloat(t.close), hi = parseFloat(t.high), lo = parseFloat(t.low)
+      const adrPips = adr / pip
+      if (!adrPips || isNaN(cur)) { out[s] = null; continue }
+      const fromOpen = (cur - open) / pip
+      out[s] = {
+        price: cur,
+        adrPips: +adrPips.toFixed(0),
+        fromOpenPips: Math.round(fromOpen),
+        moveDirection: fromOpen > 0 ? 'up' : fromOpen < 0 ? 'down' : 'flat',
+        pctADRDirectional: Math.round((Math.abs(fromOpen) / adrPips) * 100),
+        pctADRRange: Math.round(((hi - lo) / pip / adrPips) * 100),
+      }
+    }
+  } catch (e) { console.warn(`⚠️ [brief] pair context failed: ${e?.message}`) }
+  for (const s of symbols) if (!(s in out)) out[s] = null
+  return out
+}
+
+// Client input goes into a model prompt — strip anything that could break out of the event block
+// or smuggle instructions. Identifiers only; there is no free-text field on this endpoint.
+function sanitizeBriefField(v, max = 120) {
+  return String(v ?? '').replace(/[`\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+const BRIEF_CACHE_TTL = 15 * 60 * 1000
+app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
+  const event = {
+    title: sanitizeBriefField(req.body?.title),
+    currency: sanitizeBriefField(req.body?.currency, 8).toUpperCase(),
+    date: sanitizeBriefField(req.body?.date, 40),
+    impact: sanitizeBriefField(req.body?.impact, 12),
+    forecast: sanitizeBriefField(req.body?.forecast, 24),
+    previous: sanitizeBriefField(req.body?.previous, 24),
+    actual: sanitizeBriefField(req.body?.actual, 24),
+  }
+  if (!event.title || !event.currency) return res.status(400).json({ success: false, error: 'title and currency required' })
+
+  const cacheKey = `brief_${event.title}|${event.currency}|${event.date}|${event.actual}`.toLowerCase()
+  if (isCacheFreshFor(cacheKey, BRIEF_CACHE_TTL)) {
+    const hit = getCached(cacheKey)
+    if (hit) { console.log(`🗓️ [brief] cache hit — ${event.title} (${event.currency})`); return res.json({ ...hit, cached: true }) }
+  }
+
+  const t0 = Date.now()
+  console.log(`🗓️ [brief] ${event.title} (${event.currency}) — fetching live inputs…`)
+
+  const pairs = BRIEF_PAIRS[event.currency] || ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD']
+  const settled = await Promise.allSettled([
+    fetchYields(),
+    briefYield2y3Session(),
+    fetchPolicyRateAndInflation(),
+    fetchCrossAssetLive(),
+    getCOTData(),
+    fetchBriefPairContext(pairs),
+    fetchLeadingIndicators(event),
+  ])
+  const val = (i) => settled[i].status === 'fulfilled' ? settled[i].value : null
+  const [yields, y2sess, macro, cross, cot, pairCtx, leading] = [val(0), val(1), val(2), val(3), val(4), val(5), val(6)]
+
+  // ── Format each block. "not available" is a first-class answer: the model is told to treat it
+  //    as unknown rather than fill the gap from training data. ──
+  const NA = 'not available'
+  const gaps = []
+
+  const yieldsBlock = (() => {
+    if (!yields?.y2 && !yields?.y10) { gaps.push('US Treasury yields'); return NA }
+    const leg = (o, label) => o ? `${label}: ${o.value}% (1-day ${o.change > 0 ? '+' : ''}${Math.round(o.change * 100)}bps) [${o.datetime || o.date}]` : `${label}: ${NA}`
+    const sess = y2sess?.bps != null
+      ? `2Y 3-session change: ${y2sess.bps > 0 ? '+' : ''}${y2sess.bps}bps (${y2sess.from} → ${y2sess.to})`
+      : `2Y 3-session change: ${NA} — ${y2sess?.reason || 'no history'}`
+    if (y2sess?.bps == null) gaps.push('2Y 3-session direction')
+    const curve = (yields.y2 && yields.y10) ? `\n10Y-2Y spread: ${(yields.y10.value - yields.y2.value).toFixed(2)}pp` : ''
+    return `${leg(yields.y2, '2Y')}\n${leg(yields.y10, '10Y')}\n${sess}${curve}\nsource: ${yields.source}`
+  })()
+
+  const macroBlock = (() => {
+    const lines = []
+    if (macro?.fedFunds) lines.push(`Effective fed funds rate (FRED FEDFUNDS): ${macro.fedFunds.value}%${macro.fedFunds.prev != null ? ` (prior print ${macro.fedFunds.prev}%)` : ''} [print date ${macro.fedFunds.date}]`)
+    else { lines.push(`Effective fed funds rate: ${NA}`); gaps.push('fed funds rate') }
+    if (macro?.corePCE) lines.push(`Core PCE (FRED PCEPILFE, 12-month change): ${macro.corePCE.yoy}%${macro.corePCE.prevYoY != null ? ` (prior month ${macro.corePCE.prevYoY}% → ${macro.corePCE.yoy > macro.corePCE.prevYoY ? 'accelerating' : macro.corePCE.yoy < macro.corePCE.prevYoY ? 'cooling' : 'flat'})` : ''} [print date ${macro.corePCE.date}]`)
+    else { lines.push(`Core PCE: ${NA}`); gaps.push('core PCE') }
+    return lines.join('\n')
+  })()
+
+  const crossBlock = (() => {
+    if (!cross || !Object.keys(cross).length) { gaps.push('cross-asset (DXY/VIX/SPY/TLT)'); return NA }
+    const q = (sym, label, proxy) => {
+      const d = cross[sym] || (proxy ? cross[proxy] : null)
+      const used = cross[sym] ? sym : (d ? `${proxy} (proxy for ${sym})` : null)
+      return d ? `${label}: ${d.price} (${d.change > 0 ? '+' : ''}${d.change}% on the day) [${used}]` : `${label}: ${NA}`
+    }
+    const lines = [q('DXY', 'US dollar index', 'UUP'), q('VIX', 'Volatility (VIX)', 'VIXY'), q('SPY', 'S&P 500 (SPY)'), q('TLT', 'Long bonds (TLT)')]
+    if (lines.some(l => l.endsWith(NA))) gaps.push('part of cross-asset')
+    return lines.join('\n')
+  })()
+
+  const cotBlock = (() => {
+    const rows = cot?.data || []
+    if (!rows.length) { gaps.push('COT positioning'); return NA }
+    const wanted = new Set([event.currency, 'USD', 'XAU', ...pairs.flatMap(p => [p.slice(0, 3), p.slice(3)])])
+    const picked = rows.filter(r => wanted.has(r.currency))
+    if (!picked.length) { gaps.push('COT for these currencies'); return NA }
+    return picked.map(r => `${r.currency}: net ${r.netPosition > 0 ? '+' : ''}${r.netPosition} contracts (${r.bias})${r.weeklyChange != null ? `, week-over-week ${r.weeklyChange > 0 ? '+' : ''}${r.weeklyChange}` : ''}`).join('\n')
+      + `\nCFTC report date: ${cot.reportDate || 'unknown'} (weekly, published with a lag)`
+  })()
+
+  const pairsBlock = (() => {
+    const lines = pairs.map(s => {
+      const c = pairCtx?.[s]
+      const disp = `${s.slice(0, 3)}/${s.slice(3)}`
+      if (!c) return `${disp}: price ${NA}, ADR usage ${NA}`
+      return `${disp}: ${c.price} | ADR ~${c.adrPips} pips | ${Math.abs(c.fromOpenPips)} pips ${c.moveDirection} from today's open = ${c.pctADRDirectional}% of ADR directionally | ${c.pctADRRange}% of ADR spent as total range`
+    })
+    if (pairs.every(s => !pairCtx?.[s])) gaps.push('live pair prices / ADR')
+    else if (pairs.some(s => !pairCtx?.[s])) gaps.push('ADR for some pairs')
+    return lines.join('\n')
+  })()
+
+  const leadingBlock = (() => {
+    if (!leading?.items?.length) { gaps.push('leading indicators'); return `${NA} — ${leading?.note || 'none found'}` }
+    return leading.items.map(i =>
+      `${i.title} [${i.date.slice(0, 10)}] actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise direction not computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}`
+    ).join('\n') + `\n(family: ${leading.family}, ${leading.items.length} prints in the last 14 days for ${event.currency})`
+  })()
+
+  const seat = POLICY_SEATS[event.currency]
+  const seatBlock = [seat, event.currency !== 'USD' ? POLICY_SEATS.USD : null].filter(Boolean).join('\n') || NA
+
+  console.log(`🗓️ [brief] live inputs — yields:${yields?.y2 ? `2Y ${yields.y2.value}%` : 'MISSING'}/${yields?.y10 ? `10Y ${yields.y10.value}%` : 'MISSING'} (src ${yields?.source || 'n/a'}, 3sess ${y2sess?.bps ?? 'n/a'}bps) · fedfunds:${macro?.fedFunds ? `${macro.fedFunds.value}% @${macro.fedFunds.date}` : 'MISSING'} · corePCE:${macro?.corePCE ? `${macro.corePCE.yoy}% @${macro.corePCE.date}` : 'MISSING'} · cross:${cross ? Object.keys(cross).join('/') : 'MISSING'} · COT:${cot?.data?.length ? `${cot.data.length} rows @${cot.reportDate}` : 'MISSING'} · pairs:${pairs.filter(s => pairCtx?.[s]).length}/${pairs.length} priced · leading:${leading?.items?.length || 0} prints (${leading?.family || 'no family'})${gaps.length ? ` · GAPS: ${gaps.join(', ')}` : ' · no gaps'}`)
+
+  const prompt = `Produce a pre-release trading brief for one economic event.
+
+EVENT
+Title: ${event.title}
+Currency: ${event.currency}
+Impact: ${event.impact || 'unspecified'}
+Release time: ${event.date || 'unspecified'}
+Forecast: ${event.forecast || NA}
+Previous: ${event.previous || NA}
+Actual: ${event.actual && event.actual !== '-' ? event.actual : 'not yet released'}
+
+LIVE MARKET DATA — fetched ${new Date().toISOString()}, at request time.
+This is the ONLY market data you may cite. Your training data is stale for every level, rate,
+positioning figure and policy stance below. Anything marked "${NA}" is UNKNOWN: say so, do not fill it in.
+
+1. US TREASURY YIELDS
+${yieldsBlock}
+
+2. POLICY RATE AND INFLATION (FRED, live)
+${macroBlock}
+
+3. CROSS-ASSET
+${crossBlock}
+
+4. CFTC COT POSITIONING
+${cotBlock}
+
+5. AFFECTED PAIRS — LIVE PRICE AND ADR USAGE
+${pairsBlock}
+
+6. LEADING INDICATORS ALREADY RELEASED THIS CYCLE
+${leadingBlock}
+
+7. OFFICE HOLDERS — static config, last verified ${POLICY_SEATS.lastVerified}
+${seatBlock}
+Names only. Do NOT infer a policy stance, rate path or reaction function from a name — stance must
+come from sections 1-4 or be reported as unknown.
+
+WHAT TO ANALYSE
+a) Which way the leading indicators in section 6 lean — beat or miss — and why. If section 6 is
+   "${NA}", or no print there has a computable actual-vs-forecast surprise, then tilt is
+   "insufficient leading data" and probability MUST be null. Never manufacture a probability.
+b) Each pair in section 5: impact in the context of THAT pair's own live state — its COT net and
+   weekly change from section 4, how much ADR it has already spent from section 5, and the yield
+   direction from section 1. Generic "this event is USD-positive so EUR/USD falls" reasoning is not
+   acceptable on its own; name the pair's live numbers.
+c) State which live data point supports your conclusion, quoting the figure.
+
+RULES
+- Every number you cite must appear verbatim in sections 1-6.
+- Do not state any policy rate, inflation figure, central-bank stance or market level that is not
+  in the blocks above. If it is not there, write "${NA}".
+- For instruments with no live data in sections 1-5 (crypto, oil), set bias "neutral" and say in
+  the reason which live proxy you inferred from, or that no live data covers it.
+- No hedged filler: if the live data does not support a directional call, say it is neutral.
+
+Return ONLY a valid JSON object, no markdown fences, no commentary. Structure (fill every field
+from YOUR analysis — the example strings are format hints, not answers):
+{
+  "overallBias": "short label, e.g. USD bullish into the print",
+  "biasDirection": "bullish | bearish | neutral",
+  "probability": 0-100 integer, or null when tilt is "insufficient leading data",
+  "confidence": "high | medium | low",
+  "summary": "2-3 sentences on what this event means given the live data above",
+  "leadingIndicators": {
+    "tilt": "beat | miss | insufficient leading data",
+    "reasoning": "why, citing section 6 prints by name and figure",
+    "evidence": ["<print name>: actual X vs forecast Y → beat/miss"]
+  },
+  "supportingData": ["the live data points that support the call, each quoting its figure"],
+  "forex": [${pairs.map(s => `{"pair": "${s.slice(0, 3)}/${s.slice(3)}", "bias": "", "reason": "cite this pair's COT net, ADR spent and the yield direction"}`).join(', ')}],
+  "indices": [
+    {"name": "S&P 500", "bias": "", "reason": "anchor to SPY/VIX/TLT from section 3"},
+    {"name": "NASDAQ", "bias": "", "reason": ""},
+    {"name": "DOW", "bias": "", "reason": ""}
+  ],
+  "crypto": [
+    {"name": "BTC/USD", "bias": "", "reason": ""},
+    {"name": "ETH/USD", "bias": "", "reason": ""}
+  ],
+  "commodities": [
+    {"name": "Gold (XAU)", "bias": "", "reason": "cite XAU COT net and XAU/USD ADR spent"},
+    {"name": "Oil (WTI)", "bias": "", "reason": ""}
+  ],
+  "preEventPlan": ["3-4 concrete actions for the hour before the release"],
+  "postEventStrategy": "what to do on a beat vs a miss, referencing the levels in section 5",
+  "propFirmAdvice": "risk guidance for a funded trader on this specific event",
+  "dataGaps": ["which inputs were ${NA} and what that stops you concluding"]
+}`
+
+  try {
+    const m = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: 'You are a macro analyst for BiasForge. You analyse ONLY the live data provided in the prompt. You never cite a level, rate, or positioning figure from memory, and you say "not available" rather than estimate. Output raw JSON only.',
+      messages: [{ role: 'user', content: prompt }],
+    })
+    trackAI('calendar-brief', 'claude-sonnet-4-6', m.usage)
+    const text = (m.content?.[0]?.text || '').trim().replace(/```json|```/g, '').trim()
+    let analysis
+    try { analysis = JSON.parse(text) } catch (e) {
+      const s = text.indexOf('{'), t = text.lastIndexOf('}')
+      if (s < 0 || t <= s) throw new Error('model did not return JSON')
+      analysis = JSON.parse(text.slice(s, t + 1))
+    }
+    const payload = {
+      success: true,
+      analysis,
+      dataUsed: {
+        yields: yields?.y2 || yields?.y10 ? { source: yields.source, y2: yields.y2?.value ?? null, y10: yields.y10?.value ?? null, change3SessionBps: y2sess?.bps ?? null } : null,
+        fedFunds: macro?.fedFunds || null,
+        corePCE: macro?.corePCE || null,
+        crossAsset: cross ? Object.keys(cross) : null,
+        cot: cot?.data?.length ? { reportDate: cot.reportDate, currencies: (cot.data || []).map(r => r.currency) } : null,
+        pairsPriced: pairs.filter(s => pairCtx?.[s]),
+        leadingIndicators: { family: leading?.family || null, count: leading?.items?.length || 0, note: leading?.note || null },
+        missing: gaps,
+      },
+      generatedAt: new Date().toISOString(),
+    }
+    setCache(cacheKey, payload)
+    console.log(`🗓️ [brief] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — bias "${analysis.overallBias}" (${analysis.biasDirection}), tilt "${analysis.leadingIndicators?.tilt}", probability ${analysis.probability ?? 'null'}`)
+    res.json(payload)
+  } catch (e) {
+    console.error(`❌ [brief] ${event.title}: ${e?.message || e}`)
+    res.status(502).json({ success: false, error: 'Brief generation failed' })
+  }
+})
+
+// ============================================
 // 💪 CURRENCY STRENGTH
 // ============================================
 

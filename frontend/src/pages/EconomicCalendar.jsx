@@ -8,6 +8,7 @@ const CALENDAR_URL = `${API_BASE}/api/calendar`;
 // ─── Analyze Modal ────────────────────────────────────────────────────────────
 function AnalyzeModal({ event, onClose }) {
   const [analysis, setAnalysis] = useState(null);
+  const [dataUsed, setDataUsed] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -15,81 +16,34 @@ function AnalyzeModal({ event, onClose }) {
     fetchAnalysis();
   }, []);
 
+  // The prompt lives in the backend (POST /api/calendar-brief). It used to be built here, which
+  // meant it was readable in DevTools and every macro fact in it was hardcoded text. The endpoint
+  // now takes only the event identifier and fetches yields / rates / COT / prices / leading
+  // indicators live, per request.
   const fetchAnalysis = async () => {
     try {
       setLoading(true);
       setError('');
 
-      const prompt = `You are a professional macro trading analyst for BiasForge.
-
-Analyze this economic event and provide a complete pre-release trading brief:
-Include historical context: What typically happens when this event beats or misses expectations? Reference last 2-3 releases if possible.
-
-Event: ${event.title}
-Currency: ${event.currency}
-Impact: ${event.impact}
-Forecast: ${event.forecast}
-Previous: ${event.previous}
-Actual: ${event.actual !== '-' ? event.actual : 'Not yet released'}
-Release Time: ${new Date(event.date).toLocaleString()}
-
-CURRENT MACRO CONTEXT (use this, do not rely on training data):
-- Fed Chair is Kevin Warsh (since May 2026), NOT Jerome Powell. Never mention Powell as current chair.
-- Fed funds rate is 3.50%-3.75%, held since 2026 amid sticky inflation (core PCE ~3.3%).
-- Warsh is viewed as hawkish; market hike odds for the upcoming meeting have risen sharply.
-- ECB steady/on hold, SNB at 0%, BoJ gradually normalizing.
-Use these facts. Any reference to 'Powell' as the sitting chair is wrong.
-
-Return ONLY a valid JSON object like this (no markdown, no explanation):
-The JSON below shows the required STRUCTURE only. Do NOT copy the bias values — every bias must come from YOUR analysis of THIS specific event's forecast, previous, and current macro backdrop (rate differentials, central bank stance). Fill each bias independently.
-{
-  "overallBias": "",
-  "biasDirection": "",
-  "probability": 0,
-  "summary": "2-3 sentence summary of what this event means for markets",
-  "forex": [
-    {"pair": "EUR/USD", "bias": "", "reason": "short reason"},
-    {"pair": "GBP/USD", "bias": "", "reason": "short reason"},
-    {"pair": "USD/JPY", "bias": "", "reason": "short reason"},
-    {"pair": "USD/CHF", "bias": "", "reason": "short reason"},
-    {"pair": "AUD/USD", "bias": "", "reason": "short reason"},
-    {"pair": "XAU/USD", "bias": "", "reason": "short reason"}
-  ],
-  "indices": [
-    {"name": "S&P 500", "bias": "", "reason": "short reason"},
-    {"name": "NASDAQ", "bias": "", "reason": "short reason"},
-    {"name": "DOW", "bias": "", "reason": "short reason"}
-  ],
-  "crypto": [
-    {"name": "BTC/USD", "bias": "", "reason": "short reason"},
-    {"name": "ETH/USD", "bias": "", "reason": "short reason"}
-  ],
-  "commodities": [
-    {"name": "Gold (XAU)", "bias": "", "reason": "short reason"},
-    {"name": "Oil (WTI)", "bias": "", "reason": "short reason"}
-  ],
-  "preEventPlan": [
-    "Avoid entering trades 15 minutes before release",
-    "Wait for candle close after news spike",
-    "Reduce position size by 50%"
-  ],
-  "postEventStrategy": "If actual > forecast: Sell USD pairs. If actual < forecast: Buy USD pairs.",
-  "propFirmAdvice": "Do not hold positions into high-impact news. Max 0.5% risk per trade during news.",
-  "historicalContext": "What happened last 3 times this exact event was released? e.g. Last 3 CPI: 2 above forecast → USD rallied avg 45 pips"
-}`
-
-      const res = await fetch(`${API_BASE}/api/ai`, {
+      const res = await fetch(`${API_BASE}/api/calendar-brief`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({
+          title: event.title,
+          currency: event.currency,
+          date: event.date,
+          impact: event.impact,
+          forecast: event.forecast,
+          previous: event.previous,
+          actual: event.actual,
+        })
       })
 
       const data = await res.json()
-      if (!data.success) throw new Error(data.error || 'AI failed')
+      if (!data.success) throw new Error(data.error || 'Brief failed')
 
-      const clean = data.response.trim().replace(/```json|```/g, '').trim()
-      const parsed = JSON.parse(clean)
-      setAnalysis(parsed)
+      setAnalysis(data.analysis)
+      setDataUsed(data.dataUsed || null)
 
     } catch (err) {
       console.error('Analysis error:', err)
@@ -174,11 +128,54 @@ The JSON below shows the required STRUCTURE only. Do NOT copy the bias values �
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-slate-400 mb-1">PROBABILITY</p>
-                  <p className="text-3xl font-black text-white">{analysis.probability}%</p>
+                  {/* null = the model had no usable leading data. Showing "0%" there would be a lie. */}
+                  <p className="text-3xl font-black text-white">
+                    {analysis.probability === null || analysis.probability === undefined ? 'N/A' : `${analysis.probability}%`}
+                  </p>
+                  {analysis.confidence && (
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">{analysis.confidence} confidence</p>
+                  )}
                 </div>
               </div>
               <p className="text-sm text-slate-300 mt-3">{analysis.summary}</p>
             </div>
+
+            {analysis.leadingIndicators && (
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">🔎 Leading Indicators</p>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-lg border ${
+                    analysis.leadingIndicators.tilt === 'beat' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                    : analysis.leadingIndicators.tilt === 'miss' ? 'text-red-400 bg-red-500/10 border-red-500/20'
+                    : 'text-slate-400 bg-slate-500/10 border-slate-500/20'}`}>
+                    {analysis.leadingIndicators.tilt}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300">{analysis.leadingIndicators.reasoning}</p>
+                {analysis.leadingIndicators.evidence?.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {analysis.leadingIndicators.evidence.map((ev, i) => (
+                      <li key={i} className="text-xs text-slate-400 flex items-start gap-2">
+                        <span className="text-cyan-400 mt-0.5">•</span>{ev}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {analysis.supportingData?.length > 0 && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
+                <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2">📡 Live Data Supporting This Call</p>
+                <ul className="space-y-1">
+                  {analysis.supportingData.map((d, i) => (
+                    <li key={i} className="text-sm text-slate-300 flex items-start gap-2">
+                      <span className="text-emerald-400 mt-0.5">•</span>{d}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">💱 Forex Impact</p>
@@ -256,6 +253,55 @@ The JSON below shows the required STRUCTURE only. Do NOT copy the bias values �
               <p className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-2">🎯 Prop Firm Advice</p>
               <p className="text-sm text-slate-300">{analysis.propFirmAdvice}</p>
             </div>
+
+            {/* Provenance: exactly which live inputs the brief was built on, and what was missing. */}
+            {dataUsed && (
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">🛰️ Live Inputs Fetched</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {dataUsed.yields && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      2Y {dataUsed.yields.y2 ?? '—'}% / 10Y {dataUsed.yields.y10 ?? '—'}%
+                      {dataUsed.yields.change3SessionBps !== null && ` (${dataUsed.yields.change3SessionBps > 0 ? '+' : ''}${dataUsed.yields.change3SessionBps}bps/3d)`}
+                    </span>
+                  )}
+                  {dataUsed.fedFunds && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      Fed funds {dataUsed.fedFunds.value}% ({dataUsed.fedFunds.date})
+                    </span>
+                  )}
+                  {dataUsed.corePCE && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      Core PCE {dataUsed.corePCE.yoy}% ({dataUsed.corePCE.date})
+                    </span>
+                  )}
+                  {dataUsed.crossAsset?.length > 0 && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      Cross-asset: {dataUsed.crossAsset.join(', ')}
+                    </span>
+                  )}
+                  {dataUsed.cot && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      COT {dataUsed.cot.reportDate}
+                    </span>
+                  )}
+                  {dataUsed.pairsPriced?.length > 0 && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                      {dataUsed.pairsPriced.length} pairs priced + ADR
+                    </span>
+                  )}
+                  <span className={`text-[11px] px-2 py-1 rounded-lg border ${dataUsed.leadingIndicators?.count > 0 ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-300' : 'bg-slate-500/10 border-slate-500/20 text-slate-400'}`}>
+                    {dataUsed.leadingIndicators?.count || 0} leading prints
+                    {dataUsed.leadingIndicators?.family ? ` (${dataUsed.leadingIndicators.family})` : ''}
+                  </span>
+                </div>
+                {dataUsed.missing?.length > 0 && (
+                  <p className="text-[11px] text-amber-400/80 mt-2">
+                    Not available this run: {dataUsed.missing.join(', ')}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="bg-white/5 border border-white/10 rounded-xl p-4">
               <p className="text-xs text-slate-500">
