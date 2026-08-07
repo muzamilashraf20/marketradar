@@ -3179,7 +3179,10 @@ function parseEconNum(s) {
 // into the browser prompt and the model simply recited them. Now they carry their own print date.
 const BRIEF_MACRO_TTL = 12 * 60 * 60 * 1000
 async function fetchPolicyRateAndInflation() {
-  if (isCacheFreshFor('cal_brief_macro', BRIEF_MACRO_TTL)) return getCached('cal_brief_macro')
+  // A result still missing a leg is only held for 30min, not the full 12h — otherwise one transient
+  // FRED timeout would suppress that series for the rest of the day.
+  const cachedMacro = getCached('cal_brief_macro')
+  if (cachedMacro && isCacheFreshFor('cal_brief_macro', cachedMacro.partial ? 30 * 60 * 1000 : BRIEF_MACRO_TTL)) return cachedMacro
   const key = process.env.FRED_API_KEY?.trim()
   if (!key) return { fedFunds: null, corePCE: null, error: 'FRED_API_KEY not set' }
   const obs = async (id, limit) => {
@@ -3203,8 +3206,14 @@ async function fetchPolicyRateAndInflation() {
         date: pce[0].date,
       }
     : null
-  const out = { fedFunds, corePCE }
-  if (fedFunds || corePCE) setCache('cal_brief_macro', out)
+  // Per-leg stale fallback. One leg failing is common (transient FRED timeout) and must not blank
+  // the other or, worse, get cached as null for the next 12h — that is how a working fed funds read
+  // disappeared between two runs. Keep the last good value for whichever leg failed.
+  const prevGood = cachedMacro
+  const out = { fedFunds: fedFunds || prevGood?.fedFunds || null, corePCE: corePCE || prevGood?.corePCE || null }
+  out.partial = !out.fedFunds || !out.corePCE
+  if (out.fedFunds || out.corePCE) setCache('cal_brief_macro', out)
+  if (!fedFunds || !corePCE) console.warn(`⚠️ [brief] FRED partial: FEDFUNDS ${fedFunds ? 'ok' : 'FAILED'}, PCEPILFE ${corePCE ? 'ok' : 'FAILED'}${(!fedFunds && out.fedFunds) || (!corePCE && out.corePCE) ? ' — reused last good value' : ''}`)
   return out
 }
 
@@ -3290,11 +3299,68 @@ async function fetchRecentActuals(currency) {
   return null
 }
 
+// FRED supplement, US only. The calendar vendors are the right source for actual-vs-FORECAST, but
+// when FMP is down (production currently falls back to the FF feed, which publishes no actuals at
+// all) the model would get nothing. FRED does publish the prints themselves — no forecast, so these
+// carry actual-vs-PREVIOUS only and are labelled as such. A direction of travel beats no data;
+// it is NOT a beat/miss and must never be presented as one.
+const FRED_LEADING = {
+  employment: [
+    { id: 'ICSA',   label: 'Initial jobless claims', unit: 'claims' },
+    { id: 'CCSA',   label: 'Continued jobless claims', unit: 'claims' },
+  ],
+  inflation: [
+    { id: 'PPIFIS', label: 'PPI final demand (index)', unit: 'index' },
+    { id: 'CES0500000003', label: 'Average hourly earnings', unit: '$' },
+  ],
+  consumption: [{ id: 'UMCSENT', label: 'UMich consumer sentiment', unit: 'index' }],
+  growth: [{ id: 'INDPRO', label: 'Industrial production (index)', unit: 'index' }],
+  activity: [{ id: 'INDPRO', label: 'Industrial production (index)', unit: 'index' }],
+  'rate-decision': [
+    { id: 'ICSA',   label: 'Initial jobless claims', unit: 'claims' },
+    { id: 'PPIFIS', label: 'PPI final demand (index)', unit: 'index' },
+  ],
+}
+async function fetchFredLeading(familyId, currency) {
+  if (currency !== 'USD') return []
+  const series = FRED_LEADING[familyId] || []
+  const key = process.env.FRED_API_KEY?.trim()
+  if (!key || !series.length) return []
+  const one = async (s) => {
+    try {
+      const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
+        params: { series_id: s.id, api_key: key, file_type: 'json', sort_order: 'desc', limit: 4 },
+        timeout: 10000,
+      })
+      const vals = (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
+      if (!vals.length) return null
+      const latest = vals[0], prev = vals[1]
+      return {
+        title: `${s.label} (FRED ${s.id})`,
+        date: new Date(latest.date + 'T00:00:00Z').toISOString(),
+        actual: String(latest.v), forecast: null, previous: prev ? String(prev.v) : null,
+        surprise: null,   // no forecast published for this series — beat/miss is NOT computable
+        vsPrevious: prev ? (latest.v > prev.v ? 'higher' : latest.v < prev.v ? 'lower' : 'flat') : null,
+        noForecast: true,
+      }
+    } catch (e) { console.warn(`⚠️ [brief] FRED leading ${s.id} failed: ${e?.message}`); return null }
+  }
+  return (await Promise.all(series.map(one))).filter(Boolean)
+}
+
 async function fetchLeadingIndicators(event) {
   const fam = LEADING_FAMILIES.find(f => f.match.test(event.title))
   if (!fam) return { family: null, items: [], note: `no leading-indicator family maps to "${event.title}"` }
   const rows = await fetchRecentActuals(event.currency)
-  if (!rows) return { family: fam.id, items: [], note: 'no source returned released actuals this run' }
+  if (!rows) {
+    const fred = await fetchFredLeading(fam.id, event.currency)
+    return {
+      family: fam.id, items: fred, source: fred.length ? 'fred-supplement' : null,
+      note: fred.length
+        ? 'calendar vendor published no actuals this run — these are FRED prints, actual vs PREVIOUS only, no forecast available'
+        : 'no source returned released actuals this run',
+    }
+  }
   const now = Date.now()
   const items = rows
     .filter(e => new Date(e.time).getTime() < now)
@@ -3310,7 +3376,11 @@ async function fetchLeadingIndicators(event) {
     })
     .sort((x, y) => (x.date < y.date ? 1 : -1))
     .slice(0, 8)
-  return { family: fam.id, items, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
+  if (!items.length) {
+    const fred = await fetchFredLeading(fam.id, event.currency)
+    if (fred.length) return { family: fam.id, items: fred, source: 'fred-supplement', note: `no ${fam.id} vendor prints in the last 14 days — these are FRED prints, actual vs PREVIOUS only, no forecast available` }
+  }
+  return { family: fam.id, items, source: items.length ? 'calendar-vendor' : null, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
 }
 
 // Live price + how much of the typical daily range each affected pair has already spent.
@@ -3407,20 +3477,23 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
 
   const pairs = BRIEF_PAIRS[event.currency] || ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD']
   const B = BRIEF_FETCH_BUDGET
-  // Cross-asset FIRST, on its own: fetchYields() reads US2Y/US10Y out of the same batch, so running
-  // the two in parallel would race a cold cache and spend the 8-credit TwelveData batch twice.
+  // TwelveData Basic allows ~8 credits/minute, shared with the crons. The pair candles (6) and the
+  // cross-asset batch (8) cannot both clear in one window from a cold cache, so they run in sequence
+  // rather than racing each other, and PAIRS GO FIRST: per-pair price and ADR are what the per-pair
+  // analysis is built on, and they have no second source, whereas cross-asset degrades to its last
+  // cached batch and the yield levels have an independent FRED path.
+  const pairCtx = await withBudget(fetchBriefPairContext(pairs), B, 'pair prices / ADR')
   let cross = await withBudget(fetchCrossAssetLive(), B, 'cross-asset')
   // Throttled out? Fall back to the last cached batch and SAY it is last-known, rather than dropping
   // the dollar and volatility read entirely. Each quote carries its own `datetime`, so the model can
   // still see how old the print is.
   let crossStale = false
   if (!cross) { const st = getCached('cross_asset_live'); if (st) { cross = st; crossStale = true; console.log('📈 [brief] cross-asset throttled — using last cached batch') } }
-  const [yields, y2sess, macro, cot, pairCtx, leading] = await Promise.all([
+  const [yields, y2sess, macro, cot, leading] = await Promise.all([
     withBudget(briefYields(), B, 'yields'),
     withBudget(briefYield2y3Session(), B, '2Y 3-session'),
     withBudget(fetchPolicyRateAndInflation(), B, 'FRED policy rate / core PCE'),
     withBudget(getCOTData(), B, 'COT'),
-    withBudget(fetchBriefPairContext(pairs), B, 'pair prices / ADR'),
     withBudget(fetchLeadingIndicators(event), B, 'leading indicators'),
   ])
 
@@ -3486,9 +3559,14 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
 
   const leadingBlock = (() => {
     if (!leading?.items?.length) { gaps.push('leading indicators'); return `${NA} — ${leading?.note || 'none found'}` }
+    const noneHaveForecast = leading.items.every(i => !i.forecast)
     return leading.items.map(i =>
-      `${i.title} [${i.date.slice(0, 10)}] actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise direction not computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}`
-    ).join('\n') + `\n(family: ${leading.family}, ${leading.items.length} prints in the last 14 days for ${event.currency})`
+      `${i.title} [${i.date.slice(0, 10)}] actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise vs forecast NOT computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}`
+    ).join('\n')
+      + `\n(family: ${leading.family}, source: ${leading.source || 'unknown'}${leading.note ? ` — ${leading.note}` : ''})`
+      + (noneHaveForecast
+        ? `\nIMPORTANT: no print above has a forecast, so NONE of them is a beat or a miss. You may describe the direction of travel versus the previous print, but tilt MUST be "insufficient leading data" and probability MUST be null.`
+        : '')
   })()
 
   const seat = POLICY_SEATS[event.currency]
