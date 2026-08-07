@@ -245,7 +245,19 @@ function pairComposite(scores, weights, base, quote, macroRate) {
     return w.w1 * (s.macro ?? 0) + w.w2 * (s.orderflow ?? 0) + w.w3 * (s.sentiment ?? 0);
   };
   const nulls = [base, quote].filter((c) => macroRate?.scores?.[c] == null);
-  return { diff: of(base) - of(quote), basis: macroNull ? "REDIST" : "FULL", weights: w, nullLegs: nulls };
+  // Decompose the diff into per-component contributions. diff === m + o + s exactly, because the
+  // composite is linear in the scores. Recorded so that when a bias later resolves, WHICH component
+  // actually drove it is answerable — USDCAD and EURUSD have near-identical leg divergence (4.30 vs
+  // 4.17bps) yet wildly different threshold-hit rates, so the deciding factor is not macro and
+  // cannot be recovered after the fact without this.
+  const sb = scores[base] || { macro: 0, orderflow: 0, sentiment: 0 };
+  const sq = scores[quote] || { macro: 0, orderflow: 0, sentiment: 0 };
+  const contrib = {
+    m: +(w.w1 * ((sb.macro ?? 0) - (sq.macro ?? 0))).toFixed(3),
+    o: +(w.w2 * ((sb.orderflow ?? 0) - (sq.orderflow ?? 0))).toFixed(3),
+    s: +(w.w3 * ((sb.sentiment ?? 0) - (sq.sentiment ?? 0))).toFixed(3),
+  };
+  return { diff: of(base) - of(quote), basis: macroNull ? "REDIST" : "FULL", weights: w, nullLegs: nulls, contrib };
 }
 
 // composite score per currency, using the active regime weights (done in CODE).
@@ -567,7 +579,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
         + ` realized=${outcome.realized_pips}p mfe=${outcome.mfe} mae=${outcome.mae} held=${outcome.held_hours}h`);
     }
 
-    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis, outcome });
+    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis, contrib: pc.contrib, outcome });
   }
 
   // macro_rate + warnings ride out in the response so a degraded cross-section is visible from the

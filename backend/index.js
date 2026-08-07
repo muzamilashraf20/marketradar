@@ -3582,13 +3582,15 @@ async function v2RecordTelemetry(trigger, out) {
     for (const r of out?.results || []) {
       // per-pair basis is kept alongside the diff — question 1 is specifically about the FULL pairs,
       // so a bare count of FULL/REDIST would not be enough to answer it later.
-      row.diffs[r.pair] = { d: r.diff ?? null, b: r.macro_basis ?? null }
+      // c = per-component contribution to this pair's diff (macro / orderflow / sentiment).
+      // d === c.m + c.o + c.s. Without this, "which component was decisive" is unanswerable later.
+      row.diffs[r.pair] = { d: r.diff ?? null, b: r.macro_basis ?? null, c: r.contrib ?? null }
       if (r.macro_basis === 'REDIST') row.redist++
       else if (r.macro_basis === 'FULL') row.full++
       // opens carry their basis so FULL and REDIST open RATES can be compared. If REDIST pairs open
       // more often per opportunity, macro is suppressing the diff rather than sharpening it.
       if (r.action === 'OPEN' || r.action === 'FLIP') {
-        row.opens.push({ pair: r.pair, action: r.action, direction: r.direction || null, basis: r.macro_basis ?? null, diff: r.diff ?? null })
+        row.opens.push({ pair: r.pair, action: r.action, direction: r.direction || null, basis: r.macro_basis ?? null, diff: r.diff ?? null, contrib: r.contrib ?? null })
       }
       if (r.outcome) row.outcomes.push(r.outcome)
     }
@@ -3978,6 +3980,39 @@ app.get('/api/v2/shadow/telemetry', async (req, res) => {
           },
           macro_score_by_currency: macro,
           note: 'implied_usd is the diagnostic; `raw` mixes USD-base and USD-quote pairs and will look skewed even when USD views are balanced.',
+        }
+      })(),
+
+      // WHICH COMPONENT DRIVES EACH PAIR. USDCAD and EURUSD have near-identical leg divergence
+      // (4.30 vs 4.17bps mean gap in 3-session changes) yet 0% vs 43% threshold-hit rates, so the
+      // difference is not coming from macro. This attributes every pair's diff to macro / orderflow
+      // / sentiment, over all runs and again restricted to the runs that actually opened a bias.
+      q7_component_attribution: (() => {
+        const mk = () => ({ runs: 0, sum_abs: { m: 0, o: 0, s: 0 }, decisive: { m: 0, o: 0, s: 0, none: 0 } })
+        const tally = (bucket, c) => {
+          if (!c) return
+          bucket.runs++
+          for (const k of ['m', 'o', 's']) bucket.sum_abs[k] += Math.abs(c[k] ?? 0)
+          const ranked = ['m', 'o', 's'].map((k) => [k, Math.abs(c[k] ?? 0)]).sort((a, b) => b[1] - a[1])
+          if (ranked[0][1] === 0) bucket.decisive.none++
+          else bucket.decisive[ranked[0][0]]++
+        }
+        const perPair = {}, onOpen = {}
+        for (const r of rows) {
+          for (const [p, v] of Object.entries(r.diffs || {})) tally(perPair[p] || (perPair[p] = mk()), v?.c)
+          for (const o of r.opens || []) if (typeof o !== 'string' && o?.pair) tally(onOpen[o.pair] || (onOpen[o.pair] = mk()), o.contrib)
+        }
+        const finish = (obj) => {
+          for (const e of Object.values(obj)) {
+            e.mean_abs = Object.fromEntries(['m', 'o', 's'].map((k) => [k, e.runs ? +(e.sum_abs[k] / e.runs).toFixed(3) : null]))
+            delete e.sum_abs
+          }
+          return obj
+        }
+        return {
+          all_runs: finish(perPair),
+          on_opens_only: finish(onOpen),
+          legend: 'm=macro, o=orderflow, s=sentiment. mean_abs = average |contribution| to the diff; decisive = how often that component had the largest |contribution|.',
         }
       })(),
 
