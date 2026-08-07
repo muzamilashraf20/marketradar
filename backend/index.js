@@ -3577,7 +3577,7 @@ async function v2RecordTelemetry(trigger, out) {
       floor: m.floor ?? null,
       shadow_floor: m.shadow_floor ?? null,     // what a 6.9bps floor WOULD have done — logged, never applied
       macro_scores: m.scores ?? null,
-      full: 0, redist: 0, diffs: {}, opens: [],
+      full: 0, redist: 0, diffs: {}, opens: [], outcomes: [],
     }
     for (const r of out?.results || []) {
       // per-pair basis is kept alongside the diff — question 1 is specifically about the FULL pairs,
@@ -3585,7 +3585,12 @@ async function v2RecordTelemetry(trigger, out) {
       row.diffs[r.pair] = { d: r.diff ?? null, b: r.macro_basis ?? null }
       if (r.macro_basis === 'REDIST') row.redist++
       else if (r.macro_basis === 'FULL') row.full++
-      if (r.action === 'OPEN' || r.action === 'FLIP') row.opens.push(`${r.pair}:${r.action}:${r.direction || ''}`)
+      // opens carry their basis so FULL and REDIST open RATES can be compared. If REDIST pairs open
+      // more often per opportunity, macro is suppressing the diff rather than sharpening it.
+      if (r.action === 'OPEN' || r.action === 'FLIP') {
+        row.opens.push({ pair: r.pair, action: r.action, direction: r.direction || null, basis: r.macro_basis ?? null, diff: r.diff ?? null })
+      }
+      if (r.outcome) row.outcomes.push(r.outcome)
     }
     v2Telemetry.push(row)
     if (v2Telemetry.length > V2_TELEMETRY_MAX) v2Telemetry = v2Telemetry.slice(-V2_TELEMETRY_MAX)
@@ -3885,7 +3890,41 @@ app.get('/api/v2/shadow/telemetry', async (req, res) => {
       macro_status: { ok: count((r) => r.macro_status === 'OK'), floor_flat: count((r) => r.macro_status === 'FLOOR_FLAT'), insufficient: count((r) => r.macro_status === 'INSUFFICIENT') },
       xsection_histogram: rows.reduce((a, r) => ((a[r.xsection] = (a[r.xsection] || 0) + 1), a), {}),
       dropped_counts: rows.reduce((a, r) => { for (const c of r.dropped || []) a[c] = (a[c] || 0) + 1; return a }, {}),
-      opens: rows.flatMap((r) => (r.opens || []).map((o) => `${r.at.slice(0, 16)} ${o}`)),
+
+      // Open RATE per basis, not a raw count. FULL and REDIST have different pair counts per run
+      // (3 vs 4 while AUD is stale), so raw open totals are not comparable — the denominator is
+      // pair-runs, i.e. how many chances each group actually had.
+      q3_open_rate_by_basis: (() => {
+        const g = { FULL: { pair_runs: 0, opens: 0 }, REDIST: { pair_runs: 0, opens: 0 } }
+        for (const r of rows) {
+          for (const v of Object.values(r.diffs || {})) if (g[v?.b]) g[v.b].pair_runs++
+          for (const o of r.opens || []) if (g[o?.basis]) g[o.basis].opens++
+        }
+        for (const k of Object.keys(g)) {
+          g[k].open_rate_pct = g[k].pair_runs ? +((g[k].opens / g[k].pair_runs) * 100).toFixed(2) : null
+        }
+        g.interpretation = 'If REDIST open_rate exceeds FULL, macro is shrinking the diff rather than sharpening it — that would put the regime weights in question, not just the bands.'
+        return g
+      })(),
+
+      // Every bias that ended, with how it actually resolved. Too few samples to conclude anything
+      // for a long while — recorded so the question is answerable later at all.
+      q4_outcomes: (() => {
+        const all = rows.flatMap((r) => (r.outcomes || []).map((o) => ({ at: r.at, ...o })))
+        const by = (f) => all.filter(f).length
+        return {
+          n: all.length,
+          by_reason: all.reduce((a, o) => ((a[o.closed_reason || o.ended_by] = (a[o.closed_reason || o.ended_by] || 0) + 1), a), {}),
+          invalidation_hit: by((o) => o.closed_reason === 'level_break'),
+          direction_ran: by((o) => (o.realized_pips ?? 0) > 0),
+          went_against: by((o) => (o.realized_pips ?? 0) < 0),
+          caveat: 'mfe/mae are as of the last HOLD refresh, so an excursion between runs is not captured.',
+          list: all,
+        }
+      })(),
+
+      // rows banked before opens became structured are strings — the ring buffer survives deploys
+      opens: rows.flatMap((r) => (r.opens || []).map((o) => (typeof o === 'string' ? { at: r.at.slice(0, 16), raw: o } : { at: r.at.slice(0, 16), ...o }))),
       recent: rows.slice(-8),
     })
   } catch (e) { res.status(500).json({ success: false, error: e?.message }) }

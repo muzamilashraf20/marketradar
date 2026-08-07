@@ -545,7 +545,29 @@ async function runEngine({ supabase, feeds, onUsage }) {
       }
     }
 
-    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis });
+    // When a bias ENDS — CLOSE, or a FLIP which closes the prior direction — capture how it actually
+    // did. bias_history_v2 has no mfe/mae columns and bias_state_v2's row is overwritten on the next
+    // transition, so these numbers cannot be reconstructed after the fact. `state` here is still the
+    // PRE-run state (saveState above doesn't reassign it), which is exactly the bias being ended.
+    // NOTE: mfe/mae are as of the last HOLD refresh, so an excursion between runs is not captured.
+    let outcome = null;
+    if ((d.action === "CLOSE" || d.action === "FLIP") && state?.direction && state.direction !== "FLAT") {
+      const dir = state.direction === "BUY" ? 1 : -1;
+      outcome = {
+        pair, ended_by: d.action, closed_reason: d.reason || null, direction: state.direction,
+        entry_price: state.entry_price ?? null, exit_price: price,
+        realized_pips: state.entry_price != null ? +(((price - state.entry_price) * dir) / pipFor(pair)).toFixed(1) : null,
+        mfe: state.mfe ?? null, mae: state.mae ?? null,
+        diff_at_entry: state.diff_at_entry ?? null, grade_at_entry: state.grade ?? null,
+        macro_basis_now: pc.basis,
+        opened_at: state.opened_at ?? null,
+        held_hours: state.opened_at ? +((Date.now() - new Date(state.opened_at).getTime()) / 3600000).toFixed(1) : null,
+      };
+      console.log(`   [v2 outcome] ${pair} ${state.direction} ended_by=${d.action}${d.reason ? `/${d.reason}` : ""}`
+        + ` realized=${outcome.realized_pips}p mfe=${outcome.mfe} mae=${outcome.mae} held=${outcome.held_hours}h`);
+    }
+
+    results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis, outcome });
   }
 
   // macro_rate + warnings ride out in the response so a degraded cross-section is visible from the
