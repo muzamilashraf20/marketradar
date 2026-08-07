@@ -3222,14 +3222,25 @@ async function fetchPolicyRateAndInflation() {
 // park it behind the credit budget for minutes. When that happens the request budget expires before
 // the function ever reaches its own FRED fallback, and the brief reports no yields at all despite
 // FRED being up. So: give the shared path a short leash, then read DGS2/DGS10 directly.
-async function briefYields() {
-  const quick = await Promise.race([
-    fetchYields().catch(() => null),
-    new Promise(r => setTimeout(() => r('SLOW'), 8000)),
-  ])
-  if (quick && quick !== 'SLOW' && (quick.y2 || quick.y10)) return quick
+async function briefYields(cross) {
+  // 1. Shared cache, if the crons have already filled it — free and instant.
+  const cached = getCached('yields_fred')
+  if (cached && isCacheFreshFor('yields_fred', YIELDS_TTL) && (cached.y2 || cached.y10)) return cached
+  // 2. The cross-asset batch THIS request already fetched. Deliberately NOT fetchYields(): that
+  //    would re-enter fetchCrossAssetLive() and park behind the TwelveData credit budget, and the
+  //    request budget expires before its own FRED fallback ever runs.
+  const fromTd = (q) => {
+    const v = q?.price
+    if (v == null || isNaN(v) || v <= 0 || v > 20) return null   // must look like a yield, not a bond price
+    let chg = (q.prev != null && !isNaN(q.prev) && q.prev !== v) ? v - q.prev : 0
+    if (Math.abs(chg) > 1.5) chg = 0                              // implausible 1-day move = unit mismatch
+    return { value: +v.toFixed(3), change: +chg.toFixed(3), date: (q.datetime || '').slice(0, 10), datetime: q.datetime || null }
+  }
+  const tdY2 = fromTd(cross?.US2Y), tdY10 = fromTd(cross?.US10Y)
+  if (tdY2 && tdY10) return { y2: tdY2, y10: tdY10, source: 'twelvedata (cross-asset batch)', fred_stale: false }
+  // 3. Whatever is still missing comes straight from FRED — free, fast, no shared credit budget.
   const key = process.env.FRED_API_KEY?.trim()
-  if (!key) return null
+  if (!key) return tdY2 || tdY10 ? { y2: tdY2, y10: tdY10, source: 'twelvedata (partial, no FRED key)', fred_stale: false } : null
   const leg = async (id) => {
     try {
       const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
@@ -3242,10 +3253,14 @@ async function briefYields() {
       return { value: latest.v, change: +(latest.v - prev.v).toFixed(2), date: latest.date }
     } catch (e) { console.warn(`🏦 [brief] FRED ${id} failed: ${e?.message}`); return null }
   }
-  const [y2, y10] = await Promise.all([leg('DGS2'), leg('DGS10')])
+  const [fredY2, fredY10] = await Promise.all([tdY2 ? null : leg('DGS2'), tdY10 ? null : leg('DGS10')])
+  const y2 = tdY2 || fredY2, y10 = tdY10 || fredY10
   if (!y2 && !y10) return null
-  console.log('🏦 [brief] yields via direct FRED DGS2/DGS10 (shared path was throttled)')
-  return { y2, y10, source: 'fred-direct (1-2 business day govt lag)', fred_stale: true }
+  const source = (tdY2 && tdY10) ? 'twelvedata (cross-asset batch)'
+    : (tdY2 || tdY10) ? 'twelvedata + FRED (FRED leg on a 1-2 business day govt lag)'
+    : 'FRED DGS2/DGS10 direct (1-2 business day govt lag)'
+  console.log(`🏦 [brief] yields via ${source}`)
+  return { y2, y10, source, fred_stale: !tdY2 }
 }
 
 // READ-ONLY view of the 2Y history v2 banks. Same 3-session basis as v2Yield2y3SessionBps(), but it
@@ -3510,7 +3525,7 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   let crossStale = false
   if (!cross) { const st = getCached('cross_asset_live'); if (st) { cross = st; crossStale = true; console.log('📈 [brief] cross-asset throttled — using last cached batch') } }
   const [yields, y2sess, macro, cot, leading] = await Promise.all([
-    withBudget(briefYields(), B, 'yields'),
+    withBudget(briefYields(cross), B, 'yields'),
     withBudget(briefYield2y3Session(), B, '2Y 3-session'),
     withBudget(fetchPolicyRateAndInflation(), B, 'FRED policy rate / core PCE'),
     withBudget(getCOTData(), B, 'COT'),
