@@ -3930,6 +3930,57 @@ app.get('/api/v2/shadow/telemetry', async (req, res) => {
       })(),
 
       // rows banked before opens became structured are strings — the ring buffer survives deploys
+      // How long biases actually survive. A cluster of sub-24h exits is whipsaw, not signal.
+      q5_flip_cadence: (() => {
+        const all = rows.flatMap((r) => r.outcomes || [])
+        const held = all.map((o) => o.held_hours).filter((h) => h != null).sort((a, b) => a - b)
+        const under = (h) => held.filter((x) => x < h).length
+        const pct = (k) => (held.length ? +((k / held.length) * 100).toFixed(1) : null)
+        return {
+          n: held.length,
+          held_hours: {
+            min: held[0] ?? null,
+            median: held.length ? held[Math.floor(held.length / 2)] : null,
+            max: held[held.length - 1] ?? null,
+          },
+          under_6h: under(6), pct_under_6h: pct(under(6)),
+          under_24h: under(24), pct_under_24h: pct(under(24)),
+          list: all.map((o) => ({ pair: o.pair, dir: o.direction, held_hours: o.held_hours, ended_by: o.ended_by, reason: o.closed_reason, realized_pips: o.realized_pips })),
+        }
+      })(),
+
+      // Directional skew. A raw SELL count conflates opposite views — EURUSD SELL is USD-strong while
+      // USDJPY SELL is USD-weak — so the meaningful figure is the IMPLIED USD direction. The macro
+      // score aggregate below tests the same thing at the source: if a currency's cross-sectional
+      // score is persistently one-signed, that is a cross-section problem, not a whipsaw problem.
+      q6_direction_skew: (() => {
+        const opens = rows.flatMap((r) => (r.opens || []).map((o) => {
+          if (typeof o === 'string') { const [pair, action, direction] = o.split(':'); return { pair, action, direction } }
+          return o
+        })).filter((o) => o.pair && o.direction)
+        const usdLeg = (pair, dir) => (pair.startsWith('USD') ? (dir === 'BUY' ? 'strong' : 'weak')
+          : pair.endsWith('USD') ? (dir === 'BUY' ? 'weak' : 'strong') : null)
+        const macro = {}
+        for (const r of rows) {
+          for (const [c, s] of Object.entries(r.macro_scores || {})) {
+            if (s == null) continue
+            const e = macro[c] || (macro[c] = { n: 0, sum: 0, pos: 0, neg: 0, zero: 0 })
+            e.n++; e.sum += s
+            if (s > 0) e.pos++; else if (s < 0) e.neg++; else e.zero++
+          }
+        }
+        for (const e of Object.values(macro)) e.mean = +(e.sum / e.n).toFixed(2)
+        return {
+          raw: { SELL: opens.filter((o) => o.direction === 'SELL').length, BUY: opens.filter((o) => o.direction === 'BUY').length },
+          implied_usd: {
+            strong: opens.filter((o) => usdLeg(o.pair, o.direction) === 'strong').length,
+            weak: opens.filter((o) => usdLeg(o.pair, o.direction) === 'weak').length,
+          },
+          macro_score_by_currency: macro,
+          note: 'implied_usd is the diagnostic; `raw` mixes USD-base and USD-quote pairs and will look skewed even when USD views are balanced.',
+        }
+      })(),
+
       opens: rows.flatMap((r) => (r.opens || []).map((o) => (typeof o === 'string' ? { at: r.at.slice(0, 16), raw: o } : { at: r.at.slice(0, 16), ...o }))),
       recent: rows.slice(-8),
     })
