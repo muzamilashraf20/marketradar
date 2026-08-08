@@ -3689,6 +3689,8 @@ RULES
 - For instruments with no live data in sections 1-5 (crypto, oil), set bias "neutral" and say in
   the reason which live proxy you inferred from, or that no live data covers it.
 - No hedged filler: if the live data does not support a directional call, say it is neutral.
+- Gold is already covered as XAU/USD in the "forex" array — do NOT add a gold or XAU entry to
+  "commodities" as well. Writing the same instrument up twice is pure duplication.
 
 Return ONLY a valid JSON object, no markdown fences, no commentary. Structure (fill every field
 from YOUR analysis — the example strings are format hints, not answers):
@@ -3715,7 +3717,6 @@ from YOUR analysis — the example strings are format hints, not answers):
     {"name": "ETH/USD", "bias": "", "reason": ""}
   ],
   "commodities": [
-    {"name": "Gold (XAU)", "bias": "", "reason": "cite XAU COT net and XAU/USD ADR spent"},
     {"name": "Oil (WTI)", "bias": "", "reason": ""}
   ],
   "preEventPlan": ["3-4 concrete actions for the hour before the release"],
