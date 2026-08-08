@@ -3282,20 +3282,32 @@ async function briefYield2y3Session() {
 // so neither existing path can answer "what did ADP actually print". This asks FMP for the PAST
 // window and keeps `actual`/`estimate`. 30-min cache, keyed per currency.
 const BRIEF_ACTUALS_TTL = 30 * 60 * 1000
+// `lastVendorStatus` records WHY the vendor produced nothing — key absent vs rejected vs quota vs
+// simply empty. Externally these all look identical (the calendar just falls back to the FF feed),
+// and there is no way to read Railway's env vars from here, so the endpoint reports this coarse
+// status instead. It carries no key material — only a reason code.
+let lastVendorStatus = null
 async function fetchRecentActuals(currency) {
   const ck = `brief_actuals_${currency}`
-  if (isCacheFreshFor(ck, BRIEF_ACTUALS_TTL)) return getCached(ck)
-  if (!FMP_KEY) return null
+  if (isCacheFreshFor(ck, BRIEF_ACTUALS_TTL)) { lastVendorStatus = 'ok (cached)'; return getCached(ck) }
+  if (!FMP_KEY) { lastVendorStatus = 'FMP_API_KEY not set in env'; return null }
   const to = new Date().toISOString().slice(0, 10)
   const from = new Date(Date.now() - 14 * 86400 * 1000).toISOString().slice(0, 10)
   const endpoints = [
     { label: 'legacy', url: 'https://financialmodelingprep.com/api/v3/economic_calendar' },
     { label: 'stable', url: 'https://financialmodelingprep.com/stable/economic-calendar' },
   ]
+  const attempts = []
   for (const ep of endpoints) {
     try {
       const r = await axios.get(ep.url, { params: { from, to, apikey: FMP_KEY }, timeout: 12000 })
-      if (!Array.isArray(r.data) || !r.data.length) continue
+      if (!Array.isArray(r.data) || !r.data.length) {
+        // FMP answers auth/plan problems with HTTP 200 and an {"Error Message": …} object, so an
+        // empty or non-array body is the shape a rejected key actually arrives in.
+        const msg = r.data?.['Error Message'] || r.data?.message || (Array.isArray(r.data) ? 'empty array' : `non-array ${typeof r.data}`)
+        attempts.push(`${ep.label}: HTTP ${r.status}, ${String(msg).slice(0, 120)}`)
+        continue
+      }
       const rows = r.data.map(e => {
         const ccy = (e.currency && String(e.currency).toUpperCase()) || CCY_FROM_COUNTRY[String(e.country || '').toUpperCase()] || String(e.country || '').toUpperCase()
         return {
@@ -3306,11 +3318,16 @@ async function fetchRecentActuals(currency) {
         }
       }).filter(e => e.time && e.currency === currency && e.actual !== null && String(e.actual).trim() !== '')
       console.log(`📑 [brief] FMP ${ep.label} past-window: ${rows.length} ${currency} releases with actuals (${from} → ${to})`)
-      if (rows.length) { setCache(ck, rows); return rows }
+      if (rows.length) { lastVendorStatus = `ok (${ep.label}, ${rows.length} rows)`; setCache(ck, rows); return rows }
+      attempts.push(`${ep.label}: HTTP ${r.status}, ${r.data.length} rows but 0 ${currency} with actuals`)
     } catch (e) {
-      console.warn(`⚠️ [brief] FMP ${ep.label} past-window failed: ${e?.response?.status || ''} ${e?.message}`)
+      const st = e?.response?.status
+      const body = e?.response?.data?.['Error Message'] || e?.response?.data?.message || e?.message
+      attempts.push(`${ep.label}: ${st ? `HTTP ${st}` : 'network'}, ${String(body).slice(0, 120)}`)
+      console.warn(`⚠️ [brief] FMP ${ep.label} past-window failed: ${st || ''} ${e?.message}`)
     }
   }
+  lastVendorStatus = attempts.join(' | ') || 'no response'
   return null
 }
 
@@ -3370,7 +3387,7 @@ async function fetchLeadingIndicators(event) {
   if (!rows) {
     const fred = await fetchFredLeading(fam.id, event.currency)
     return {
-      family: fam.id, items: fred, source: fred.length ? 'fred-supplement' : null,
+      family: fam.id, items: fred, source: fred.length ? 'fred-supplement' : null, vendorStatus: lastVendorStatus,
       note: fred.length
         ? 'calendar vendor published no actuals this run — these are FRED prints, actual vs PREVIOUS only, no forecast available'
         : 'no source returned released actuals this run',
@@ -3393,9 +3410,9 @@ async function fetchLeadingIndicators(event) {
     .slice(0, 8)
   if (!items.length) {
     const fred = await fetchFredLeading(fam.id, event.currency)
-    if (fred.length) return { family: fam.id, items: fred, source: 'fred-supplement', note: `no ${fam.id} vendor prints in the last 14 days — these are FRED prints, actual vs PREVIOUS only, no forecast available` }
+    if (fred.length) return { family: fam.id, items: fred, source: 'fred-supplement', vendorStatus: lastVendorStatus, note: `no ${fam.id} vendor prints in the last 14 days — these are FRED prints, actual vs PREVIOUS only, no forecast available` }
   }
-  return { family: fam.id, items, source: items.length ? 'calendar-vendor' : null, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
+  return { family: fam.id, items, source: items.length ? 'calendar-vendor' : null, vendorStatus: lastVendorStatus, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
 }
 
 // Live price + how much of the typical daily range each affected pair has already spent.
@@ -3480,11 +3497,15 @@ function sanitizeBriefField(v, max = 120) {
 // So every input gets a hard budget. A timed-out input is simply "not available" — the same contract
 // the prompt already has for a failed fetch — and the underlying promise is left running so it warms
 // the shared cache for the next request.
-function withBudget(promise, ms, label) {
+// `timings` collects per-input elapsed ms so the endpoint can report WHERE its wall time goes —
+// TwelveData credit waits, FRED, or the model — instead of us guessing from a single total.
+function withBudget(promise, ms, label, timings) {
+  const t = Date.now()
+  const stamp = (v) => { if (timings) timings[label] = Date.now() - t; return v }
   return Promise.race([
     promise,
     new Promise(resolve => setTimeout(() => { console.warn(`⏱️ [brief] ${label} exceeded ${ms / 1000}s budget — treating as not available`); resolve(null) }, ms)),
-  ]).catch(e => { console.warn(`⚠️ [brief] ${label} failed: ${e?.message}`); return null })
+  ]).then(stamp).catch(e => { console.warn(`⚠️ [brief] ${label} failed: ${e?.message}`); return stamp(null) })
 }
 const BRIEF_FETCH_BUDGET = 20 * 1000
 
@@ -3517,20 +3538,24 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   // rather than racing each other, and PAIRS GO FIRST: per-pair price and ADR are what the per-pair
   // analysis is built on, and they have no second source, whereas cross-asset degrades to its last
   // cached batch and the yield levels have an independent FRED path.
-  const pairCtx = await withBudget(fetchBriefPairContext(pairs), B, 'pair prices / ADR')
-  let cross = await withBudget(fetchCrossAssetLive(), B, 'cross-asset')
+  const timings = {}
+  const pairCtx = await withBudget(fetchBriefPairContext(pairs), B, 'pairs', timings)
+  let cross = await withBudget(fetchCrossAssetLive(), B, 'crossAsset', timings)
   // Throttled out? Fall back to the last cached batch and SAY it is last-known, rather than dropping
   // the dollar and volatility read entirely. Each quote carries its own `datetime`, so the model can
   // still see how old the print is.
   let crossStale = false
   if (!cross) { const st = getCached('cross_asset_live'); if (st) { cross = st; crossStale = true; console.log('📈 [brief] cross-asset throttled — using last cached batch') } }
+  const tParallel = Date.now()
   const [yields, y2sess, macro, cot, leading] = await Promise.all([
-    withBudget(briefYields(cross), B, 'yields'),
-    withBudget(briefYield2y3Session(), B, '2Y 3-session'),
-    withBudget(fetchPolicyRateAndInflation(), B, 'FRED policy rate / core PCE'),
-    withBudget(getCOTData(), B, 'COT'),
-    withBudget(fetchLeadingIndicators(event), B, 'leading indicators'),
+    withBudget(briefYields(cross), B, 'yields', timings),
+    withBudget(briefYield2y3Session(), B, 'yield2y3Session', timings),
+    withBudget(fetchPolicyRateAndInflation(), B, 'fredPolicyRate', timings),
+    withBudget(getCOTData(), B, 'cot', timings),
+    withBudget(fetchLeadingIndicators(event), B, 'leadingIndicators', timings),
   ])
+  timings.parallelGroup = Date.now() - tParallel
+  timings.dataTotal = Date.now() - t0
 
   // ── Format each block. "not available" is a first-class answer: the model is told to treat it
   //    as unknown rather than fill the gap from training data. ──
@@ -3700,6 +3725,7 @@ from YOUR analysis — the example strings are format hints, not answers):
 }`
 
   try {
+    const tModel = Date.now()
     const m = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       // 8192, not 4096: the schema asks for ~14 reasoned entries plus evidence and gap lists, and a
@@ -3708,6 +3734,7 @@ from YOUR analysis — the example strings are format hints, not answers):
       system: 'You are a macro analyst for BiasForge. You analyse ONLY the live data provided in the prompt. You never cite a level, rate, or positioning figure from memory, and you say "not available" rather than estimate. Output raw JSON only.',
       messages: [{ role: 'user', content: prompt }],
     })
+    timings.model = Date.now() - tModel
     trackAI('calendar-brief', 'claude-sonnet-4-6', m.usage)
     if (m.stop_reason === 'max_tokens') throw new Error(`response truncated at max_tokens (${m.usage?.output_tokens} out)`)
     const text = (m.content?.[0]?.text || '').trim().replace(/```json|```/g, '').trim()
@@ -3727,9 +3754,10 @@ from YOUR analysis — the example strings are format hints, not answers):
         crossAsset: cross ? Object.keys(cross) : null,
         cot: cot?.data?.length ? { reportDate: cot.reportDate, currencies: (cot.data || []).map(r => r.currency) } : null,
         pairsPriced: pairs.filter(s => pairCtx?.[s]),
-        leadingIndicators: { family: leading?.family || null, count: leading?.items?.length || 0, note: leading?.note || null },
+        leadingIndicators: { family: leading?.family || null, count: leading?.items?.length || 0, source: leading?.source || null, vendorStatus: leading?.vendorStatus || null, note: leading?.note || null },
         missing: gaps,
       },
+      timings: { ...timings, totalMs: Date.now() - t0 },
       generatedAt: new Date().toISOString(),
     }
     setCache(cacheKey, payload)

@@ -6,24 +6,48 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const CALENDAR_URL = `${API_BASE}/api/calendar`;
 
 // ─── Analyze Modal ────────────────────────────────────────────────────────────
+// The brief fetches live data per request and then runs a model over it, so it legitimately takes
+// ~90s. A bare spinner reads as "broken" over that long, so the wait is narrated: an elapsed counter
+// plus stages that track what the backend is actually doing.
+const BRIEF_TIMEOUT_MS = 150000;
+const LOADING_STAGES = [
+  { at: 0,  text: 'Fetching live yields, COT positioning and pair prices…' },
+  { at: 20, text: 'Pulling policy rates and recent leading indicators…' },
+  { at: 45, text: 'Analysing the live data against this event…' },
+  { at: 80, text: 'Almost there — writing up the brief…' },
+];
+
 function AnalyzeModal({ event, onClose }) {
   const [analysis, setAnalysis] = useState(null);
   const [dataUsed, setDataUsed] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
 
   useEffect(() => {
     fetchAnalysis();
   }, []);
 
+  // Drives the elapsed counter so the user can see the request is alive, not wedged.
+  useEffect(() => {
+    if (!loading) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
+
   // The prompt lives in the backend (POST /api/calendar-brief). It used to be built here, which
   // meant it was readable in DevTools and every macro fact in it was hardcoded text. The endpoint
   // now takes only the event identifier and fetches yields / rates / COT / prices / leading
   // indicators live, per request.
   const fetchAnalysis = async () => {
+    // fetch() has NO default timeout — without this the modal would spin forever on a stalled
+    // request instead of failing cleanly.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), BRIEF_TIMEOUT_MS)
     try {
       setLoading(true);
       setError('');
+      setElapsed(0);
 
       const res = await fetch(`${API_BASE}/api/calendar-brief`, {
         method: 'POST',
@@ -36,19 +60,23 @@ function AnalyzeModal({ event, onClose }) {
           forecast: event.forecast,
           previous: event.previous,
           actual: event.actual,
-        })
+        }),
+        signal: controller.signal
       })
 
-      const data = await res.json()
-      if (!data.success) throw new Error(data.error || 'Brief failed')
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.success) throw new Error(data?.detail || data?.error || `Request failed (HTTP ${res.status})`)
 
       setAnalysis(data.analysis)
       setDataUsed(data.dataUsed || null)
 
     } catch (err) {
       console.error('Analysis error:', err)
-      setError('Failed to generate analysis. Please try again.')
+      setError(err.name === 'AbortError'
+        ? `The brief took longer than ${Math.round(BRIEF_TIMEOUT_MS / 1000)}s and was stopped. Live market data sources may be slow right now — try again in a moment.`
+        : `Failed to generate analysis. ${err.message || 'Please try again.'}`)
     } finally {
+      clearTimeout(timer)
       setLoading(false)
     }
   }
@@ -105,13 +133,24 @@ function AnalyzeModal({ event, onClose }) {
         {loading && (
           <div className="p-8 text-center">
             <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-slate-400 text-sm">BiasForge AI is analyzing market impact...</p>
+            <p className="text-slate-300 text-sm font-medium">
+              {[...LOADING_STAGES].reverse().find((s) => elapsed >= s.at)?.text || LOADING_STAGES[0].text}
+            </p>
+            <p className="text-slate-500 text-xs mt-2">
+              Fetching live market data — this usually takes about 90 seconds · {elapsed}s
+            </p>
           </div>
         )}
 
         {error && (
           <div className="p-6">
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-300 text-sm">{error}</div>
+            <button
+              onClick={fetchAnalysis}
+              className="mt-3 flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-sm font-medium hover:bg-cyan-500/20 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Try again
+            </button>
           </div>
         )}
 
