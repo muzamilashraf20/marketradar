@@ -3331,6 +3331,357 @@ async function fetchRecentActuals(currency) {
   return null
 }
 
+// ============================================
+// 🔎 RELEASE ACTUALS CACHE — proprietary prints no free API carries
+// ADP and the two ISM PMIs are licensed products: ISM pulled all 22 of its series off FRED in 2016,
+// and ADP was never there. They are also the most useful NFP leads, so the brief has been reporting
+// "insufficient leading data" for exactly the events where a lead would matter most.
+//
+// A cron searches each release ONCE, just after it publishes, and banks the result. The brief only
+// ever READS this table — so its latency and cost are unchanged, and an empty table degrades to the
+// existing FRED path rather than failing. Cost lands per RELEASE (~3/month), not per brief.
+//
+// Jobless claims are deliberately NOT here: FRED's ICSA already carries them for free, and a probe
+// confirmed the searched figure and ICSA agree exactly. Paying for a search there would buy nothing.
+// ============================================
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+// Every series here must be BOTH proprietary (absent from FRED/ECB/ONS) and present on the FF
+// calendar (which supplies the forecast — the half the search cannot reliably get).
+const SEARCHED_SERIES = {
+  ADP: {
+    label: 'ADP National Employment Report',
+    subject: 'private payrolls change',
+    match: /adp.*(non.?farm|employment)/i,
+    domains: ['adp.com', 'adpemploymentreport.com', 'mediacenter.adp.com'],
+    range: [-2_000_000, 2_000_000],   // jobs; a real print is tens/hundreds of thousands
+    cadence: 'monthly',
+  },
+  ISM_MFG: {
+    label: 'ISM Manufacturing PMI',
+    subject: 'headline PMI index value',
+    match: /^ism manufacturing pmi$/i,
+    domains: ['ismworld.org'],
+    range: [25, 80],                  // a diffusion index; outside this is a parse error, not a print
+    cadence: 'monthly',
+  },
+  ISM_SVC: {
+    label: 'ISM Services PMI',
+    subject: 'headline PMI index value',
+    match: /^ism (services|non-manufacturing) pmi$/i,
+    domains: ['ismworld.org'],
+    range: [25, 80],
+    cadence: 'monthly',
+  },
+}
+
+// Which searched series inform which event family (families are defined by LEADING_FAMILIES above).
+const SEARCH_LEADING_BY_FAMILY = {
+  employment: ['ADP', 'ISM_MFG', 'ISM_SVC'],
+  activity: ['ISM_MFG', 'ISM_SVC'],
+  growth: ['ISM_MFG', 'ISM_SVC'],
+  'rate-decision': ['ADP', 'ISM_MFG'],
+}
+
+// A monthly print published in month M covers month M-1. This is the ONLY period rule Phase 1 needs
+// — all three series are monthly and all three report the prior month.
+function expectedPeriodFor(scheduledAt) {
+  const d = new Date(scheduledAt)
+  let y = d.getUTCFullYear(), m = d.getUTCMonth() - 1
+  if (m < 0) { m = 11; y -= 1 }
+  return { key: `${y}-${String(m + 1).padStart(2, '0')}`, name: MONTH_NAMES[m], year: y }
+}
+function nextReleaseAfter(scheduledAt) {
+  const n = new Date(scheduledAt); n.setUTCMonth(n.getUTCMonth() + 1); return n.toISOString()
+}
+// Normalize whatever the model says the period is ("July 2026", "2026-07", "Jul 2026") to YYYY-MM.
+function normalizePeriod(text) {
+  const s = String(text || '').trim()
+  let m = s.match(/(\d{4})[-/](\d{1,2})/)
+  if (m) return `${m[1]}-${String(+m[2]).padStart(2, '0')}`
+  m = s.match(/([A-Za-z]{3,9})\.?\s+(\d{4})/)
+  if (m) {
+    const i = MONTH_NAMES.findIndex(n => n.toLowerCase().startsWith(m[1].toLowerCase().slice(0, 3)))
+    if (i >= 0) return `${m[2]}-${String(i + 1).padStart(2, '0')}`
+  }
+  return null
+}
+
+// Publishers write the unit out in words — the live ISM probe returned the string "55.6 percent",
+// which the shared parseEconNum rejects outright (it only tolerates a K/M/B/T suffix). Strip a
+// trailing unit word first rather than loosening parseEconNum, which the vendor and FRED paths
+// also depend on and which must keep rejecting anything that isn't cleanly numeric.
+// Strip ONLY non-numeric unit words. Magnitude suffixes (K/M/B/T) must survive — parseEconNum
+// applies their multiplier, and eating the "K" off the FF forecast "68K" would silently turn
+// 68,000 into 68 and flip a miss into a beat. Word-form magnitudes ("42 thousand") are likewise
+// left alone: parseEconNum then returns null and the gate rejects, which is the safe outcome —
+// far better than a silent 1000x error.
+const RELEASE_UNIT_WORDS = /\s*(percentage points?|percent|points?|pts?|index|jobs)\.?$/i
+function parseReleaseValue(v) {
+  if (v === null || v === undefined) return null
+  const stripped = String(v).trim().replace(RELEASE_UNIT_WORDS, '').trim()
+  return parseEconNum(stripped)
+}
+
+let raTableMissing = false   // logged once — a missing table must not spam every sweep
+function raTableGone(error) {
+  const c = error?.code || ''
+  if (c === '42P01' || c === 'PGRST205' || /release_actuals/i.test(error?.message || '') && /does not exist|not find/i.test(error?.message || '')) {
+    if (!raTableMissing) {
+      raTableMissing = true
+      console.error('⚠️ [release-actuals] table `release_actuals` does not exist — searches disabled, brief falls back to FRED. Run the DDL in docs to enable.')
+    }
+    return true
+  }
+  return false
+}
+
+// ── Ledger: one row per RELEASE, created when the event appears on the calendar ──
+// Created at SCHEDULE time, not at search time, because the forecast comes from the FF feed and FF
+// only serves the current week — if the row were created after the release the forecast could
+// already be gone, and beat/miss with it.
+async function ensurePendingReleaseRows() {
+  if (raTableMissing) return 0
+  let events = []
+  try { events = await getEconomicCalendar() } catch (e) { return 0 }
+  const rows = []
+  for (const e of events) {
+    if ((e.country || '').toUpperCase() !== 'USD' || !e.time) continue
+    for (const [id, cfg] of Object.entries(SEARCHED_SERIES)) {
+      if (!cfg.match.test(e.event || '')) continue
+      const period = expectedPeriodFor(e.time)
+      rows.push({
+        release_key: `${id}:${period.key}`,
+        series_id: id,
+        reference_period: period.key,
+        scheduled_at: e.time,
+        next_release_at: nextReleaseAfter(e.time),
+        forecast: e.forecast || null,
+        previous: e.previous || null,
+        status: 'pending',
+        attempts: 0,
+      })
+    }
+  }
+  if (!rows.length) return 0
+  try {
+    // ignoreDuplicates: a row already banked (possibly already `found`) must never be reset to
+    // pending by a later calendar refresh — that would re-run a search we already paid for.
+    const { error } = await supabase.from('release_actuals').upsert(rows, { onConflict: 'release_key', ignoreDuplicates: true })
+    if (error) { if (!raTableGone(error)) console.warn(`⚠️ [release-actuals] row upsert failed: ${error.message}`); return 0 }
+  } catch (e) { console.warn(`⚠️ [release-actuals] row upsert threw: ${e?.message}`); return 0 }
+  return rows.length
+}
+
+// ── The search itself ──
+// The query gets MORE SPECIFIC with each attempt. A bare retry would re-run the same search and the
+// model would very likely surface the same stale page it surfaced last time — which is exactly the
+// failure mode observed in testing (a 9-month-old ADP print returned as "most recent"). Naming the
+// period and the publication date forces a different result set.
+function releaseSearchQuery(cfg, period, scheduledAt, attempt) {
+  const d = new Date(scheduledAt)
+  const relDate = `${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`
+  const base = `${cfg.label} ${period.name} ${period.year}`
+  if (attempt <= 1) return base
+  if (attempt === 2) return `${base} released ${relDate} press release`
+  return `"${cfg.label}" ${period.name} ${period.year} official report published ${relDate} — not a prior month`
+}
+
+const RELEASE_SEARCH_GUARD = `You report a single economic data release. Rules you must not break:
+
+1. Report a figure ONLY if you found it on a page you actually retrieved in this conversation, and you can give the exact URL.
+2. You are looking for ONE SPECIFIC reference period. If you cannot find that exact period, answer "not available" — do NOT substitute a different month, and do NOT report the most recent figure you happen to find instead.
+3. Never estimate, interpolate, recall from memory, or reason your way to a number. A wrong number stated confidently is far worse than "not available".
+4. release_date is when the figure was PUBLISHED. reference_period is the month the figure DESCRIBES. They are different — report both, and do not confuse a revised figure for the initial print.
+
+Return ONLY raw JSON, no markdown:
+{"status":"found"|"not available","value":"<figure exactly as published>","reference_period":"<period it describes>","release_date":"<YYYY-MM-DD it was published>","source_url":"<exact URL>","reason":"<only when not available>"}`
+
+async function searchReleaseActual(seriesId, cfg, period, scheduledAt, attempt) {
+  const query = releaseSearchQuery(cfg, period, scheduledAt, attempt)
+  const prompt = `Find the ${cfg.subject} from the ${cfg.label}.
+
+REQUIRED reference period: ${period.name} ${period.year} (${period.key})
+Expected publication date: on or about ${new Date(scheduledAt).toISOString().slice(0, 10)}
+
+Search for: ${query}
+
+If the only figures you can find are for a different month, that is "not available" — say so rather than reporting the wrong month.`
+  let messages = [{ role: 'user', content: prompt }]
+  let m, pauses = 0
+  for (;;) {
+    m = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2048,
+      system: RELEASE_SEARCH_GUARD,
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6, allowed_domains: cfg.domains }],
+      messages,
+    })
+    // Server-tool loop caps at 10 iterations and stops with pause_turn — resume by appending the
+    // assistant turn, with no extra user message.
+    if (m.stop_reason !== 'pause_turn' || pauses >= 2) break
+    pauses++
+    messages = [...messages, { role: 'assistant', content: m.content }]
+  }
+  trackAI('release-search', 'claude-sonnet-4-6', m.usage)
+  const searches = m.usage?.server_tool_use?.web_search_requests || 0
+  const text = m.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim().replace(/```json|```/g, '').trim()
+  let out = null
+  try { out = JSON.parse(text) } catch (e) {
+    const s = text.indexOf('{'), t = text.lastIndexOf('}')
+    if (s >= 0 && t > s) { try { out = JSON.parse(text.slice(s, t + 1)) } catch (e2) {} }
+  }
+  return { result: out, searches, query }
+}
+
+// ── The gate. This is CODE, not prompt ──
+// The guard prompt alone does not stop a stale answer: a 9-month-old print satisfies every rule in
+// it (the model really did retrieve that page and really can cite it). Only an independent check
+// against the release we actually triggered on catches it — and it is anchored to that event's
+// scheduled time, not to "now", which is both tighter and more meaningful than an age limit.
+const RELEASE_DATE_TOLERANCE_DAYS = 3
+function validateReleaseResult(result, cfg, period, scheduledAt) {
+  if (!result || result.status !== 'found') return { ok: false, reason: `model returned not-available: ${String(result?.reason || 'no reason').slice(0, 140)}` }
+  const relD = new Date(result.release_date)
+  if (isNaN(relD)) return { ok: false, reason: `unparseable release_date "${result.release_date}"` }
+  const driftDays = Math.abs(relD.getTime() - new Date(scheduledAt).getTime()) / 86400000
+  if (driftDays > RELEASE_DATE_TOLERANCE_DAYS) {
+    return { ok: false, reason: `release_date ${result.release_date} is ${Math.round(driftDays)}d from the scheduled release ${String(scheduledAt).slice(0, 10)}` }
+  }
+  const got = normalizePeriod(result.reference_period)
+  if (got !== period.key) return { ok: false, reason: `reference_period "${result.reference_period}" (${got || 'unparseable'}) is not the expected ${period.key}` }
+  const n = parseReleaseValue(result.value)
+  if (n === null) return { ok: false, reason: `unparseable value "${result.value}"` }
+  if (n < cfg.range[0] || n > cfg.range[1]) return { ok: false, reason: `value ${n} outside plausible range ${cfg.range[0]}..${cfg.range[1]}` }
+  if (!/^https?:\/\//i.test(String(result.source_url || ''))) return { ok: false, reason: 'no usable source_url' }
+  return { ok: true, numeric: n }
+}
+
+// ── Health: a silent gate that rejects everything looks identical to a gate that is simply working ──
+const RA_HEALTH_KEY = 'release_actuals_health'
+const RA_ALERT_AFTER = 3
+async function raRecordOutcome(found, releaseKey, reason) {
+  try {
+    const prev = (await v2LoadSnapshot(RA_HEALTH_KEY)) || { consecutiveRejects: 0, alerted: false, recent: [] }
+    if (found) {
+      if (prev.consecutiveRejects || prev.alerted) await v2SaveSnapshot(RA_HEALTH_KEY, { consecutiveRejects: 0, alerted: false, recent: [] })
+      return
+    }
+    const recent = [{ release_key: releaseKey, reason: String(reason || '').slice(0, 200), at: new Date().toISOString() }, ...(prev.recent || [])].slice(0, 5)
+    const consecutiveRejects = (prev.consecutiveRejects || 0) + 1
+    let alerted = prev.alerted || false
+    if (consecutiveRejects >= RA_ALERT_AFTER && !alerted) {
+      const chat = v2AdminChat()   // numeric-only: an @handle would risk posting to the public channel
+      const body = `⚠️ Release-actuals search has failed ${consecutiveRejects} releases in a row.\n\n`
+        + recent.map(r => `• ${r.release_key}\n  ${r.reason}`).join('\n')
+        + `\n\nEither the search is not finding these prints, or the validation gate is too tight. Brief is falling back to FRED meanwhile.`
+      if (chat) { await sendTG(chat, body); alerted = true; console.log(`📱 [release-actuals] admin alerted after ${consecutiveRejects} consecutive rejects`) }
+      else console.error(`⚠️ [release-actuals] ${consecutiveRejects} consecutive rejects — no TG_ADMIN_CHAT_ID, logged only:\n${body}`)
+    }
+    await v2SaveSnapshot(RA_HEALTH_KEY, { consecutiveRejects, alerted, recent })
+  } catch (e) { console.warn(`⚠️ [release-actuals] health record failed: ${e?.message}`) }
+}
+
+// ── Sweeper ──
+// Every tick: top up pending rows from the calendar, then process anything now due. State lives in
+// the DB, not in a timer, so a Railway redeploy cannot lose a release or double-search one.
+const RA_PUBLISH_DELAY_MS = 20 * 60 * 1000            // give the publisher time to put the page up
+const RA_BACKOFF_MS = [0, 40 * 60 * 1000, 2 * 60 * 60 * 1000]   // extra wait before attempts 2 and 3
+const RA_MAX_ATTEMPTS = 3
+async function sweepReleaseActuals() {
+  if (raTableMissing) return
+  const h = new Date().getUTCHours(), d = new Date().getUTCDay()
+  // 8:30 ET = 12:30/13:30 UTC and 10:00 ET = 14:00/15:00 UTC depending on DST; 11–21 UTC covers
+  // both plus the retry tail. Outside it the sweep is a no-op and costs nothing.
+  if (d === 0 || d === 6 || h < 11 || h > 21) return
+  await ensurePendingReleaseRows()
+  let due = []
+  try {
+    const { data, error } = await supabase.from('release_actuals').select('*').eq('status', 'pending').lt('attempts', RA_MAX_ATTEMPTS)
+    if (error) { if (!raTableGone(error)) console.warn(`⚠️ [release-actuals] select failed: ${error.message}`); return }
+    const now = Date.now()
+    due = (data || []).filter(r => {
+      const ready = new Date(r.scheduled_at).getTime() + RA_PUBLISH_DELAY_MS + (RA_BACKOFF_MS[r.attempts] || 0)
+      return now >= ready
+    })
+  } catch (e) { console.warn(`⚠️ [release-actuals] select threw: ${e?.message}`); return }
+  if (!due.length) return
+
+  for (const row of due) {
+    const cfg = SEARCHED_SERIES[row.series_id]
+    if (!cfg) continue
+    const period = { key: row.reference_period, name: MONTH_NAMES[+row.reference_period.slice(5, 7) - 1], year: +row.reference_period.slice(0, 4) }
+    const attempt = (row.attempts || 0) + 1
+    try {
+      const { result, searches, query } = await searchReleaseActual(row.series_id, cfg, period, row.scheduled_at, attempt)
+      const check = validateReleaseResult(result, cfg, period, row.scheduled_at)
+      if (check.ok) {
+        const f = parseReleaseValue(row.forecast)
+        const surprise = (f !== null) ? (check.numeric > f ? 'beat' : check.numeric < f ? 'miss' : 'inline') : null
+        await supabase.from('release_actuals').update({
+          actual: String(result.value), surprise, source_url: result.source_url,
+          release_date: result.release_date, status: 'found', attempts: attempt, reject_reason: null,
+        }).eq('release_key', row.release_key)
+        console.log(`✅ [release-actuals] ${row.release_key} = ${result.value} (${surprise || 'no forecast'}) via "${query}" · ${searches} searches`)
+        await raRecordOutcome(true, row.release_key)
+      } else {
+        const terminal = attempt >= RA_MAX_ATTEMPTS
+        await supabase.from('release_actuals').update({
+          attempts: attempt, reject_reason: check.reason, status: terminal ? 'not_available' : 'pending',
+        }).eq('release_key', row.release_key)
+        console.warn(`⚠️ [release-actuals] ${row.release_key} attempt ${attempt}/${RA_MAX_ATTEMPTS} rejected — ${check.reason}`)
+        if (terminal) await raRecordOutcome(false, row.release_key, check.reason)
+      }
+    } catch (e) {
+      const attemptsNow = attempt
+      const terminal = attemptsNow >= RA_MAX_ATTEMPTS
+      const reason = `search threw: ${String(e?.message || e).slice(0, 160)}`
+      try {
+        await supabase.from('release_actuals').update({ attempts: attemptsNow, reject_reason: reason, status: terminal ? 'not_available' : 'pending' }).eq('release_key', row.release_key)
+      } catch (e2) {}
+      console.error(`❌ [release-actuals] ${row.release_key}: ${reason}`)
+      if (terminal) await raRecordOutcome(false, row.release_key, reason)
+    }
+  }
+}
+
+// ── Read side: what the brief consumes ──
+// A monthly print three weeks old is not stale — it IS the current print. What matters is whether
+// the NEXT one has since landed: past that, serving the previous month as current is the same
+// error the write gate exists to prevent, just on the read path.
+const RA_SUPERSEDED_GRACE_MS = 2 * 24 * 60 * 60 * 1000
+async function getCachedReleaseActuals(familyId, currency) {
+  if (raTableMissing || currency !== 'USD') return []
+  const wanted = SEARCH_LEADING_BY_FAMILY[familyId] || []
+  if (!wanted.length) return []
+  try {
+    const { data, error } = await supabase.from('release_actuals')
+      .select('*').eq('status', 'found').in('series_id', wanted)
+      .order('scheduled_at', { ascending: false }).limit(12)
+    if (error) { if (!raTableGone(error)) console.warn(`⚠️ [release-actuals] read failed: ${error.message}`); return [] }
+    const now = Date.now()
+    const seen = new Set()
+    const out = []
+    for (const r of data || []) {
+      if (seen.has(r.series_id)) continue          // newest row per series only
+      if (now > new Date(r.next_release_at).getTime() + RA_SUPERSEDED_GRACE_MS) continue   // superseded
+      seen.add(r.series_id)
+      const a = parseReleaseValue(r.actual), p = parseReleaseValue(r.previous)
+      out.push({
+        title: SEARCHED_SERIES[r.series_id]?.label || r.series_id,
+        date: r.scheduled_at,
+        actual: r.actual, forecast: r.forecast || null, previous: r.previous || null,
+        surprise: r.surprise || null,
+        vsPrevious: (a !== null && p !== null) ? (a > p ? 'higher' : a < p ? 'lower' : 'flat') : null,
+        referencePeriod: r.reference_period,
+        releaseDate: r.release_date,
+        sourceUrl: r.source_url,
+      })
+    }
+    return out
+  } catch (e) { console.warn(`⚠️ [release-actuals] read threw: ${e?.message}`); return [] }
+}
+
 // FRED supplement, US only. The calendar vendors are the right source for actual-vs-FORECAST, but
 // when FMP is down (production currently falls back to the FF feed, which publishes no actuals at
 // all) the model would get nothing. FRED does publish the prints themselves — no forecast, so these
@@ -3380,16 +3731,38 @@ async function fetchFredLeading(familyId, currency) {
   return (await Promise.all(series.map(one))).filter(Boolean)
 }
 
+// Merge banked search results with the FRED supplement. They are complementary, not alternatives:
+// the cache carries the proprietary prints WITH a forecast (so a real beat/miss), FRED carries the
+// government series with no forecast (direction only). Together the model sees strictly more than
+// either alone. Cache first — a genuine beat/miss outranks a direction of travel.
+function mergeLeadingItems(cached, fred) {
+  const seen = new Set(cached.map(i => i.title))
+  return [...cached, ...fred.filter(i => !seen.has(i.title))]
+    .sort((x, y) => (x.date < y.date ? 1 : -1))
+    .slice(0, 8)
+}
+function leadingSourceLabel(cached, fred) {
+  if (cached.length && fred.length) return 'search-cache + fred-supplement'
+  if (cached.length) return 'search-cache'
+  return fred.length ? 'fred-supplement' : null
+}
+
 async function fetchLeadingIndicators(event) {
   const fam = LEADING_FAMILIES.find(f => f.match.test(event.title))
   if (!fam) return { family: null, items: [], note: `no leading-indicator family maps to "${event.title}"` }
   const rows = await fetchRecentActuals(event.currency)
   if (!rows) {
-    const fred = await fetchFredLeading(fam.id, event.currency)
+    // Cache is a plain indexed select — no credit limiter, no vendor. An empty table simply yields
+    // [] and the path below is byte-for-byte the behaviour that shipped before this cache existed.
+    const [cached, fred] = await Promise.all([
+      getCachedReleaseActuals(fam.id, event.currency),
+      fetchFredLeading(fam.id, event.currency),
+    ])
+    const items = mergeLeadingItems(cached, fred)
     return {
-      family: fam.id, items: fred, source: fred.length ? 'fred-supplement' : null, vendorStatus: lastVendorStatus,
-      note: fred.length
-        ? 'calendar vendor published no actuals this run — these are FRED prints, actual vs PREVIOUS only, no forecast available'
+      family: fam.id, items, source: leadingSourceLabel(cached, fred), vendorStatus: lastVendorStatus,
+      note: items.length
+        ? `calendar vendor published no actuals this run — ${cached.length} banked search print(s) with forecasts, ${fred.length} FRED print(s) without`
         : 'no source returned released actuals this run',
     }
   }
@@ -3409,8 +3782,12 @@ async function fetchLeadingIndicators(event) {
     .sort((x, y) => (x.date < y.date ? 1 : -1))
     .slice(0, 8)
   if (!items.length) {
-    const fred = await fetchFredLeading(fam.id, event.currency)
-    if (fred.length) return { family: fam.id, items: fred, source: 'fred-supplement', vendorStatus: lastVendorStatus, note: `no ${fam.id} vendor prints in the last 14 days — these are FRED prints, actual vs PREVIOUS only, no forecast available` }
+    const [cached, fred] = await Promise.all([
+      getCachedReleaseActuals(fam.id, event.currency),
+      fetchFredLeading(fam.id, event.currency),
+    ])
+    const merged = mergeLeadingItems(cached, fred)
+    if (merged.length) return { family: fam.id, items: merged, source: leadingSourceLabel(cached, fred), vendorStatus: lastVendorStatus, note: `no ${fam.id} vendor prints in the last 14 days — ${cached.length} banked search print(s), ${fred.length} FRED print(s)` }
   }
   return { family: fam.id, items, source: items.length ? 'calendar-vendor' : null, vendorStatus: lastVendorStatus, note: items.length ? null : `no ${fam.id} leading prints with actuals in the last 14 days for ${event.currency}` }
 }
@@ -3620,9 +3997,15 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
   const leadingBlock = (() => {
     if (!leading?.items?.length) { gaps.push('leading indicators'); return `${NA} — ${leading?.note || 'none found'}` }
     const noneHaveForecast = leading.items.every(i => !i.forecast)
-    return leading.items.map(i =>
-      `${i.title} [${i.date.slice(0, 10)}] actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise vs forecast NOT computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}`
-    ).join('\n')
+    // Never render a bare number. The period a figure DESCRIBES and the date it was PUBLISHED are
+    // different, and a monthly print read three weeks later is still current — the model can only
+    // judge that if both are on the page.
+    return leading.items.map(i => {
+      const stamp = i.referencePeriod
+        ? `[covers ${i.referencePeriod}, published ${i.releaseDate || i.date.slice(0, 10)}]`
+        : `[${i.date.slice(0, 10)}]`
+      return `${i.title} ${stamp} actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise vs forecast NOT computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}${i.sourceUrl ? ` (source: ${i.sourceUrl})` : ''}`
+    }).join('\n')
       + `\n(family: ${leading.family}, source: ${leading.source || 'unknown'}${leading.note ? ` — ${leading.note}` : ''})`
       + (noneHaveForecast
         ? `\nIMPORTANT: no print above has a forecast, so NONE of them is a beat or a miss. You may describe the direction of travel versus the previous print, but tilt MUST be "insufficient leading data" and probability MUST be null.`
@@ -3755,7 +4138,12 @@ from YOUR analysis — the example strings are format hints, not answers):
         crossAsset: cross ? Object.keys(cross) : null,
         cot: cot?.data?.length ? { reportDate: cot.reportDate, currencies: (cot.data || []).map(r => r.currency) } : null,
         pairsPriced: pairs.filter(s => pairCtx?.[s]),
-        leadingIndicators: { family: leading?.family || null, count: leading?.items?.length || 0, source: leading?.source || null, vendorStatus: leading?.vendorStatus || null, note: leading?.note || null },
+        leadingIndicators: {
+          family: leading?.family || null, count: leading?.items?.length || 0,
+          source: leading?.source || null, vendorStatus: leading?.vendorStatus || null,
+          withForecast: (leading?.items || []).filter(i => i.forecast).length,   // how many can yield a real beat/miss
+          note: leading?.note || null,
+        },
         missing: gaps,
       },
       timings: { ...timings, totalMs: Date.now() - t0 },
@@ -4808,6 +5196,12 @@ app.listen(5000, () => {
   setTimeout(() => { v2HealthCheck().catch(e => console.error('v2 health boot check error:', e?.message)) }, 10 * 60 * 1000)
   setInterval(() => { v2HealthCheck().catch(e => console.error('v2 health check error:', e?.message)) }, 24 * 60 * 60 * 1000)
   console.log(`🩺 v2 Step A health monitor (daily, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
+  // Release-actuals sweeper. State lives in `release_actuals`, not in this timer, so a redeploy
+  // cannot lose a release or re-run a search already paid for. First tick 2min after boot so a
+  // restart picks up anything that came due while the process was down.
+  setTimeout(() => { sweepReleaseActuals().catch(e => console.error('release-actuals boot sweep error:', e?.message)) }, 2 * 60 * 1000)
+  setInterval(() => { sweepReleaseActuals().catch(e => console.error('release-actuals sweep error:', e?.message)) }, 15 * 60 * 1000)
+  console.log(`🔎 Release-actuals sweeper (15min, ${Object.keys(SEARCHED_SERIES).join('/')}, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
