@@ -7,7 +7,7 @@
 // path ships. It requires lib/releaseValue.js directly, so it exercises the shipped code.
 
 import {
-  parseReleaseValue, normalizePeriod, expectedPeriodFor,
+  parseReleaseValue, normalizePeriod, expectedPeriodFor, momPercent,
   validateReleaseValue, validateReleaseResult, surpriseOf,
 } from '../lib/releaseValue.js'
 
@@ -124,7 +124,37 @@ for (const [s, want] of [['July 2026', '2026-07'], ['2026-07', '2026-07'], ['Jul
 check(G5, 'period for a 2026-08-05 release', expectedPeriodFor(ADP_SCHED).key, '2026-07', 'monthly → prior month')
 check(G5, 'period for a 2026-01-05 release', expectedPeriodFor('2026-01-05T12:15:00Z').key, '2025-12', 'year rollover')
 
-for (const g of [G1, G2, G3, G4, G5]) table(g)
+// ── 6. FRED index → m/m percent (CPI week) ────────────────────────────────────
+// FRED serves CPI/PPI/AHE as index LEVELS; the events are percent changes. These are the actual
+// levels the brief pulled on 2026-08-10, so the expected values are what the model will really see.
+const G6 = '6. INDEX → M/M PERCENT — FRED levels to event units'
+check(G6, 'PPI 156.566 from 157.001', momPercent(156.566, 157.001), -0.3, 'LIVE — brief showed the raw level')
+check(G6, 'AHE 37.62 from 37.6', momPercent(37.62, 37.6), 0.1, 'LIVE — brief showed the raw level')
+check(G6, 'CPI 315.664 from 314.8', momPercent(315.664, 314.8), 0.3, 'index level → the m/m the event asks for')
+check(G6, 'CPI 315.664 from 316.9', momPercent(315.664, 316.9), -0.4, 'negative m/m')
+check(G6, 'no change 200 from 200', momPercent(200, 200), 0, 'flat')
+check(G6, 'prev is zero', momPercent(200, 0), null, 'no division by zero')
+check(G6, 'latest null', momPercent(null, 200), null, '')
+check(G6, 'prev null', momPercent(200, null), null, '')
+check(G6, 'non-numeric', momPercent('abc', 200), null, '')
+check(G6, 'rounds to 1dp (BLS form)', momPercent(100.049, 100), 0, 'below half a tick')
+check(G6, 'rounds up above half tick', momPercent(100.06, 100), 0.1, '')
+// Exactly half a tick is deliberately NOT asserted: (100.05/100-1)*100 is 0.04999… in binary
+// floating point, so the result is engine-dependent. It is also not worth pinning down — this
+// figure is computed from FRED's already-rounded index while BLS computes from unrounded
+// internals, so it can differ from the published headline by a whole tick regardless. Anything
+// that hinges on the last decimal must be labelled computed, not treated as the official print.
+
+// The computed m/m must be comparable to the FF forecast string for the same event.
+const G7 = "7. COMPUTED M/M vs THIS WEEK'S REAL FF FORECASTS"
+check(G7, 'PPI m/m -0.3 vs fc "0.2%"', surpriseOf(momPercent(156.566, 157.001), '0.2%'), 'miss', 'LIVE forecast 2026-08-13')
+check(G7, 'CPI m/m 0.3 vs fc "0.1%"', surpriseOf(momPercent(315.664, 314.8), '0.1%'), 'beat', 'LIVE forecast 2026-08-12')
+check(G7, 'CPI m/m 0.1 vs fc "0.1%"', surpriseOf(momPercent(315.1148, 314.8), '0.1%'), 'inline', 'exact match')
+check(G7, 'Core CPI m/m vs fc "0.2%"', surpriseOf(momPercent(322.5, 321.9), '0.2%'), 'inline', 'LIVE forecast')
+check(G7, 'computed value in CPI_MM range', (() => { const v = momPercent(315.664, 314.8); const r = validateReleaseValue(String(v), RANGE.CPI_MM); return r.ok ? r.numeric : 'REJECT' })(), 0.3, 'passes the m/m range gate')
+check(G7, 'raw index would be REJECTED', (() => { const r = validateReleaseValue('315.664', RANGE.CPI_MM); return r.ok ? r.numeric : 'REJECT' })(), 'REJECT', 'the gate catches a level sent as a percent')
+
+for (const g of [G1, G2, G3, G4, G5, G6, G7]) table(g)
 console.log(`\n${'═'.repeat(70)}`)
 console.log(fail ? `❌ ${fail} FAILED, ${pass} passed` : `✅ all ${pass} vectors pass`)
 process.exit(fail ? 1 : 0)

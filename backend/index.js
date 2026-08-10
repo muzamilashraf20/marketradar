@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import express from 'express'
 import {
   MONTH_NAMES, parseEconNum, parseReleaseValue, normalizePeriod,
-  expectedPeriodFor, nextReleaseAfter, validateReleaseResult, validateReleaseValue, surpriseOf,
+  expectedPeriodFor, nextReleaseAfter, momPercent, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
@@ -3731,21 +3731,32 @@ app.get('/api/release-actuals', async (req, res) => {
 // all) the model would get nothing. FRED does publish the prints themselves — no forecast, so these
 // carry actual-vs-PREVIOUS only and are labelled as such. A direction of travel beats no data;
 // it is NOT a beat/miss and must never be presented as one.
+// `kind` decides what actually reaches the model:
+//   level    — the series is already in the event's units (claims counts, a sentiment index, an
+//              expectations rate). Report it as published.
+//   mom_pct  — the series is an INDEX but the event is a percent change. FRED serves CPI, PPI and
+//              average hourly earnings as levels, so reporting them raw put "PPI final demand:
+//              156.566 vs 157.001" in front of a CPI m/m forecast of 0.1% — units that do not even
+//              answer the question being asked. Converted, it reads "-0.3% m/m", which does.
 const FRED_LEADING = {
   employment: [
-    { id: 'ICSA',   label: 'Initial jobless claims', unit: 'claims' },
-    { id: 'CCSA',   label: 'Continued jobless claims', unit: 'claims' },
+    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims' },
+    { id: 'CCSA',   label: 'Continued jobless claims', kind: 'level', unit: 'claims' },
   ],
   inflation: [
-    { id: 'PPIFIS', label: 'PPI final demand (index)', unit: 'index' },
-    { id: 'CES0500000003', label: 'Average hourly earnings', unit: '$' },
+    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct' },
+    { id: 'CES0500000003', label: 'Average hourly earnings', kind: 'mom_pct' },
+    { id: 'IR',     label: 'Import price index', kind: 'mom_pct' },
+    { id: 'ULCNFB', label: 'Unit labour costs (nonfarm business)', kind: 'mom_pct' },
+    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%' },
   ],
-  consumption: [{ id: 'UMCSENT', label: 'UMich consumer sentiment', unit: 'index' }],
-  growth: [{ id: 'INDPRO', label: 'Industrial production (index)', unit: 'index' }],
-  activity: [{ id: 'INDPRO', label: 'Industrial production (index)', unit: 'index' }],
+  consumption: [{ id: 'UMCSENT', label: 'UMich consumer sentiment', kind: 'level', unit: 'index' }],
+  growth: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct' }],
+  activity: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct' }],
   'rate-decision': [
-    { id: 'ICSA',   label: 'Initial jobless claims', unit: 'claims' },
-    { id: 'PPIFIS', label: 'PPI final demand (index)', unit: 'index' },
+    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims' },
+    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct' },
+    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%' },
   ],
 }
 async function fetchFredLeading(familyId, currency) {
@@ -3761,11 +3772,32 @@ async function fetchFredLeading(familyId, currency) {
       })
       const vals = (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
       if (!vals.length) return null
-      const latest = vals[0], prev = vals[1]
+      const latest = vals[0], prev = vals[1], prior = vals[2]
+      if (s.kind === 'mom_pct') {
+        // Needs two prior levels: one to compute this month's change, one for last month's, so the
+        // model can see whether the pace is accelerating rather than just the latest number.
+        const mom = momPercent(latest.v, prev?.v)
+        if (mom === null) return null
+        const prevMom = momPercent(prev?.v, prior?.v)
+        return {
+          title: `${s.label} m/m (computed from FRED ${s.id} index)`,
+          date: new Date(latest.date + 'T00:00:00Z').toISOString(),
+          actual: `${mom > 0 ? '+' : ''}${mom}%`,
+          forecast: null,
+          previous: prevMom === null ? null : `${prevMom > 0 ? '+' : ''}${prevMom}%`,
+          surprise: null,   // FRED publishes no forecast — beat/miss is NOT computable
+          vsPrevious: prevMom === null ? null : (mom > prevMom ? 'higher' : mom < prevMom ? 'lower' : 'flat'),
+          noForecast: true,
+          // Flagged so the prompt can say so: this is derived from FRED's already-rounded index,
+          // while BLS computes from unrounded internals, so it can differ from the published
+          // headline by a tick. It must never be presented as the official print.
+          computed: true,
+        }
+      }
       return {
         title: `${s.label} (FRED ${s.id})`,
         date: new Date(latest.date + 'T00:00:00Z').toISOString(),
-        actual: String(latest.v), forecast: null, previous: prev ? String(prev.v) : null,
+        actual: `${latest.v}${s.unit === '%' ? '%' : ''}`, forecast: null, previous: prev ? String(prev.v) : null,
         surprise: null,   // no forecast published for this series — beat/miss is NOT computable
         vsPrevious: prev ? (latest.v > prev.v ? 'higher' : latest.v < prev.v ? 'lower' : 'flat') : null,
         noForecast: true,
@@ -4048,7 +4080,11 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
       const stamp = i.referencePeriod
         ? `[covers ${i.referencePeriod}, published ${i.releaseDate || i.date.slice(0, 10)}]`
         : `[${i.date.slice(0, 10)}]`
-      return `${i.title} ${stamp} actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise vs forecast NOT computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}${i.sourceUrl ? ` (source: ${i.sourceUrl})` : ''}`
+      // `computed` figures are derived from FRED's rounded index, not read off the publisher's
+      // release, so they can differ from the official headline by a tick. Say so — a trader acting
+      // on a 0.1 difference must know which of these is the printed number and which is our maths.
+      const derived = i.computed ? ' [DERIVED from the index, not the published headline — may differ by 0.1]' : ''
+      return `${i.title} ${stamp} actual ${i.actual}${i.forecast ? ` vs forecast ${i.forecast}` : ` (forecast ${NA})`}${i.previous ? `, previous ${i.previous}` : ''} → ${i.surprise ? `${i.surprise.toUpperCase()} vs forecast` : 'surprise vs forecast NOT computable'}${i.vsPrevious ? `, ${i.vsPrevious} vs previous` : ''}${derived}${i.sourceUrl ? ` (source: ${i.sourceUrl})` : ''}`
     }).join('\n')
       + `\n(family: ${leading.family}, source: ${leading.source || 'unknown'}${leading.note ? ` — ${leading.note}` : ''})`
       + (noneHaveForecast

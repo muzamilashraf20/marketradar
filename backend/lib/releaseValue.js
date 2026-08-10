@@ -96,6 +96,23 @@ function validateReleaseResult(result, range, period, scheduledAt) {
   return { ok: true, numeric: v.numeric }
 }
 
+// Month-over-month percent change from two index levels.
+//
+// FRED publishes CPI, PPI and average hourly earnings as INDEX LEVELS, but the calendar events are
+// percent changes ("CPI m/m", forecast 0.1%). Handing the model "PPI final demand: 156.566 vs
+// 157.001" against a 0.1% forecast is worse than useless — the units do not even match the
+// question, so it cannot judge whether that is hot or cold.
+//
+// Rounded to ONE DECIMAL to match how BLS publishes. Note this is computed from FRED's already
+// rounded index, whereas BLS computes from unrounded internals, so the result can differ from the
+// official headline by a tick. Callers must label it as computed, never as the published print.
+function momPercent(latest, prev) {
+  if (latest === null || latest === undefined || prev === null || prev === undefined) return null
+  const a = Number(latest), b = Number(prev)
+  if (!isFinite(a) || !isFinite(b) || b === 0) return null
+  return +((a / b - 1) * 100).toFixed(1)
+}
+
 function surpriseOf(actualNum, forecastRaw) {
   const f = parseReleaseValue(forecastRaw)
   if (f === null || actualNum === null) return null
@@ -105,6 +122,6 @@ function surpriseOf(actualNum, forecastRaw) {
 export {
   MONTH_NAMES, RELEASE_DATE_TOLERANCE_DAYS,
   parseEconNum, parseReleaseValue, normalizePeriod,
-  expectedPeriodFor, nextReleaseAfter,
+  expectedPeriodFor, nextReleaseAfter, momPercent,
   validateReleaseValue, validateReleaseResult, surpriseOf,
 }
