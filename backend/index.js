@@ -1,6 +1,10 @@
 ﻿import 'dotenv/config'
 import crypto from 'crypto'
 import express from 'express'
+import {
+  MONTH_NAMES, parseEconNum, parseReleaseValue, normalizePeriod,
+  expectedPeriodFor, nextReleaseAfter, validateReleaseResult, validateReleaseValue, surpriseOf,
+} from './lib/releaseValue.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -3160,19 +3164,6 @@ const LEADING_FAMILIES = [
     leads: /philly fed|philadelphia fed|empire state|richmond|chicago pmi|flash|industrial production|durable goods/i },
 ]
 
-// Parse an economic print ("227K", "-0.3%", "3.2", "1.25M") into a number. Returns null when the
-// value isn't comparable — the caller must then report no surprise rather than guess one.
-function parseEconNum(s) {
-  if (s === null || s === undefined) return null
-  const t = String(s).trim().replace(/[,%$]/g, '').replace(/[<>]/g, '')
-  if (!t || t === '-') return null
-  const m = t.match(/^(-?\d*\.?\d+)\s*([KkMmBbTt])?$/)
-  if (!m) return null
-  const n = parseFloat(m[1])
-  if (isNaN(n)) return null
-  const mult = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[(m[2] || '').toLowerCase()] || 1
-  return n * mult
-}
 
 // FEDFUNDS (effective policy rate) + PCEPILFE (core PCE index → YoY) straight from FRED.
 // These two were the worst of the hardcoded facts — "3.50%-3.75%" and "core PCE ~3.3%" were typed
@@ -3344,10 +3335,10 @@ async function fetchRecentActuals(currency) {
 // Jobless claims are deliberately NOT here: FRED's ICSA already carries them for free, and a probe
 // confirmed the searched figure and ICSA agree exactly. Paying for a search there would buy nothing.
 // ============================================
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
 
 // Every series here must be BOTH proprietary (absent from FRED/ECB/ONS) and present on the FF
-// calendar (which supplies the forecast — the half the search cannot reliably get).
+// calendar, which supplies the forecast — the half the search cannot reliably get.
 const SEARCHED_SERIES = {
   ADP: {
     label: 'ADP National Employment Report',
@@ -3373,63 +3364,47 @@ const SEARCHED_SERIES = {
     range: [25, 80],
     cadence: 'monthly',
   },
+  // ── Companions: a second figure printed in the SAME release as its parent ──
+  // Prices-paid is one of the better CPI/PPI leads and is not on FRED, but it sits in the very
+  // report the parent search already retrieves. Asking for both figures in one call costs nothing;
+  // a separate series would mean a second monthly search for a number already on the page.
+  ISM_MFG_PRICES: {
+    label: 'ISM Manufacturing Prices Index',
+    subject: 'Prices Index (prices paid) sub-index value',
+    match: /^ism manufacturing prices$/i,
+    domains: ['ismworld.org'],
+    range: [25, 80],
+    cadence: 'monthly',
+    filledBy: 'ISM_MFG',      // never searched on its own — see the sweep loop
+  },
+  ISM_SVC_PRICES: {
+    label: 'ISM Services Prices Index',
+    subject: 'Prices Index (prices paid) sub-index value',
+    match: /^ism (services|non-manufacturing) prices$/i,
+    domains: ['ismworld.org'],
+    range: [25, 80],
+    cadence: 'monthly',
+    filledBy: 'ISM_SVC',
+  },
 }
+// parent → companion, derived from filledBy so the two directions cannot drift apart.
+const SERIES_COMPANION = Object.fromEntries(
+  Object.entries(SEARCHED_SERIES).filter(([, c]) => c.filledBy).map(([id, c]) => [c.filledBy, id])
+)
 
-// Which searched series inform which event family (families are defined by LEADING_FAMILIES above).
+// Which searched series inform which event family (families come from LEADING_FAMILIES).
 const SEARCH_LEADING_BY_FAMILY = {
   employment: ['ADP', 'ISM_MFG', 'ISM_SVC'],
   activity: ['ISM_MFG', 'ISM_SVC'],
   growth: ['ISM_MFG', 'ISM_SVC'],
-  'rate-decision': ['ADP', 'ISM_MFG'],
-}
-
-// A monthly print published in month M covers month M-1. This is the ONLY period rule Phase 1 needs
-// — all three series are monthly and all three report the prior month.
-function expectedPeriodFor(scheduledAt) {
-  const d = new Date(scheduledAt)
-  let y = d.getUTCFullYear(), m = d.getUTCMonth() - 1
-  if (m < 0) { m = 11; y -= 1 }
-  return { key: `${y}-${String(m + 1).padStart(2, '0')}`, name: MONTH_NAMES[m], year: y }
-}
-function nextReleaseAfter(scheduledAt) {
-  const n = new Date(scheduledAt); n.setUTCMonth(n.getUTCMonth() + 1); return n.toISOString()
-}
-// Normalize whatever the model says the period is ("July 2026", "2026-07", "Jul 2026") to YYYY-MM.
-function normalizePeriod(text) {
-  const s = String(text || '').trim()
-  let m = s.match(/(\d{4})[-/](\d{1,2})/)
-  if (m) return `${m[1]}-${String(+m[2]).padStart(2, '0')}`
-  m = s.match(/([A-Za-z]{3,9})\.?\s+(\d{4})/)
-  if (m) {
-    const i = MONTH_NAMES.findIndex(n => n.toLowerCase().startsWith(m[1].toLowerCase().slice(0, 3)))
-    if (i >= 0) return `${m[2]}-${String(i + 1).padStart(2, '0')}`
-  }
-  return null
-}
-
-// Publishers write the unit out in words — the live ISM probe returned the string "55.6 percent",
-// which the shared parseEconNum rejects outright (it only tolerates a K/M/B/T suffix). Strip a
-// trailing unit word first rather than loosening parseEconNum, which the vendor and FRED paths
-// also depend on and which must keep rejecting anything that isn't cleanly numeric.
-// Strip ONLY non-numeric unit words. Magnitude suffixes (K/M/B/T) must survive — parseEconNum
-// applies their multiplier, and eating the "K" off the FF forecast "68K" would silently turn
-// 68,000 into 68 and flip a miss into a beat. Word-form magnitudes ("42 thousand") are likewise
-// left alone: parseEconNum then returns null and the gate rejects, which is the safe outcome —
-// far better than a silent 1000x error.
-const RELEASE_UNIT_WORDS = /\s*(percentage points?|percent|points?|pts?|index|jobs)\.?$/i
-function parseReleaseValue(v) {
-  if (v === null || v === undefined) return null
-  // Leading "+" too: publishers sign a gain explicitly ("+44,000"), and parseEconNum's regex
-  // accepts a leading "-" but not a "+", so the real ADP print was rejected as unparseable.
-  // Stripping it is lossless — the sign is already implied by the absence of "-".
-  const stripped = String(v).trim().replace(/^\+/, '').replace(RELEASE_UNIT_WORDS, '').trim()
-  return parseEconNum(stripped)
+  inflation: ['ISM_MFG_PRICES', 'ISM_SVC_PRICES'],
+  'rate-decision': ['ADP', 'ISM_MFG', 'ISM_MFG_PRICES'],
 }
 
 // TIME-BOXED, not a permanent latch. The table is created by hand in Supabase, so "missing" is a
 // state that ends without the process being told — a one-way boolean would keep the sweeper
-// disabled until the next redeploy, silently, for a table that now exists. The suppression only
-// exists to stop every sweep re-logging the same error, so it expires on its own.
+// disabled until the next redeploy, silently, for a table that now exists. The suppression exists
+// only to stop every sweep re-logging the same error, so it expires on its own.
 const RA_MISSING_RECHECK_MS = 10 * 60 * 1000
 let raMissingUntil = 0
 const raTableMissing = () => Date.now() < raMissingUntil
@@ -3503,10 +3478,12 @@ const RELEASE_SEARCH_GUARD = `You report a single economic data release. Rules y
 3. Never estimate, interpolate, recall from memory, or reason your way to a number. A wrong number stated confidently is far worse than "not available".
 4. release_date is when the figure was PUBLISHED. reference_period is the month the figure DESCRIBES. They are different — report both, and do not confuse a revised figure for the initial print.
 
-Return ONLY raw JSON, no markdown:
-{"status":"found"|"not available","value":"<figure exactly as published>","reference_period":"<period it describes>","release_date":"<YYYY-MM-DD it was published>","source_url":"<exact URL>","reason":"<only when not available>"}`
+5. Where a second figure is requested, it comes from the SAME report as the first. Report it only if you actually saw it there; leave companion_value null otherwise. Do not confuse the two figures — they are different numbers on the same page and both look like plausible index readings.
 
-async function searchReleaseActual(seriesId, cfg, period, scheduledAt, attempt) {
+Return ONLY raw JSON, no markdown:
+{"status":"found"|"not available","value":"<figure exactly as published>","companion_value":"<second figure, or null>","reference_period":"<period it describes>","release_date":"<YYYY-MM-DD it was published>","source_url":"<exact URL>","reason":"<only when not available>"}`
+
+async function searchReleaseActual(seriesId, cfg, period, scheduledAt, attempt, companionCfg) {
   const query = releaseSearchQuery(cfg, period, scheduledAt, attempt)
   const prompt = `Find the ${cfg.subject} from the ${cfg.label}.
 
@@ -3514,7 +3491,12 @@ REQUIRED reference period: ${period.name} ${period.year} (${period.key})
 Expected publication date: on or about ${new Date(scheduledAt).toISOString().slice(0, 10)}
 
 Search for: ${query}
-
+${companionCfg ? `
+ALSO, from that same report, report the ${companionCfg.subject} as "companion_value". This is a
+DIFFERENT number from the headline figure above — both are index readings in the same release, so
+be careful not to repeat the headline. If you cannot find it, set companion_value to null; do not
+guess it and do not let it change the headline answer.
+` : ''}
 If the only figures you can find are for a different month, that is "not available" — say so rather than reporting the wrong month.`
   let messages = [{ role: 'user', content: prompt }]
   let m, pauses = 0
@@ -3543,28 +3525,6 @@ If the only figures you can find are for a different month, that is "not availab
   return { result: out, searches, query }
 }
 
-// ── The gate. This is CODE, not prompt ──
-// The guard prompt alone does not stop a stale answer: a 9-month-old print satisfies every rule in
-// it (the model really did retrieve that page and really can cite it). Only an independent check
-// against the release we actually triggered on catches it — and it is anchored to that event's
-// scheduled time, not to "now", which is both tighter and more meaningful than an age limit.
-const RELEASE_DATE_TOLERANCE_DAYS = 3
-function validateReleaseResult(result, cfg, period, scheduledAt) {
-  if (!result || result.status !== 'found') return { ok: false, reason: `model returned not-available: ${String(result?.reason || 'no reason').slice(0, 140)}` }
-  const relD = new Date(result.release_date)
-  if (isNaN(relD)) return { ok: false, reason: `unparseable release_date "${result.release_date}"` }
-  const driftDays = Math.abs(relD.getTime() - new Date(scheduledAt).getTime()) / 86400000
-  if (driftDays > RELEASE_DATE_TOLERANCE_DAYS) {
-    return { ok: false, reason: `release_date ${result.release_date} is ${Math.round(driftDays)}d from the scheduled release ${String(scheduledAt).slice(0, 10)}` }
-  }
-  const got = normalizePeriod(result.reference_period)
-  if (got !== period.key) return { ok: false, reason: `reference_period "${result.reference_period}" (${got || 'unparseable'}) is not the expected ${period.key}` }
-  const n = parseReleaseValue(result.value)
-  if (n === null) return { ok: false, reason: `unparseable value "${result.value}"` }
-  if (n < cfg.range[0] || n > cfg.range[1]) return { ok: false, reason: `value ${n} outside plausible range ${cfg.range[0]}..${cfg.range[1]}` }
-  if (!/^https?:\/\//i.test(String(result.source_url || ''))) return { ok: false, reason: 'no usable source_url' }
-  return { ok: true, numeric: n }
-}
 
 // ── Health: a silent gate that rejects everything looks identical to a gate that is simply working ──
 const RA_HEALTH_KEY = 'release_actuals_health'
@@ -3629,24 +3589,61 @@ async function sweepReleaseActuals() {
   } catch (e) { console.warn(`⚠️ [release-actuals] select threw: ${e?.message}`); return }
   if (!due.length) return
 
+  const byKey = new Map(due.map(r => [r.release_key, r]))
   for (const row of due) {
     const cfg = SEARCHED_SERIES[row.series_id]
     if (!cfg) continue
+    // A companion is filled by its parent's search and is never searched on its own — otherwise we
+    // would pay twice for two figures printed on the same page. Its lifecycle mirrors the parent's
+    // below, so a parent that goes terminal takes its companion with it rather than leaking a row
+    // that stays pending forever.
+    if (cfg.filledBy) continue
     const period = { key: row.reference_period, name: MONTH_NAMES[+row.reference_period.slice(5, 7) - 1], year: +row.reference_period.slice(0, 4) }
     const attempt = (row.attempts || 0) + 1
+    const companionId = SERIES_COMPANION[row.series_id] || null
+    const companionRow = companionId ? byKey.get(`${companionId}:${row.reference_period}`) : null
+    const companionCfg = companionRow ? SEARCHED_SERIES[companionId] : null
     try {
-      const { result, searches, query } = await searchReleaseActual(row.series_id, cfg, period, row.scheduled_at, attempt)
-      const check = validateReleaseResult(result, cfg, period, row.scheduled_at)
+      const { result, searches, query } = await searchReleaseActual(row.series_id, cfg, period, row.scheduled_at, attempt, companionCfg)
+      const check = validateReleaseResult(result, cfg.range, period, row.scheduled_at)
       if (check.ok) {
-        const f = parseReleaseValue(row.forecast)
-        const surprise = (f !== null) ? (check.numeric > f ? 'beat' : check.numeric < f ? 'miss' : 'inline') : null
+        const surprise = surpriseOf(check.numeric, row.forecast)
         await supabase.from('release_actuals').update({
           actual: String(result.value), surprise, source_url: result.source_url,
           release_date: result.release_date, status: 'found', attempts: attempt, reject_reason: null,
         }).eq('release_key', row.release_key)
         console.log(`✅ [release-actuals] ${row.release_key} = ${result.value} (${surprise || 'no forecast'}) via "${query}" · ${searches} searches`)
         await raRecordOutcome(true, row.release_key)
+
+        // Companion rides the same result. It gets its OWN range check — the two figures are both
+        // plausible index readings, so the only thing standing between "prices index" and "the
+        // headline repeated" is that check plus the model's own care. Period and release_date are
+        // inherited: they came from the same report, so re-validating them proves nothing.
+        if (companionRow && companionCfg) {
+          const cv = validateReleaseValue(result.companion_value, companionCfg.range)
+          if (cv.ok) {
+            const cSurprise = surpriseOf(cv.numeric, companionRow.forecast)
+            await supabase.from('release_actuals').update({
+              actual: String(result.companion_value), surprise: cSurprise, source_url: result.source_url,
+              release_date: result.release_date, status: 'found', attempts: attempt, reject_reason: null,
+            }).eq('release_key', companionRow.release_key)
+            console.log(`✅ [release-actuals] ${companionRow.release_key} = ${result.companion_value} (${cSurprise || 'no forecast'}) — companion of ${row.release_key}, no extra search`)
+          } else {
+            const cTerminal = attempt >= RA_MAX_ATTEMPTS
+            await supabase.from('release_actuals').update({
+              attempts: attempt, reject_reason: `companion: ${cv.reason}`, status: cTerminal ? 'not_available' : 'pending',
+            }).eq('release_key', companionRow.release_key)
+            console.warn(`⚠️ [release-actuals] ${companionRow.release_key} companion rejected — ${cv.reason}`)
+          }
+        }
       } else {
+        if (companionRow) {
+          // Parent failed, so the companion has no result to ride — advance it in lockstep.
+          await supabase.from('release_actuals').update({
+            attempts: attempt, reject_reason: `parent ${row.release_key}: ${check.reason}`,
+            status: attempt >= RA_MAX_ATTEMPTS ? 'not_available' : 'pending',
+          }).eq('release_key', companionRow.release_key)
+        }
         const terminal = attempt >= RA_MAX_ATTEMPTS
         await supabase.from('release_actuals').update({
           // Record WHICH escalation level failed — otherwise a terminal row cannot tell you whether
