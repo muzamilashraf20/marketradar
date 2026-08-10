@@ -3782,27 +3782,53 @@ const FRED_LEADING = {
     { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%' },
   ],
 }
+// 12h cache, keyed PER SERIES rather than per family.
+//
+// Two reasons it must be per series, not per family. First, series are shared — ICSA appears in
+// employment and rate-decision, PPIFIS in inflation and rate-decision — so one brief warms the
+// others. Second and more important: caching a family's whole result set would bank a PARTIAL one.
+// Two identical-data CPI briefs returned 6 leads and then 2, because four FRED calls timed out on
+// the second; storing that thin result for 12h would have made the flakiness permanent instead of
+// fixing it. Caching each series on its own means a slow call falls back to that series' last good
+// value and the lead simply stays, which is the whole point.
+const FRED_LEADING_TTL = 12 * 60 * 60 * 1000
 async function fetchFredLeading(familyId, currency) {
   if (currency !== 'USD') return []
   const series = FRED_LEADING[familyId] || []
   const key = process.env.FRED_API_KEY?.trim()
   if (!key || !series.length) return []
   const one = async (s) => {
+    // `kind` is in the key so a config change to how a series is rendered cannot be served from a
+    // cache entry built under the old shape.
+    const ck = `fredlead_${s.id}_${s.kind}`
+    if (isCacheFreshFor(ck, FRED_LEADING_TTL)) {
+      const hit = getCached(ck)
+      if (hit) return hit
+    }
+    // Any failure — timeout, empty response, unusable values — falls back to this series' last good
+    // value at ANY age. These are weekly or monthly series, so yesterday's copy is the same figure;
+    // dropping the lead entirely is the only outcome that actually changes what the model sees.
+    const stale = (why) => {
+      const old = getCached(ck)
+      if (old) { console.warn(`⚠️ [brief] FRED ${s.id} ${why} — serving last good value`); return old }
+      console.warn(`⚠️ [brief] FRED ${s.id} ${why} — no cached value, lead dropped`)
+      return null
+    }
     try {
       const r = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
         params: { series_id: s.id, api_key: key, file_type: 'json', sort_order: 'desc', limit: 4 },
         timeout: 10000,
       })
       const vals = (r.data?.observations || []).map(o => ({ date: o.date, v: parseFloat(o.value) })).filter(o => !isNaN(o.v))
-      if (!vals.length) return null
+      if (!vals.length) return stale('returned no numeric observations')
       const latest = vals[0], prev = vals[1], prior = vals[2]
       if (s.kind === 'mom_pct') {
         // Needs two prior levels: one to compute this month's change, one for last month's, so the
         // model can see whether the pace is accelerating rather than just the latest number.
         const mom = momPercent(latest.v, prev?.v)
-        if (mom === null) return null
+        if (mom === null) return stale('had too few levels to compute m/m')
         const prevMom = momPercent(prev?.v, prior?.v)
-        return {
+        const item = {
           title: `${s.label} m/m (computed from FRED ${s.id} index)`,
           date: new Date(latest.date + 'T00:00:00Z').toISOString(),
           actual: `${mom > 0 ? '+' : ''}${mom}%`,
@@ -3816,8 +3842,10 @@ async function fetchFredLeading(familyId, currency) {
           // headline by a tick. It must never be presented as the official print.
           computed: true,
         }
+        setCache(ck, item)
+        return item
       }
-      return {
+      const item = {
         title: `${s.label} (FRED ${s.id})`,
         date: new Date(latest.date + 'T00:00:00Z').toISOString(),
         actual: `${latest.v}${s.unit === '%' ? '%' : ''}`, forecast: null, previous: prev ? String(prev.v) : null,
@@ -3825,7 +3853,9 @@ async function fetchFredLeading(familyId, currency) {
         vsPrevious: prev ? (latest.v > prev.v ? 'higher' : latest.v < prev.v ? 'lower' : 'flat') : null,
         noForecast: true,
       }
-    } catch (e) { console.warn(`⚠️ [brief] FRED leading ${s.id} failed: ${e?.message}`); return null }
+      setCache(ck, item)
+      return item
+    } catch (e) { return stale(`failed (${e?.message})`) }
   }
   return (await Promise.all(series.map(one))).filter(Boolean)
 }
