@@ -3590,14 +3590,34 @@ async function sweepReleaseActuals() {
   if (!due.length) return
 
   const byKey = new Map(due.map(r => [r.release_key, r]))
+
+  // A companion is normally filled by its parent's search, never its own — two figures on one page
+  // should not cost two searches. But that only holds while the parent is still pending. A
+  // companion added AFTER its parent already completed would otherwise sit pending forever, since
+  // the parent will never search again. Look up the parents once and let orphans search alone.
+  const orphanCompanions = new Set()
+  const companionParents = due
+    .filter(r => SEARCHED_SERIES[r.series_id]?.filledBy)
+    .map(r => `${SEARCHED_SERIES[r.series_id].filledBy}:${r.reference_period}`)
+  if (companionParents.length) {
+    try {
+      const { data: parents } = await supabase.from('release_actuals')
+        .select('release_key,status').in('release_key', companionParents)
+      const stillPending = new Set((parents || []).filter(p => p.status === 'pending').map(p => p.release_key))
+      for (const r of due) {
+        const fb = SEARCHED_SERIES[r.series_id]?.filledBy
+        if (fb && !stillPending.has(`${fb}:${r.reference_period}`)) orphanCompanions.add(r.release_key)
+      }
+    } catch (e) { console.warn(`⚠️ [release-actuals] parent lookup failed: ${e?.message}`) }
+  }
+
   for (const row of due) {
     const cfg = SEARCHED_SERIES[row.series_id]
     if (!cfg) continue
-    // A companion is filled by its parent's search and is never searched on its own — otherwise we
-    // would pay twice for two figures printed on the same page. Its lifecycle mirrors the parent's
-    // below, so a parent that goes terminal takes its companion with it rather than leaking a row
-    // that stays pending forever.
-    if (cfg.filledBy) continue
+    // Skip only if the parent is still coming to fill it. Its lifecycle otherwise mirrors the
+    // parent's below, so a parent that goes terminal takes its companion with it.
+    if (cfg.filledBy && !orphanCompanions.has(row.release_key)) continue
+    if (orphanCompanions.has(row.release_key)) console.log(`🔎 [release-actuals] ${row.release_key} is orphaned (parent already settled) — searching it directly`)
     const period = { key: row.reference_period, name: MONTH_NAMES[+row.reference_period.slice(5, 7) - 1], year: +row.reference_period.slice(0, 4) }
     const attempt = (row.attempts || 0) + 1
     const companionId = SERIES_COMPANION[row.series_id] || null
