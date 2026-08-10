@@ -3148,7 +3148,10 @@ const LEADING_FAMILIES = [
     match: /non.?farm|payroll|\bnfp\b|unemployment rate|employment change|claimant count/i,
     leads: /\badp\b|jobless claims|unemployment claims|challenger|\bjolts\b|employment (index|change|component)|ism.*employ|average hourly earnings|labou?r cost/i },
   { id: 'inflation',
-    match: /\bcpi\b|consumer price|inflation rate|core pce|pce price index|\brpi\b/i,
+    // PPI belongs on BOTH sides: it leads CPI, but it is also a high-impact inflation print in its
+    // own right. Without it in `match`, opening a brief on "PPI m/m" matched no family at all and
+    // returned zero leading indicators.
+    match: /\bcpi\b|consumer price|inflation rate|core pce|pce price index|\brpi\b|\bppi\b|producer price/i,
     leads: /\bppi\b|producer price|import price|average hourly earnings|inflation expectation|prices? (paid|index)|unit labou?r cost/i },
   { id: 'rate-decision',
     match: /rate (decision|statement)|interest rate|monetary policy|fomc|official cash rate|cash rate/i,
