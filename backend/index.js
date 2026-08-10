@@ -3423,14 +3423,20 @@ function parseReleaseValue(v) {
   return parseEconNum(stripped)
 }
 
-let raTableMissing = false   // logged once — a missing table must not spam every sweep
+// TIME-BOXED, not a permanent latch. The table is created by hand in Supabase, so "missing" is a
+// state that ends without the process being told — a one-way boolean would keep the sweeper
+// disabled until the next redeploy, silently, for a table that now exists. The suppression only
+// exists to stop every sweep re-logging the same error, so it expires on its own.
+const RA_MISSING_RECHECK_MS = 10 * 60 * 1000
+let raMissingUntil = 0
+const raTableMissing = () => Date.now() < raMissingUntil
 function raTableGone(error) {
   const c = error?.code || ''
   if (c === '42P01' || c === 'PGRST205' || /release_actuals/i.test(error?.message || '') && /does not exist|not find/i.test(error?.message || '')) {
-    if (!raTableMissing) {
-      raTableMissing = true
-      console.error('⚠️ [release-actuals] table `release_actuals` does not exist — searches disabled, brief falls back to FRED. Run the DDL in docs to enable.')
+    if (!raTableMissing()) {
+      console.error(`⚠️ [release-actuals] table \`release_actuals\` does not exist — searches paused ${RA_MISSING_RECHECK_MS / 60000}min, brief falls back to FRED. Run backend/scripts/release_actuals.sql to enable.`)
     }
+    raMissingUntil = Date.now() + RA_MISSING_RECHECK_MS
     return true
   }
   return false
@@ -3441,7 +3447,7 @@ function raTableGone(error) {
 // only serves the current week — if the row were created after the release the forecast could
 // already be gone, and beat/miss with it.
 async function ensurePendingReleaseRows() {
-  if (raTableMissing) return 0
+  if (raTableMissing()) return 0
   let events = []
   try { events = await getEconomicCalendar() } catch (e) { return 0 }
   const rows = []
@@ -3589,7 +3595,7 @@ const RA_PUBLISH_DELAY_MS = 20 * 60 * 1000            // give the publisher time
 const RA_BACKOFF_MS = [0, 40 * 60 * 1000, 2 * 60 * 60 * 1000]   // extra wait before attempts 2 and 3
 const RA_MAX_ATTEMPTS = 3
 async function sweepReleaseActuals() {
-  if (raTableMissing) return
+  if (raTableMissing()) return
   const h = new Date().getUTCHours(), d = new Date().getUTCDay()
   // 8:30 ET = 12:30/13:30 UTC and 10:00 ET = 14:00/15:00 UTC depending on DST; 11–21 UTC covers
   // both plus the retry tail. Outside it the sweep is a no-op and costs nothing.
@@ -3604,6 +3610,9 @@ async function sweepReleaseActuals() {
       const ready = new Date(r.scheduled_at).getTime() + RA_PUBLISH_DELAY_MS + (RA_BACKOFF_MS[r.attempts] || 0)
       return now >= ready
     })
+    // Heartbeat: without this a sweep that ran and found nothing is indistinguishable from a sweep
+    // that never ran. Only logged when something is pending, so an idle month stays quiet.
+    if ((data || []).length) console.log(`🔎 [release-actuals] sweep: ${(data || []).length} pending, ${due.length} due now`)
   } catch (e) { console.warn(`⚠️ [release-actuals] select threw: ${e?.message}`); return }
   if (!due.length) return
 
@@ -3651,7 +3660,7 @@ async function sweepReleaseActuals() {
 // error the write gate exists to prevent, just on the read path.
 const RA_SUPERSEDED_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 async function getCachedReleaseActuals(familyId, currency) {
-  if (raTableMissing || currency !== 'USD') return []
+  if (raTableMissing() || currency !== 'USD') return []
   const wanted = SEARCH_LEADING_BY_FAMILY[familyId] || []
   if (!wanted.length) return []
   try {
