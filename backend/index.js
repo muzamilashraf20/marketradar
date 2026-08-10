@@ -3419,7 +3419,10 @@ function normalizePeriod(text) {
 const RELEASE_UNIT_WORDS = /\s*(percentage points?|percent|points?|pts?|index|jobs)\.?$/i
 function parseReleaseValue(v) {
   if (v === null || v === undefined) return null
-  const stripped = String(v).trim().replace(RELEASE_UNIT_WORDS, '').trim()
+  // Leading "+" too: publishers sign a gain explicitly ("+44,000"), and parseEconNum's regex
+  // accepts a leading "-" but not a "+", so the real ADP print was rejected as unparseable.
+  // Stripping it is lossless — the sign is already implied by the absence of "-".
+  const stripped = String(v).trim().replace(/^\+/, '').replace(RELEASE_UNIT_WORDS, '').trim()
   return parseEconNum(stripped)
 }
 
@@ -3608,8 +3611,17 @@ async function sweepReleaseActuals() {
     if (error) { if (!raTableGone(error)) console.warn(`⚠️ [release-actuals] select failed: ${error.message}`); return }
     const now = Date.now()
     due = (data || []).filter(r => {
-      const ready = new Date(r.scheduled_at).getTime() + RA_PUBLISH_DELAY_MS + (RA_BACKOFF_MS[r.attempts] || 0)
-      return now >= ready
+      // Two independent waits, both must have elapsed:
+      //   publish delay — from the SCHEDULED release, so the page has had time to go up
+      //   retry backoff — from the LAST ATTEMPT, not the release. Anchoring backoff to
+      //     scheduled_at made it a no-op for any overdue row (a backfill, or a release missed
+      //     during downtime): all three attempts would fire on consecutive sweeps and burn the
+      //     cap inside 45 minutes, which is exactly when a transient outage is still ongoing.
+      const publishReady = new Date(r.scheduled_at).getTime() + RA_PUBLISH_DELAY_MS
+      const retryReady = r.attempts > 0
+        ? new Date(r.updated_at || r.scheduled_at).getTime() + (RA_BACKOFF_MS[r.attempts] || 0)
+        : 0
+      return now >= publishReady && now >= retryReady
     })
     // Heartbeat: without this a sweep that ran and found nothing is indistinguishable from a sweep
     // that never ran. Only logged when something is pending, so an idle month stays quiet.
@@ -3637,7 +3649,10 @@ async function sweepReleaseActuals() {
       } else {
         const terminal = attempt >= RA_MAX_ATTEMPTS
         await supabase.from('release_actuals').update({
-          attempts: attempt, reject_reason: check.reason, status: terminal ? 'not_available' : 'pending',
+          // Record WHICH escalation level failed — otherwise a terminal row cannot tell you whether
+          // the query never found the page or the gate refused what it found.
+          attempts: attempt, reject_reason: `${check.reason} [q${attempt}: ${query}]`,
+          status: terminal ? 'not_available' : 'pending',
         }).eq('release_key', row.release_key)
         console.warn(`⚠️ [release-actuals] ${row.release_key} attempt ${attempt}/${RA_MAX_ATTEMPTS} rejected — ${check.reason}`)
         if (terminal) await raRecordOutcome(false, row.release_key, check.reason)
