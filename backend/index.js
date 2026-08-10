@@ -3596,10 +3596,11 @@ const RA_BACKOFF_MS = [0, 40 * 60 * 1000, 2 * 60 * 60 * 1000]   // extra wait be
 const RA_MAX_ATTEMPTS = 3
 async function sweepReleaseActuals() {
   if (raTableMissing()) return
-  const h = new Date().getUTCHours(), d = new Date().getUTCDay()
-  // 8:30 ET = 12:30/13:30 UTC and 10:00 ET = 14:00/15:00 UTC depending on DST; 11–21 UTC covers
-  // both plus the retry tail. Outside it the sweep is a no-op and costs nothing.
-  if (d === 0 || d === 6 || h < 11 || h > 21) return
+  // No time-of-day gate. An earlier version only swept 11–21 UTC on weekdays, which bought nothing
+  // — the expensive step is the search, and that is already gated by the due-filter below — while
+  // actively delaying work that was ALREADY due: a release missed during downtime, or a row
+  // backfilled by hand, sat untouched until the window happened to reopen. Spend is bounded by the
+  // due-filter and the 3-attempt cap, not by the clock.
   await ensurePendingReleaseRows()
   let due = []
   try {
@@ -3690,6 +3691,28 @@ async function getCachedReleaseActuals(familyId, currency) {
     return out
   } catch (e) { console.warn(`⚠️ [release-actuals] read threw: ${e?.message}`); return [] }
 }
+
+// Read-only ops view of the ledger. The sweeper's whole story lives in Railway logs, which is a
+// bad place to answer "did it work and is the number right" from — this returns the banked rows,
+// including reject_reason, so a gate that is too tight is visible without log archaeology.
+// No writes, no model call, no cost. Public economic figures only.
+app.get('/api/release-actuals', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('release_actuals')
+      .select('release_key,series_id,reference_period,scheduled_at,next_release_at,forecast,previous,actual,surprise,release_date,source_url,status,attempts,reject_reason,updated_at')
+      .order('scheduled_at', { ascending: false }).limit(40)
+    if (error) {
+      if (raTableGone(error)) return res.status(503).json({ success: false, error: 'release_actuals table does not exist — run backend/scripts/release_actuals.sql' })
+      return res.status(502).json({ success: false, error: error.message })
+    }
+    const rows = data || []
+    res.json({
+      success: true,
+      counts: rows.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a }, {}),
+      rows,
+    })
+  } catch (e) { res.status(502).json({ success: false, error: String(e?.message || e).slice(0, 200) }) }
+})
 
 // FRED supplement, US only. The calendar vendors are the right source for actual-vs-FORECAST, but
 // when FMP is down (production currently falls back to the FF feed, which publishes no actuals at
