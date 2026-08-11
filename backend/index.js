@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import express from 'express'
 import {
   MONTH_NAMES, parseEconNum, parseReleaseValue, normalizePeriod,
-  expectedPeriodFor, nextReleaseAfter, momPercent, validateReleaseResult, validateReleaseValue, surpriseOf,
+  expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
@@ -3350,6 +3350,7 @@ const SEARCHED_SERIES = {
     domains: ['adp.com', 'adpemploymentreport.com', 'mediacenter.adp.com'],
     range: [-2_000_000, 2_000_000],   // jobs; a real print is tens/hundreds of thousands
     cadence: 'monthly',
+    polarity: 'direct',
   },
   ISM_MFG: {
     label: 'ISM Manufacturing PMI',
@@ -3358,6 +3359,7 @@ const SEARCHED_SERIES = {
     domains: ['ismworld.org'],
     range: [25, 80],                  // a diffusion index; outside this is a parse error, not a print
     cadence: 'monthly',
+    polarity: 'direct',
   },
   ISM_SVC: {
     label: 'ISM Services PMI',
@@ -3366,6 +3368,7 @@ const SEARCHED_SERIES = {
     domains: ['ismworld.org'],
     range: [25, 80],
     cadence: 'monthly',
+    polarity: 'direct',
   },
   // ── Companions: a second figure printed in the SAME release as its parent ──
   // Prices-paid is one of the better CPI/PPI leads and is not on FRED, but it sits in the very
@@ -3378,6 +3381,7 @@ const SEARCHED_SERIES = {
     domains: ['ismworld.org'],
     range: [25, 80],
     cadence: 'monthly',
+    polarity: 'direct',
     filledBy: 'ISM_MFG',      // never searched on its own — see the sweep loop
   },
   ISM_SVC_PRICES: {
@@ -3387,6 +3391,7 @@ const SEARCHED_SERIES = {
     domains: ['ismworld.org'],
     range: [25, 80],
     cadence: 'monthly',
+    polarity: 'direct',
     filledBy: 'ISM_SVC',
   },
 }
@@ -3718,6 +3723,7 @@ async function getCachedReleaseActuals(familyId, currency) {
         actual: r.actual, forecast: r.forecast || null, previous: r.previous || null,
         surprise: r.surprise || null,
         vsPrevious: (a !== null && p !== null) ? (a > p ? 'higher' : a < p ? 'lower' : 'flat') : null,
+        polarity: SEARCHED_SERIES[r.series_id]?.polarity || 'direct',
         referencePeriod: r.reference_period,
         releaseDate: r.release_date,
         sourceUrl: r.source_url,
@@ -3763,23 +3769,23 @@ app.get('/api/release-actuals', async (req, res) => {
 //              answer the question being asked. Converted, it reads "-0.3% m/m", which does.
 const FRED_LEADING = {
   employment: [
-    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims' },
-    { id: 'CCSA',   label: 'Continued jobless claims', kind: 'level', unit: 'claims' },
+    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims', polarity: 'inverse' },
+    { id: 'CCSA',   label: 'Continued jobless claims', kind: 'level', unit: 'claims', polarity: 'inverse' },
   ],
   inflation: [
-    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct' },
-    { id: 'CES0500000003', label: 'Average hourly earnings', kind: 'mom_pct' },
-    { id: 'IR',     label: 'Import price index', kind: 'mom_pct' },
-    { id: 'ULCNFB', label: 'Unit labour costs (nonfarm business)', kind: 'mom_pct' },
-    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%' },
+    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct', polarity: 'direct' },
+    { id: 'CES0500000003', label: 'Average hourly earnings', kind: 'mom_pct', polarity: 'direct' },
+    { id: 'IR',     label: 'Import price index', kind: 'mom_pct', polarity: 'direct' },
+    { id: 'ULCNFB', label: 'Unit labour costs (nonfarm business)', kind: 'mom_pct', polarity: 'direct' },
+    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%', polarity: 'direct' },
   ],
-  consumption: [{ id: 'UMCSENT', label: 'UMich consumer sentiment', kind: 'level', unit: 'index' }],
-  growth: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct' }],
-  activity: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct' }],
+  consumption: [{ id: 'UMCSENT', label: 'UMich consumer sentiment', kind: 'level', unit: 'index', polarity: 'direct' }],
+  growth: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct', polarity: 'direct' }],
+  activity: [{ id: 'INDPRO', label: 'Industrial production', kind: 'mom_pct', polarity: 'direct' }],
   'rate-decision': [
-    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims' },
-    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct' },
-    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%' },
+    { id: 'ICSA',   label: 'Initial jobless claims', kind: 'level', unit: 'claims', polarity: 'inverse' },
+    { id: 'PPIFIS', label: 'PPI final demand', kind: 'mom_pct', polarity: 'direct' },
+    { id: 'MICH',   label: 'UMich 1-year inflation expectations', kind: 'level', unit: '%', polarity: 'direct' },
   ],
 }
 // 12h cache, keyed PER SERIES rather than per family.
@@ -3837,6 +3843,7 @@ async function fetchFredLeading(familyId, currency) {
           surprise: null,   // FRED publishes no forecast — beat/miss is NOT computable
           vsPrevious: prevMom === null ? null : (mom > prevMom ? 'higher' : mom < prevMom ? 'lower' : 'flat'),
           noForecast: true,
+          polarity: s.polarity || 'direct',
           // Flagged so the prompt can say so: this is derived from FRED's already-rounded index,
           // while BLS computes from unrounded internals, so it can differ from the published
           // headline by a tick. It must never be presented as the official print.
@@ -3852,6 +3859,7 @@ async function fetchFredLeading(familyId, currency) {
         surprise: null,   // no forecast published for this series — beat/miss is NOT computable
         vsPrevious: prev ? (latest.v > prev.v ? 'higher' : latest.v < prev.v ? 'lower' : 'flat') : null,
         noForecast: true,
+        polarity: s.polarity || 'direct',
       }
       setCache(ck, item)
       return item
@@ -4123,6 +4131,9 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
     return lines.join('\n')
   })()
 
+  // Deterministic verdict on whether the leads agree, computed before the prompt is built.
+  const consensus = leadConsensus(leading?.items || [])
+
   const leadingBlock = (() => {
     if (!leading?.items?.length) { gaps.push('leading indicators'); return `${NA} — ${leading?.note || 'none found'}` }
     const noneHaveForecast = leading.items.every(i => !i.forecast)
@@ -4142,6 +4153,16 @@ app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
       + `\n(family: ${leading.family}, source: ${leading.source || 'unknown'}${leading.note ? ` — ${leading.note}` : ''})`
       + (noneHaveForecast
         ? `\nIMPORTANT: no print above has a forecast, so NONE of them is a beat or a miss. You may describe the direction of travel versus the previous print, but tilt MUST be "insufficient leading data" and probability MUST be null.`
+        : '')
+      // The split is decided in code, not left to the model. Three identical-input briefs returned
+      // miss / beat / beat off this same set — a fair reading of contradictory evidence, but not
+      // something a product can show a trader. Stating the verdict as a fact removes the coin flip.
+      + (consensus.verdict === 'mixed'
+        ? `\nCONSENSUS CHECK (computed in code, not your judgement): the leads above DISAGREE.`
+          + ` ${consensus.forecastBacked} carry a computable surprise (net ${consensus.netSurprise > 0 ? '+' : ''}${consensus.netSurprise}),`
+          + ` while ${consensus.directional} give direction only (net ${consensus.netDirectional > 0 ? '+' : ''}${consensus.netDirectional}), and those two point opposite ways.`
+          + `\nTherefore tilt MUST be "mixed" and probability MUST be null. Do NOT pick a side. In`
+          + ` reasoning, state plainly which leads point which way and say the evidence is genuinely split.`
         : '')
   })()
 
@@ -4213,11 +4234,11 @@ from YOUR analysis — the example strings are format hints, not answers):
 {
   "overallBias": "short label, e.g. USD bullish into the print",
   "biasDirection": "bullish | bearish | neutral",
-  "probability": 0-100 integer, or null when tilt is "insufficient leading data",
+  "probability": 0-100 integer, or null when tilt is "insufficient leading data" OR "mixed",
   "confidence": "high | medium | low",
   "summary": "2-3 sentences on what this event means given the live data above",
   "leadingIndicators": {
-    "tilt": "beat | miss | insufficient leading data",
+    "tilt": "beat | miss | mixed | insufficient leading data",
     "reasoning": "why, citing section 6 prints by name and figure",
     "evidence": ["<print name>: actual X vs forecast Y → beat/miss"]
   },
@@ -4275,6 +4296,8 @@ from YOUR analysis — the example strings are format hints, not answers):
           family: leading?.family || null, count: leading?.items?.length || 0,
           source: leading?.source || null, vendorStatus: leading?.vendorStatus || null,
           withForecast: (leading?.items || []).filter(i => i.forecast).length,   // how many can yield a real beat/miss
+          consensus: consensus.verdict,
+          tally: { forecastBacked: consensus.forecastBacked, directional: consensus.directional, netSurprise: consensus.netSurprise, netDirectional: consensus.netDirectional },
           note: leading?.note || null,
         },
         missing: gaps,

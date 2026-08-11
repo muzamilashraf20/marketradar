@@ -97,6 +97,11 @@ function AnalyzeModal({ event, onClose }) {
     return <Minus className="w-3 h-3" />
   }
 
+  // The backend decides this in code, not the model — when the leads genuinely contradict each
+  // other it returns tilt "mixed" and a null probability rather than flipping between beat and miss
+  // across identical runs. The UI has to make that legible as a finding rather than a fault.
+  const isMixed = analysis?.leadingIndicators?.tilt === 'mixed'
+
   const biasBg = (bias) => {
     if (!bias) return 'bg-slate-500/10 border-slate-500/20'
     const b = bias.toLowerCase()
@@ -167,11 +172,18 @@ function AnalyzeModal({ event, onClose }) {
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-slate-400 mb-1">PROBABILITY</p>
-                  {/* null = the model had no usable leading data. Showing "0%" there would be a lie. */}
+                  {/* null = either no usable leading data, or the leads contradict each other.
+                      Showing "0%" would be a lie, and a bare "N/A" reads as a failure — so when the
+                      cause is a split, say that instead. */}
                   <p className="text-3xl font-black text-white">
-                    {analysis.probability === null || analysis.probability === undefined ? 'N/A' : `${analysis.probability}%`}
+                    {analysis.probability === null || analysis.probability === undefined
+                      ? (isMixed ? '—' : 'N/A')
+                      : `${analysis.probability}%`}
                   </p>
-                  {analysis.confidence && (
+                  {analysis.probability === null && isMixed && (
+                    <p className="text-[10px] text-amber-400/90 uppercase tracking-wider mt-1">no directional call</p>
+                  )}
+                  {analysis.confidence && !(analysis.probability === null && isMixed) && (
                     <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-1">{analysis.confidence} confidence</p>
                   )}
                 </div>
@@ -180,16 +192,25 @@ function AnalyzeModal({ event, onClose }) {
             </div>
 
             {analysis.leadingIndicators && (
-              <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+              <div className={`rounded-xl p-4 border ${isMixed ? 'bg-amber-500/5 border-amber-500/25' : 'bg-white/5 border-white/10'}`}>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">🔎 Leading Indicators</p>
                   <span className={`text-xs font-bold px-2 py-0.5 rounded-lg border ${
                     analysis.leadingIndicators.tilt === 'beat' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
                     : analysis.leadingIndicators.tilt === 'miss' ? 'text-red-400 bg-red-500/10 border-red-500/20'
+                    : isMixed ? 'text-amber-400 bg-amber-500/10 border-amber-500/25'
                     : 'text-slate-400 bg-slate-500/10 border-slate-500/20'}`}>
                     {analysis.leadingIndicators.tilt}
                   </span>
                 </div>
+                {/* A split is a finding, not a failure. Without this line "mixed" and a dash where a
+                    percentage belongs read like the brief broke or the data never arrived. */}
+                {isMixed && (
+                  <p className="text-sm text-amber-200/90 mb-2">
+                    The data points <strong>both ways</strong> — some leads argue for a beat, others for a miss.
+                    This is a real split in the evidence, not missing data, so no directional call is made.
+                  </p>
+                )}
                 <p className="text-sm text-slate-300">{analysis.leadingIndicators.reasoning}</p>
                 {analysis.leadingIndicators.evidence?.length > 0 && (
                   <ul className="mt-2 space-y-1">

@@ -113,6 +113,45 @@ function momPercent(latest, prev) {
   return +((a / b - 1) * 100).toFixed(1)
 }
 
+// Deterministic read of whether the leads agree with each other.
+//
+// Three identical-input CPI briefs returned tilt "miss", then "beat", then "beat" — same six leads,
+// same values, opposite conclusions. That is not the model misbehaving: one lead had a computable
+// beat while five others pointed the other way, and a coin-flip is a fair reading of a genuinely
+// contradictory set. Picking a side is what is wrong, so the conflict is detected HERE, in code,
+// and the model is told about it rather than left to resolve it differently each run.
+//
+// `polarity` must be declared per series and never inferred. "Higher" is hotter for a price index
+// but WEAKER for jobless claims — the one place this would silently invert.
+const LEAD_SIGN = { beat: 1, miss: -1, inline: 0, higher: 1, lower: -1, flat: 0 }
+const DIRECTIONAL_CONFLICT_MIN = 2   // one dissenting lead is noise; two or more is a real split
+
+function leadConsensus(items) {
+  let netSurprise = 0, netDirectional = 0, forecastBacked = 0, directional = 0
+  for (const i of items || []) {
+    const p = i.polarity === 'inverse' ? -1 : 1
+    if (i.surprise && LEAD_SIGN[i.surprise] !== undefined) {
+      forecastBacked++
+      netSurprise += LEAD_SIGN[i.surprise] * p
+    } else if (i.vsPrevious && LEAD_SIGN[i.vsPrevious] !== undefined) {
+      directional++
+      netDirectional += LEAD_SIGN[i.vsPrevious] * p
+    }
+  }
+  const base = { forecastBacked, directional, netSurprise, netDirectional }
+  // No computable surprise at all — the existing rule already covers this and outranks any split.
+  if (forecastBacked === 0) return { ...base, verdict: 'insufficient' }
+  // Two or more surprises that cancel each other out. This is the plainest disagreement there is —
+  // the forecast-backed evidence contradicts ITSELF — and no amount of directional agreement
+  // downstream resolves it. A single `inline` surprise also nets to zero but is one neutral
+  // reading, not a split, so the count matters as much as the sum.
+  if (forecastBacked >= 2 && netSurprise === 0) return { ...base, verdict: 'mixed' }
+  const conflict = netSurprise !== 0 && netDirectional !== 0
+    && Math.sign(netSurprise) !== Math.sign(netDirectional)
+    && Math.abs(netDirectional) >= DIRECTIONAL_CONFLICT_MIN
+  return { ...base, verdict: conflict ? 'mixed' : 'aligned' }
+}
+
 function surpriseOf(actualNum, forecastRaw) {
   const f = parseReleaseValue(forecastRaw)
   if (f === null || actualNum === null) return null
@@ -122,6 +161,6 @@ function surpriseOf(actualNum, forecastRaw) {
 export {
   MONTH_NAMES, RELEASE_DATE_TOLERANCE_DAYS,
   parseEconNum, parseReleaseValue, normalizePeriod,
-  expectedPeriodFor, nextReleaseAfter, momPercent,
+  expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus,
   validateReleaseValue, validateReleaseResult, surpriseOf,
 }

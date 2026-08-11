@@ -7,7 +7,7 @@
 // path ships. It requires lib/releaseValue.js directly, so it exercises the shipped code.
 
 import {
-  parseReleaseValue, normalizePeriod, expectedPeriodFor, momPercent,
+  parseReleaseValue, normalizePeriod, expectedPeriodFor, momPercent, leadConsensus,
   validateReleaseValue, validateReleaseResult, surpriseOf,
 } from '../lib/releaseValue.js'
 
@@ -155,6 +155,51 @@ check(G7, 'computed value in CPI_MM range', (() => { const v = momPercent(315.66
 check(G7, 'raw index would be REJECTED', (() => { const r = validateReleaseValue('315.664', RANGE.CPI_MM); return r.ok ? r.numeric : 'REJECT' })(), 'REJECT', 'the gate catches a level sent as a percent')
 
 for (const g of [G1, G2, G3, G4, G5, G6, G7]) table(g)
-console.log(`\n${'═'.repeat(70)}`)
+
+// ── 8. LEAD CONSENSUS — is the evidence internally consistent? ─────────────────
+// Three identical-input CPI briefs produced tilt miss / beat / beat. This detects that split in
+// code so the model is told "these disagree" rather than resolving it differently each run.
+const G8 = '8. LEAD CONSENSUS — mixed vs aligned'
+const cons = (items) => leadConsensus(items).verdict
+const S = (surprise, polarity) => ({ surprise, polarity })
+const D = (vsPrevious, polarity) => ({ vsPrevious, polarity })
+
+// THE live case: ISM prices beat, five FRED inflation leads all cooling.
+const LIVE_CPI = [
+  S('beat', 'direct'),          // ISM Manufacturing Prices 71.1 vs 70.0
+  D('lower', 'direct'),         // PPI final demand m/m
+  D('lower', 'direct'),         // Average hourly earnings m/m
+  D('lower', 'direct'),         // Import price index m/m
+  D('lower', 'direct'),         // UMich inflation expectations
+]
+check(G8, 'LIVE CPI: 1 beat vs 4 cooling', cons(LIVE_CPI), 'mixed', 'the run-to-run coin flip')
+check(G8, '  its tally', (() => { const c = leadConsensus(LIVE_CPI); return `fc=${c.forecastBacked} dir=${c.directional} nS=${c.netSurprise} nD=${c.netDirectional}` })(), 'fc=1 dir=4 nS=1 nD=-4', '')
+
+// THE live NFP case: ADP missed, claims rose. Claims are INVERSE — more claims is weaker, which
+// agrees with the miss. Getting polarity wrong here would call an aligned set "mixed".
+const LIVE_NFP = [
+  S('miss', 'direct'),          // ADP 44K vs 68K
+  D('higher', 'inverse'),       // Initial claims rose  → weaker
+  D('higher', 'inverse'),       // Continued claims rose → weaker
+]
+check(G8, 'LIVE NFP: miss + rising claims', cons(LIVE_NFP), 'aligned', 'inverse polarity agrees')
+check(G8, '  its tally', (() => { const c = leadConsensus(LIVE_NFP); return `nS=${c.netSurprise} nD=${c.netDirectional}` })(), 'nS=-1 nD=-2', 'both negative')
+check(G8, 'same set, polarity wrongly direct', cons([S('miss', 'direct'), D('higher', 'direct'), D('higher', 'direct')]), 'mixed', 'shows why polarity is declared, not inferred')
+
+check(G8, 'no forecast-backed lead at all', cons([D('lower', 'direct'), D('lower', 'direct')]), 'insufficient', 'outranks any split')
+check(G8, 'surprise agrees with direction', cons([S('beat', 'direct'), D('higher', 'direct'), D('higher', 'direct')]), 'aligned', '')
+check(G8, 'only ONE dissenting lead', cons([S('beat', 'direct'), D('lower', 'direct')]), 'aligned', 'one dissenter is noise, not a split')
+check(G8, 'two dissenting leads', cons([S('beat', 'direct'), D('lower', 'direct'), D('lower', 'direct')]), 'mixed', 'two is a real split')
+check(G8, 'directional leads cancel out', cons([S('beat', 'direct'), D('lower', 'direct'), D('higher', 'direct')]), 'aligned', 'net zero is not a conflict')
+check(G8, 'inline surprise, leads cooling', cons([S('inline', 'direct'), D('lower', 'direct'), D('lower', 'direct')]), 'aligned', 'no surprise direction to contradict')
+check(G8, 'two surprises disagree, dir agrees', cons([S('beat', 'direct'), S('miss', 'direct'), D('lower', 'direct'), D('lower', 'direct')]), 'mixed', 'the surprises contradict each other')
+check(G8, 'empty', cons([]), 'insufficient', '')
+check(G8, 'null items', cons(null), 'insufficient', '')
+
+table(G8)
+console.log(fail ? `\n${fail} FAILED` : '')
+
+console.log(`
+${'═'.repeat(70)}`)
 console.log(fail ? `❌ ${fail} FAILED, ${pass} passed` : `✅ all ${pass} vectors pass`)
 process.exit(fail ? 1 : 0)
