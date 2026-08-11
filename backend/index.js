@@ -5,6 +5,7 @@ import {
   MONTH_NAMES, parseEconNum, parseReleaseValue, normalizePeriod,
   expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
+import { withBudget } from './lib/withBudget.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -4005,22 +4006,6 @@ function sanitizeBriefField(v, max = 120) {
   return String(v ?? '').replace(/[`\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
 }
 
-// This endpoint is USER-FACING — a modal is spinning while it runs. Several of the live fetches can
-// block far longer than a person will wait: tdAcquire() holds a caller until the TwelveData credit
-// budget frees up (minutes on a busy minute), and the FF/CFTC fetches carry 12s timeouts with retries.
-// So every input gets a hard budget. A timed-out input is simply "not available" — the same contract
-// the prompt already has for a failed fetch — and the underlying promise is left running so it warms
-// the shared cache for the next request.
-// `timings` collects per-input elapsed ms so the endpoint can report WHERE its wall time goes —
-// TwelveData credit waits, FRED, or the model — instead of us guessing from a single total.
-function withBudget(promise, ms, label, timings) {
-  const t = Date.now()
-  const stamp = (v) => { if (timings) timings[label] = Date.now() - t; return v }
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(() => { console.warn(`⏱️ [brief] ${label} exceeded ${ms / 1000}s budget — treating as not available`); resolve(null) }, ms)),
-  ]).then(stamp).catch(e => { console.warn(`⚠️ [brief] ${label} failed: ${e?.message}`); return stamp(null) })
-}
 const BRIEF_FETCH_BUDGET = 20 * 1000
 
 const BRIEF_CACHE_TTL = 15 * 60 * 1000
