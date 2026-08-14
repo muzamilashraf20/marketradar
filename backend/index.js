@@ -12,7 +12,7 @@ import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
 import { Resend } from 'resend'
-import { runEngine as runEngineV2, CONFIG as V2_CONFIG } from './biasEngineV2/biasEngine.js'
+import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated } from './biasEngineV2/biasEngine.js'
 
 const app = express()
 const rssParser = new Parser()
@@ -1788,7 +1788,13 @@ app.post('/api/bias', aiRateLimiter, async (req, res) => {
     const { data, error } = await supabase.from('bias_state_v2').select('*').eq('pair', symbol).maybeSingle()
     if (error) throw error
 
-    if (!data || data.status !== 'running' || data.direction === 'FLAT') {
+    // Serve-time invalidation — same display-only suppression as the headline and the compass
+    // (see v2BreachedAtServeTime). A bias whose level already broke falls through to the Neutral
+    // response below instead of being served as live. No DB write: runV2Shadow owns the state.
+    const breached = !!data && data.status === 'running' && data.direction !== 'FLAT'
+      && v2BreachedAtServeTime(data, '[api/bias]')
+
+    if (!data || breached || data.status !== 'running' || data.direction === 'FLAT') {
       return res.json({
         success: true,
         bias: {
@@ -1796,7 +1802,10 @@ app.post('/api/bias', aiRateLimiter, async (req, res) => {
           direction: 'Neutral',
           confidence: data?.confidence ?? null,
           tradeGrade: data?.grade || null,
-          reasoning: 'No directional bias right now — the macro signals are too close to call on this pair.',
+          // "too close to call" would be a lie for a bias that broke its level — say which it is.
+          reasoning: breached
+            ? 'Invalidation level broke — this bias is off the table until the engine re-scores it.'
+            : 'No directional bias right now — the macro signals are too close to call on this pair.',
           flat: true,
           generatedAt: data?.updated_at || null,
         },
@@ -1947,6 +1956,91 @@ async function saveChannelPostState(key) {
 // Guards against alert spam from near-tied pairs — see the churn guard below.
 const V2_HEADLINE_SWITCH_MARGIN = 5
 
+// ── SERVE-TIME INVALIDATION GUARD ─────────────────────────────────────────────
+// The engine only re-evaluates invalidation on its own tick (V2_SHADOW_INTERVAL_MIN, 2h by
+// default), so a level broken minutes after a tick stayed on the dashboard as a live bias for the
+// rest of the window. Everything below is DISPLAY SUPPRESSION ONLY — it hides a breached row and
+// writes nothing. CLOSE vs FLIP is decide()'s call and runV2Shadow is the sole writer of
+// bias_state_v2; a second writer here would race the engine.
+//
+// The comparison itself is isInvalidated() from biasEngine.js — the SAME function decide()'s
+// Trigger B uses, so display and engine can never disagree about an exact touch of the level.
+//
+// Price is read from cache only — the serve path never makes a network call. Sources, newest wins
+// (getCached ignores TTL, so an expired v1 candle can be older than a fresh v2 one):
+//   v2spot_*      — spot written by the 10-min invalidation watcher, for pairs with a live bias
+//   tdcandle_d_*  — v1's daily candles (10-min TTL, only warm while v1 paths run)
+//   tdcandle_dv2_*— v2's own daily candles (6h TTL)
+// Without the watcher's spot the freshest number here is a 6h candle, which is why the watcher
+// seeds v2spot_* — that costs nothing extra and it is what makes this guard actually timely.
+function v2CachedPrice(pair) {
+  let best = null
+  const consider = (e, px) => {
+    if (!e || !Number.isFinite(px)) return
+    if (!best || e.timestamp > best.timestamp) best = { price: px, timestamp: e.timestamp }
+  }
+  const spot = API_CACHE[`v2spot_${pair}`]
+  consider(spot, parseFloat(spot?.data))
+  for (const key of [`tdcandle_d_${pair}`, `tdcandle_dv2_${pair}`]) {
+    const e = API_CACHE[key]
+    consider(e, Array.isArray(e?.data) && e.data[0] ? parseFloat(e.data[0].close) : NaN)
+  }
+  return best
+}
+
+// true (and logs) when this row's invalidation level is already broken.
+// `price` overrides the cache (the watcher passes its fresh spot). No price from either → false:
+// fail OPEN, so a cold cache or a failed fetch never blanks a live bias.
+function v2BreachedAtServeTime(row, tag, { action = 'dropping', price = null } = {}) {
+  const lvl = row?.invalidation_level
+  if (lvl == null || !Number.isFinite(+lvl)) return false
+  let px = price != null && Number.isFinite(+price) ? +price : null
+  let ageMin = 0
+  if (px == null) {
+    const cached = v2CachedPrice(row.pair)
+    if (!cached) return false
+    px = cached.price
+    ageMin = Math.round((Date.now() - cached.timestamp) / 60000)
+  }
+  if (!isInvalidated(row.direction, px, lvl)) return false
+  const dp = row.pair.includes('JPY') ? 3 : row.pair === 'XAUUSD' ? 2 : 5
+  console.warn(`⚠️ ${tag} ${row.pair} invalidation breached at serve time (${px.toFixed(dp)} vs ${(+lvl).toFixed(dp)}, price ${ageMin === 0 ? 'live' : `${ageMin}min old`}) — ${action}`)
+  return true
+}
+
+// Spot for pairs that currently have a running bias — TwelveData /price, 1 credit per symbol.
+// Called ONLY by the 10-min invalidation watcher, and only when there is a bias to protect, so an
+// idle engine spends nothing. Fetched prices are cached as `v2spot_*` so the serve-time guard
+// reads them too. Anything that fails is simply absent from the result: the caller then falls back
+// to the candle cache, and if that is cold too the guard skips that pair. Never throws.
+async function v2FetchSpot(pairs) {
+  const wanted = pairs.filter(p => ROOM_SYMBOL_MAP[p])
+  const key = process.env.TWELVEDATA_API_KEY
+  if (!wanted.length || !key) return {}
+  const syms = wanted.map(p => ROOM_SYMBOL_MAP[p])
+  try {
+    await tdAcquire(syms.length)
+    const r = await axios.get('https://api.twelvedata.com/price', {
+      params: { symbol: syms.join(','), apikey: key }, timeout: 8000
+    })
+    if (r.data?.code) {
+      console.warn(`⚠️ [v2 spot] error code=${r.data.code} "${r.data.message || ''}" — falling back to cached price`)
+      return {}
+    }
+    const out = {}
+    for (const p of wanted) {
+      // /price returns { price } for a single symbol, { "EUR/USD": { price }, … } for a batch.
+      const d = syms.length === 1 ? r.data : r.data?.[ROOM_SYMBOL_MAP[p]]
+      const px = parseFloat(d?.price)
+      if (Number.isFinite(px)) { out[p] = px; setCache(`v2spot_${p}`, px) }
+    }
+    return out
+  } catch (e) {
+    console.warn(`⚠️ [v2 spot] fetch failed (${e?.message}) — falling back to cached price`)
+    return {}
+  }
+}
+
 async function getV2HeadlineBias() {
   if (!supabase) return null
   const { data, error } = await supabase
@@ -1960,6 +2054,12 @@ async function getV2HeadlineBias() {
   // false) — filtering on it here means a disabled pair can never surface from a stale row.
   let rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
   if (!rows.length) { console.log('   [v2 headline] no running bias — nothing to surface'); return null }
+
+  // Serve-time invalidation — see v2BreachedAtServeTime. Filtered off `rows` (not just the chosen
+  // top) so the churn guard below can't hold a breached incumbent either. Pool stays sorted, so
+  // dropping a row simply promotes the next candidate.
+  rows = rows.filter(r => !v2BreachedAtServeTime(r, '[v2 headline]'))
+  if (!rows.length) { console.log('   [v2 headline] every running bias is breached — nothing to surface'); return null }
 
   const strong = rows.filter(r => Math.abs(r.diff_at_entry ?? 0) >= V2_CONFIG.OPEN_THRESHOLD)
   const pool = strong.length ? strong : rows
@@ -2601,7 +2701,11 @@ app.get('/api/macro-compass', async (req, res) => {
     if (error) throw error
 
     const rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
-    const active = rows.filter(r => r.status === 'running' && r.direction !== 'FLAT')
+    // Same serve-time invalidation guard the headline uses — a level broken between engine ticks
+    // must not render as a live bias on the compass either. Display-only: nothing is written back.
+    const running = rows.filter(r => r.status === 'running' && r.direction !== 'FLAT')
+    const breached = new Set(running.filter(r => v2BreachedAtServeTime(r, '[macro-compass]')).map(r => r.pair))
+    const active = running.filter(r => !breached.has(r.pair))
 
     // A query that succeeds but returns nothing is indistinguishable from a healthy empty table,
     // so it used to fail silently — the panel sat blank for 20 minutes with nothing in the logs
@@ -2667,7 +2771,12 @@ app.get('/api/macro-compass', async (req, res) => {
     const activeOut = active
       .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
       .map(shape)
-    const flatOut = rows.filter(r => !active.includes(r)).map(r => ({ ...shape(r), noBiasReason: noBiasReasonFor(r.pair) }))
+    // A breached row still carries its old BUY/SELL in the DB, and MacroCompass renders "NO BIAS"
+    // purely off direction === 'FLAT' — so force it here, otherwise the card keeps showing the dead
+    // direction in the flat group. Still a display override only: the DB row is untouched.
+    const flatOut = rows.filter(r => !active.includes(r)).map(r => breached.has(r.pair)
+      ? { ...shape(r), direction: 'FLAT', noBiasReason: 'Invalidation level broke — this bias is off the table until the engine re-scores it.' }
+      : { ...shape(r), noBiasReason: noBiasReasonFor(r.pair) })
 
     res.json({
       success: true,
@@ -5367,7 +5476,43 @@ app.listen(5000, () => {
       }
       v2PrevClosed = closedNow
     }, 5 * 60 * 1000)
-    console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run + open catch-up → bias_state_v2 / bias_history_v2)`)
+
+    // ── INVALIDATION WATCHER (10min) ──
+    // The main tick is 2h, so a level broken right after a tick used to sit live until the next one.
+    // This watcher only READS — running non-FLAT rows vs the cached price — and on a breach fires a
+    // FULL runV2Shadow so the engine decides CLOSE vs FLIP itself. It deliberately writes no state:
+    // decide() owns that, and a second writer would race the engine mid-run.
+    // Per-pair cooldown, same idea as TIER2_COOLDOWN: one breach can't re-run the engine every
+    // 10min while price sits the wrong side of the level.
+    const V2_INVAL_COOLDOWN = 30 * 60 * 1000
+    const v2InvalFiredAt = new Map()   // pair → last trigger ms
+    setInterval(async () => {
+      try {
+        if (!supabase || isForexClosed()) return
+        const { data, error } = await supabase
+          .from('bias_state_v2').select('pair, direction, invalidation_level')
+          .eq('status', 'running').neq('direction', 'FLAT')
+        if (error) { console.error(`⚠️ [v2 inval watch] read failed: ${error.message}`); return }
+        const now = Date.now()
+        // Cooldown BEFORE the spot fetch, so a pair already re-run costs no credits and doesn't
+        // re-log every 10min. Nothing left to watch → no TwelveData call at all.
+        const watch = (data || [])
+          .filter(r => V2_CONFIG.PAIRS.includes(r.pair))
+          .filter(r => now - (v2InvalFiredAt.get(r.pair) || 0) > V2_INVAL_COOLDOWN)
+        if (!watch.length) return
+        const spot = await v2FetchSpot(watch.map(r => r.pair))
+        const hits = watch.filter(r => v2BreachedAtServeTime(r, '[v2 inval watch]', {
+          action: 're-running engine',
+          price: spot[r.pair] ?? null,   // absent → helper falls back to the candle cache
+        }))
+        if (!hits.length) return
+        for (const r of hits) v2InvalFiredAt.set(r.pair, now)
+        console.log(`🔬 [v2 inval watch] ${hits.map(r => r.pair).join(', ')} broke invalidation → runV2Shadow('invalidation')`)
+        await runV2Shadow('invalidation')
+      } catch (e) { console.error('v2 invalidation watch error:', e?.message) }
+    }, 10 * 60 * 1000)
+
+    console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run + open catch-up + 10min invalidation watch → bias_state_v2 / bias_history_v2)`)
   } else {
     console.log('🔬 v2 shadow cron OFF (set V2_SHADOW_CRON=on to enable)')
   }

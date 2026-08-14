@@ -308,9 +308,7 @@ function decide(state, diff, market) {
   const dir = state.direction;
 
   // Trigger B: price broke the PDL (BUY) / PDH (SELL) invalidation level?
-  const invalidated =
-    (dir === "BUY"  && price <= state.invalidation_level) ||
-    (dir === "SELL" && price >= state.invalidation_level);
+  const invalidated = isInvalidated(dir, price, state.invalidation_level);
 
   // Trigger A: score crossed the HARD opposite threshold (regime genuinely reversed)?
   const scoreFlipped =
@@ -334,6 +332,19 @@ function decide(state, diff, market) {
 
   // otherwise: HOLD (this is correct behaviour, e.g. NZDUSD for 2 days)
   return { action: "HOLD" };
+}
+
+// SINGLE SOURCE OF TRUTH for "has this bias's level broken?". decide()'s Trigger B below, the
+// serve-time display guard and the 10-min invalidation watcher (both in index.js) all call this —
+// the comparison must not drift between them, above all on an EXACT TOUCH: `<=` / `>=` means
+// touching the level kills the bias, no confirmation, which is what the invalidation_text copy now
+// promises. A null / non-numeric level is NOT a breach — note that the old inline form let
+// `price >= null` coerce to `price >= 0`, which read as invalidated for EVERY SELL with no level.
+function isInvalidated(direction, price, level) {
+  if (level == null || price == null) return false;
+  const p = +price, l = +level;
+  if (!Number.isFinite(p) || !Number.isFinite(l)) return false;
+  return (direction === "BUY" && p <= l) || (direction === "SELL" && p >= l);
 }
 
 // Hybrid PDH/PDL invalidation: a BUY dies below the Previous Day Low, a SELL dies above the
@@ -541,8 +552,11 @@ async function runEngine({ supabase, feeds, onUsage }) {
         // Number aur prose ko in-sync rakho — card kabhi aisa level na dikhaye jo apni text se disagree kare.
         // Sirf tab overwrite karo jab level actually move hua; warna original AI-written reasoning rehne do.
         const dp = pair.includes("JPY") ? 3 : pair === "XAUUSD" ? 2 : 5;
+        // Copy must match the LOGIC: decide() invalidates on a single touch of the level (see
+        // Trigger B above), so "daily close" / "sustained move" would promise a confirmation the
+        // engine never waits for. Phrase it as a plain move through the level.
         const invalText = invalMoved
-          ? `A daily close ${state.direction === "BUY" ? "below" : "above"} ${ratchetInval.toFixed(dp)} would break the ${state.direction === "BUY" ? "bullish" : "bearish"} structure and invalidate this bias.`
+          ? `A move ${state.direction === "BUY" ? "below" : "above"} ${ratchetInval.toFixed(dp)} invalidates this bias.`
           : state.invalidation_text;
 
         const patch = { confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, updated_at: new Date().toISOString() };
@@ -589,7 +603,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
 
 export {
   CONFIG, REGIMES, MODELS,
-  detectRegime, composite, decide, invalidationLevel, pipFor,
+  detectRegime, composite, decide, invalidationLevel, isInvalidated, pipFor,
   extractSignals, scoreCurrencies, writeThesis,
   runEngine,
 };

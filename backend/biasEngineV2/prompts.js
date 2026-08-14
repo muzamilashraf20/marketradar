@@ -149,6 +149,10 @@ invalidation number. Write:
 - thesis: exactly 2 sentences. Sentence 1 = the dominant macro driver behind this bias. Sentence 2 = what
   would confirm it playing out. Professional, specific, no hype.
 - invalidation_text: one short sentence phrasing the given invalidation level in plain trader language.
+  The level is a HARD SPOT LEVEL: a single touch kills the bias, the engine waits for no confirmation.
+  So NEVER write "sustained", "daily close", "close below/above", "confirmed break", "decisive break",
+  "hold below/above", or any other qualifier implying confirmation is needed. Phrase it as a plain move
+  through the level, e.g. "A move below 1.32450 invalidates this bias."
 
 Output STRICT JSON only: { "thesis": "", "invalidation_text": "" }`;
 
