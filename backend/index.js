@@ -1333,12 +1333,25 @@ async function fetchRateDifferentials() {
   //   - dates are read as RAW Excel serials. With cellDates the parser builds Dates in LOCAL time
   //     and toISOString() then shifts them a day backwards on a UTC+ host — and a one-day skew is
   //     enough to trip the contemporaneity check in computeMacroRateScores.
-  //   - the full browser User-Agent is required; rbnz.govt.nz 403s a short or unknown agent (same
-  //     trick the BoE block above needs).
+  //   - a full browser header set is required, not just a User-Agent. rbnz.govt.nz returned 200 to a
+  //     UA-only request from a residential IP but 403 from Railway, so the edge is scoring the whole
+  //     request, not the agent string. Sending the headers a real browser download carries — Accept,
+  //     Accept-Language, Referer from the B2 page, and the Sec-Fetch-* set — is the cheap fix to try
+  //     before resorting to a third-party fetch-through, which would put someone else in the data path.
   try {
     const r = await axios.get('https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx', {
       timeout: 30000, responseType: 'arraybuffer',
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+        'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*;q=0.8',
+        'Accept-Language': 'en-NZ,en-GB;q=0.9,en;q=0.8',
+        'Referer': 'https://www.rbnz.govt.nz/statistics/series/exchange-and-interest-rates/wholesale-interest-rates',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+      },
     })
     const sheet = XLSX.read(r.data, { type: 'buffer' }).Sheets['Data']
     const grid = sheet ? XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true }) : []
