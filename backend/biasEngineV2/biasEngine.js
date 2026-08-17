@@ -398,6 +398,13 @@ function computeConfidence({ diff, baseScores, quoteScores, adrUsedPct }) {
     }
     conf += agree * 4 - against * 6;   // conflict costs more than agreement pays
   }
+  // Conviction as of HERE — before the entry-timing penalty. Timing grades how fresh the ENTRY was
+  // (how much of the day's range was already spent when the bias was found); it says nothing about
+  // whether the bias is still RIGHT. A bias opened in Asia is automatically LATE by London, so
+  // letting timing feed the conviction FLOOR executes correct early biases for being early.
+  // `confidence` / `grade` / `timing` below are unchanged and still drive every display — only the
+  // floor reads this value.
+  const confidenceBeforeTiming = Math.max(40, Math.min(92, Math.round(conf)));
   // Entry timing — the day's range is largely spent, so the edge is worse.
   const adr = adrUsedPct ?? 0;
   let timing = "FRESH";
@@ -411,13 +418,16 @@ function computeConfidence({ diff, baseScores, quoteScores, adrUsedPct }) {
   else if (conf >= 64) grade = timing === "LATE" ? "C" : "B";
   else if (conf >= 55) grade = "C";
   else grade = "D";
-  return { confidence: conf, grade, timing, agree, against };
+  return { confidence: conf, confidenceBeforeTiming, grade, timing, agree, against };
 }
 async function saveState(supabase, pair, obj) {
   const { error: e1 } = await supabase.from("bias_state_v2").upsert({ pair, ...obj, updated_at: new Date().toISOString() });
   if (e1) console.error(`⚠️ [v2 db] saveState upsert bias_state_v2(${pair}) failed: ${e1.message}${e1.code ? ` (${e1.code})` : ""}`);
-  // also append to bias_history_v2 for the "Bias History" panel
-  const { error: e2 } = await supabase.from("bias_history_v2").insert({ pair, ...obj, created_at: new Date().toISOString() });
+  // also append to bias_history_v2 for the "Bias History" panel.
+  // low_conf_streak is live STATE bookkeeping, not a historical fact about the bias — and
+  // bias_history_v2 has no such column, so leaving it in would make every history insert fail.
+  const { low_conf_streak, ...historyObj } = obj;
+  const { error: e2 } = await supabase.from("bias_history_v2").insert({ pair, ...historyObj, created_at: new Date().toISOString() });
   if (e2) console.error(`⚠️ [v2 db] saveState insert bias_history_v2(${pair}) failed: ${e2.message}${e2.code ? ` (${e2.code})` : ""}`);
 }
 
@@ -495,11 +505,40 @@ async function runEngine({ supabase, feeds, onUsage }) {
     // is closed to FLAT. Applied only to HELD biases: opens and flips keep their OPEN_THRESHOLD gate,
     // and the invalidation/flip triggers in decide() are untouched. Turning the HOLD into a CLOSE here
     // (rather than closing it inline) reuses the existing close path — same history row, same result.
+    //
+    // Two guards stop the floor from executing biases that are actually working:
+    //   1. it reads confidenceBeforeTiming, so the entry-timing penalty — which grades ENTRY
+    //      freshness, not whether the bias is still right — can no longer close a winning bias;
+    //   2. it is price-aware and requires TWO consecutive sub-floor runs, so a single noisy score
+    //      tick is not enough on its own.
+    let nextStreak = 0;   // any run at or above the floor (or one that is working) resets this
     if (state && state.direction !== "FLAT" && (d.action === "HOLD" || d.action === "HOLD_FLAT")
-        && conf.confidence < CONFIG.MIN_HOLD_CONFIDENCE) {
-      console.log(`   [v2 floor] ${pair} conviction ${conf.confidence} < ${CONFIG.MIN_HOLD_CONFIDENCE} → CLOSE to FLAT`);
-      d.action = "CLOSE";
-      d.reason = "conviction_floor";
+        && conf.confidenceBeforeTiming < CONFIG.MIN_HOLD_CONFIDENCE) {
+      const heldDir = state.direction;
+      // A missing entry_price is NOT evidence of profit — fall through to the persistence path.
+      const inProfit = state.entry_price == null ? false
+        : heldDir === "BUY"  ? price > state.entry_price
+        : heldDir === "SELL" ? price < state.entry_price
+        : false;
+      const breached = isInvalidated(heldDir, price, state.invalidation_level);
+
+      if (inProfit && !breached) {
+        // CARVE-OUT A — price is proving the bias right and the structural level is intact.
+        // The invalidation level IS the bias-flip level; a conviction wobble is not one.
+        const pips = +(((price - state.entry_price) * (heldDir === "BUY" ? 1 : -1)) / pipFor(pair)).toFixed(1);
+        console.log(`   [v2 floor] ${pair} conviction ${conf.confidenceBeforeTiming} below floor but +${pips}p and level intact — HOLD`);
+        // streak deliberately left at 0 — do not accumulate while the bias is working
+      } else {
+        // CARVE-OUT B — persistence. One bad tick is noise; two in a row is a trend.
+        nextStreak = (state.low_conf_streak ?? 0) + 1;
+        if (nextStreak >= 2) {
+          console.log(`   [v2 floor] ${pair} conviction ${conf.confidenceBeforeTiming} < ${CONFIG.MIN_HOLD_CONFIDENCE} for 2 consecutive runs → CLOSE to FLAT`);
+          d.action = "CLOSE";
+          d.reason = "conviction_floor";
+        } else {
+          console.log(`   [v2 floor] ${pair} conviction ${conf.confidenceBeforeTiming} < ${CONFIG.MIN_HOLD_CONFIDENCE} (streak 1/2) — HOLD one more run`);
+        }
+      }
     }
 
     if (d.action === "OPEN" || d.action === "FLIP") {
@@ -522,6 +561,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
         confidence: conf.confidence,
         grade: conf.grade,
         entry_timing: conf.timing,
+        low_conf_streak: 0,   // a fresh bias must never inherit the previous one's streak
         opened_at: new Date().toISOString(),
         status: "running",
       });
@@ -559,7 +599,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
           ? `A move ${state.direction === "BUY" ? "below" : "above"} ${ratchetInval.toFixed(dp)} invalidates this bias.`
           : state.invalidation_text;
 
-        const patch = { confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, updated_at: new Date().toISOString() };
+        const patch = { confidence: conf.confidence, grade: conf.grade, entry_timing: conf.timing, low_conf_streak: nextStreak, updated_at: new Date().toISOString() };
         if (ratchetInval != null) patch.invalidation_level = ratchetInval;
         if (invalMoved) patch.invalidation_text = invalText;
 

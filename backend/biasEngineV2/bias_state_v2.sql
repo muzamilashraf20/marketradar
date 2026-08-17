@@ -27,6 +27,11 @@ create table if not exists bias_state_v2 (
   updated_at          timestamptz default now()
 );
 
+-- MIGRATION (2026-08-17) — consecutive-run counter for the conviction floor. The floor no longer
+-- closes a held bias on a single sub-floor tick; it needs two runs in a row (and only when price
+-- is not already proving the bias right). Existing rows start at 0.
+alter table bias_state_v2 add column if not exists low_conf_streak int not null default 0;
+
 create table if not exists bias_history_v2 (
   id                  bigint generated always as identity primary key,
   pair                text not null,
