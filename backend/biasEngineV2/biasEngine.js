@@ -175,7 +175,16 @@ async function writeThesis(args, onUsage) {
 //   spread < FLOOR    → the cross-section WAS computed and says no differential exists → a real
 //                       measurement of "flat" → 0, macro keeps its weight and contributes nothing
 // ---------------------------------------------------------------------------
-const RATE_XSECTION = ["USD", "EUR", "JPY", "CAD", "AUD"];  // GBP/CHF/NZD have no true daily 2Y source
+// GBP is a 5Y PROXY, not a true 2Y: the BoE publishes daily gilt yields at 5y/10y/20y only, so
+// IUDSNPY (5y nominal par) stands in for the short end. Its magnitude is therefore not strictly
+// comparable to the others' — a given bps move on a 5y point is not the same signal as on a 2y —
+// but the score is a deviation from the cross-sectional MEAN, and being absent entirely scored GBP
+// pairs at exactly 0.00 macro on every run, which is worse than an imperfect proxy.
+// CHF and NZD are still out. NZD is coming (RBNZ, xlsx). CHF has no live source at all: the SNB
+// discontinued its daily Confederation bond yields (cube `rendoblid`) after 2025-07-31, and the API
+// still answers — it returns that final row for any later date — so it cannot simply be polled.
+// USDCHF therefore stays on macro_basis "REDIST". That is a known limitation, not a bug.
+const RATE_XSECTION = ["USD", "EUR", "JPY", "CAD", "AUD", "GBP"];
 const RATE_LOOKBACK = 3;          // sessions
 const RATE_MIN_XSECTION = 4;      // below this the mean is meaningless → null, not 0
 const RATE_FLOOR_BPS = 3.0;       // measured at the 2.5th pct of 19 months of history — near-inert by design
