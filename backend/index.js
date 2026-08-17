@@ -2836,9 +2836,39 @@ app.get('/api/macro-compass', async (req, res) => {
     // A breached row still carries its old BUY/SELL in the DB, and MacroCompass renders "NO BIAS"
     // purely off direction === 'FLAT' — so force it here, otherwise the card keeps showing the dead
     // direction in the flat group. Still a display override only: the DB row is untouched.
-    const flatOut = rows.filter(r => !active.includes(r)).map(r => breached.has(r.pair)
-      ? { ...shape(r), direction: 'FLAT', noBiasReason: 'Invalidation level broke — this bias is off the table until the engine re-scores it.' }
-      : { ...shape(r), noBiasReason: noBiasReasonFor(r.pair) })
+    // A flat pair's stored thesis is FROZEN at whenever it last transitioned — bias_state_v2 only
+    // persists on a change, so a pair flat since 10 Aug still carries 10 Aug's thesis. Serving that
+    // today as if current is precisely the staleness this panel exists to remove, and there is no
+    // fresh one to swap in (writeThesis only runs on OPEN/FLIP). So it is dropped, and the
+    // invalidation level goes with it — a level shown on a non-bias reads as an entry.
+    //
+    // What replaces it is what the engine ACTUALLY computed this run: the lean direction from
+    // sign(diff), the fresh confidence, and the per-component breakdown. That is strictly more
+    // useful than the old prose, because it names WHICH leg disagrees. No model call involved.
+    const leanFor = (pair) => {
+      const f = freshReads[pair]
+      if (!f || !Number.isFinite(f.diff) || f.diff === 0 || !f.contrib) return null
+      const sign = f.diff > 0 ? 1 : -1
+      const part = (label, v) => ({
+        label,
+        value: +(v ?? 0).toFixed(2),
+        // agrees with the net lean, so the card can colour dissent without redoing the maths
+        agrees: (v ?? 0) === 0 ? null : Math.sign(v) === sign,
+      })
+      return {
+        direction: sign > 0 ? 'BUY' : 'SELL',
+        confidence: f.confidence ?? null,
+        diff: f.diff,
+        components: [part('Macro', f.contrib.m), part('Flow', f.contrib.o), part('Sentiment', f.contrib.s)],
+        at: f.at || null,
+      }
+    }
+    const flatOut = rows.filter(r => !active.includes(r)).map(r => {
+      const base = { ...shape(r), thesis: null, invalidationLevel: null, invalidationText: null }
+      return breached.has(r.pair)
+        ? { ...base, direction: 'FLAT', noBiasReason: 'Invalidation level broke — this bias is off the table until the engine re-scores it.' }
+        : { ...base, noBiasReason: noBiasReasonFor(r.pair), lean: leanFor(r.pair) }
+    })
 
     res.json({
       success: true,

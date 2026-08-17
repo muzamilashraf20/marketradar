@@ -149,6 +149,43 @@ function PairCard({ p, expanded, onToggle }) {
         </p>
       )}
 
+      {/* LEAN — a flat pair still has a directional read the engine computed; surfacing it (clearly
+          marked as NOT tradeable) beats throwing it away. Deliberately NO thesis (a pair that stays
+          flat never generates one, so anything stored is stale) and NO invalidation level — a level
+          on a non-bias reads as an entry. The component breakdown is the point: it shows WHICH leg
+          disagrees, which the old single line could not. Full static class strings per variant. */}
+      {isFlat && p.lean && p.lean.confidence != null && p.lean.confidence >= 55 && (
+        <div className="mt-2 pt-2 border-t border-white/5">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[11px] font-semibold text-slate-400">
+              Leaning {p.lean.direction === 'BUY' ? 'long' : 'short'}
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500">{p.lean.confidence}%</span>
+          </div>
+          <div className="mt-1.5 space-y-0.5">
+            {p.lean.components.map((c) => (
+              <div key={c.label} className="flex items-center justify-between gap-2">
+                <span className="text-[9.5px] text-slate-500">{c.label}</span>
+                <span
+                  className={
+                    c.agrees === null
+                      ? 'text-[9.5px] font-mono text-slate-600'
+                      : c.agrees
+                        ? 'text-[9.5px] font-mono text-emerald-400/70'
+                        : 'text-[9.5px] font-mono text-red-400/70'
+                  }
+                >
+                  {c.value > 0 ? '+' : ''}{c.value.toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-600 mt-1.5">
+            Not a bias — below conviction
+          </p>
+        </div>
+      )}
+
       {/* Thesis — clamped, expands on demand */}
       {p.thesis && !isFlat && (
         <p className={`text-[11px] leading-snug text-slate-400 mt-2 ${expanded ? '' : 'line-clamp-3'}`}>
