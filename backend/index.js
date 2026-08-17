@@ -2746,10 +2746,28 @@ app.get('/api/macro-compass', async (req, res) => {
       if (!f) return null
       // Engine had a real edge but the day's range is already spent — entering here is chasing.
       if (f.reason === 'adr_exhausted') return "Macro edge is there, but today's range is already spent — no clean entry left."
-      // Otherwise the honest answer is the score itself: how far short of the open threshold it fell.
       const edge = Math.abs(f.diff ?? NaN)
-      if (Number.isFinite(edge) && edge < T) return `Macro edge ${edge.toFixed(1)} vs ${T.toFixed(1)} needed — too evenly matched.`
-      return null
+      if (!Number.isFinite(edge)) return null
+
+      // "Too evenly matched" was being shown for two situations that are nothing alike. A pair can
+      // sit under the threshold because nothing is happening, or because its components are pulling
+      // hard in OPPOSITE directions and cancelling — AUDUSD on 2026-08-17 had the highest sub-
+      // threshold diff of any pair AND the lowest confidence, because macro was strongly pro-AUD
+      // while orderflow and sentiment fought it. Calling that "evenly matched" is simply false.
+      // Count components opposing the net direction from the sign pattern of contrib (m/o/s).
+      const sign = f.diff > 0 ? 1 : f.diff < 0 ? -1 : 0
+      let against = 0
+      if (sign !== 0 && f.contrib) {
+        for (const v of [f.contrib.m, f.contrib.o, f.contrib.s]) {
+          if (typeof v === 'number' && v !== 0 && Math.sign(v) !== sign) against++
+        }
+      }
+      if (against >= 2) return 'Components disagree — macro points one way, flow and sentiment the other. No clean read.'
+      // The lean line asserts "nothing is fighting this" — only claim that when contrib was actually
+      // read. A SKIP result (no market data) carries no contrib, and absence of evidence is not
+      // evidence of agreement, so fall through to the neutral line instead.
+      if (against === 0 && f.contrib && edge >= 1.2) return `Leaning ${sign > 0 ? 'BUY' : 'SELL'} but ${edge.toFixed(1)} of ${T.toFixed(1)} — not enough conviction to call it.`
+      return 'Macro signals too evenly matched — no edge on this pair.'
     }
 
     const shape = r => ({
@@ -5225,9 +5243,20 @@ async function runV2Shadow(trigger) {
   // has nothing current to explain WHY it isn't tradeable — the engine computes exactly that here and
   // then throws it away. Memory only: no DB write, no migration, bias_state_v2 untouched. On restart
   // the cache is empty until the next run repopulates it (consumers treat cold as "no reason").
+  // confidence/grade/contrib were being computed every run and discarded here. contrib is what lets
+  // the compass tell a CONFLICT (macro one way, flow/sentiment the other) apart from a genuinely
+  // even matchup — the two produce similar small diffs but mean opposite things to a trader.
+  // NOTE: thesis is deliberately absent — writeThesis() only runs on OPEN/FLIP, so a pair that stays
+  // FLAT has no fresh thesis to stash. Anything the compass shows for a flat pair is the frozen
+  // bias_state_v2 one.
   const freshReads = {}
   for (const r of out.results) {
-    freshReads[r.pair] = { diff: r.diff ?? null, action: r.action || null, reason: r.reason || null, at: ts }
+    freshReads[r.pair] = {
+      diff: r.diff ?? null, action: r.action || null, reason: r.reason || null,
+      confidence: r.confidence ?? null, grade: r.grade || null,
+      contrib: r.contrib || null, direction: r.direction || null,
+      at: ts,
+    }
   }
   setCache('v2_fresh_reads', freshReads)
   await v2RecordTelemetry(trigger, out)   // Step A observation window — see V2_TELEMETRY_KEY
