@@ -2041,14 +2041,19 @@ async function v2FetchSpot(pairs) {
   }
 }
 
+// Returns the bias to publish, or null meaning "v2 genuinely has no qualifying bias right now".
+// THROWS when the engine state could not be READ at all. The caller must keep those two apart:
+// a null is a real answer and must publish nothing, while a throw means we know nothing and the
+// last good card should keep serving. Collapsing them into one null is what let a read blip look
+// identical to a flat day.
 async function getV2HeadlineBias() {
-  if (!supabase) return null
+  if (!supabase) { const e = new Error('supabase client unavailable'); e.v2Degraded = true; throw e }
   const { data, error } = await supabase
     .from('bias_state_v2')
     .select('*')
     .eq('status', 'running')
     .neq('direction', 'FLAT')
-  if (error) { console.error(`⚠️ [v2 headline] read failed: ${error.message}`); return null }
+  if (error) { const e = new Error(`bias_state_v2 read failed: ${error.message}`); e.v2Degraded = true; throw e }
 
   // V2_CONFIG.PAIRS is the engine's own enabled list (already excludes gold while V2_GOLD_ENABLED is
   // false) — filtering on it here means a disabled pair can never surface from a stale row.
@@ -2142,24 +2147,32 @@ async function getV2HeadlineBias() {
 async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustRetry = false) {
   if (isForexClosed()) return null
 
-  // ── ENGINE SWITCH: BIAS_ENGINE=v2 serves the headline bias from the v2 engine instead of running
-  // v1's own selection + generation. v1 stays intact as the fallback: if v2 has nothing running
-  // (fresh DB, all FLAT, or a read error) we fall through and compute the v1 bias as before.
+  // ── ENGINE SWITCH: BIAS_ENGINE=v2 serves the headline bias from the v2 engine. There is NO v1
+  // fallback on this path any more. The fallback did not merely write a history row — it published a
+  // whole second engine's opinion: DMs to every subscriber and a post to the public channel. So on a
+  // day v2 correctly had no edge, subscribers still got a v1 call (gold included, which v2 does not
+  // even score). An empty v2 is the honest output and must publish NOTHING.
+  //
+  // The one case that is NOT "no bias" is a failed READ — there we know nothing, so keep serving the
+  // last good card rather than blanking it. getV2HeadlineBias throws for exactly that case.
   if (process.env.BIAS_ENGINE === 'v2') {
+    let v2
     try {
-      const v2 = await getV2HeadlineBias()
-      if (v2) {
-        // Stamp the lock with today's date even though v2 doesn't use it for selection (its state is
-        // per-pair). saveTodayBiasState persists { lock, result } and loadTodayBiasState only restores
-        // the cached result when lock.date === today — without this stamp the cache is dropped on every
-        // Railway restart, which would silently reset the churn guard's incumbent on each deploy.
-        todayBiasLock = { date: utcDay(), pair: v2.pair, symbol: v2.symbol, selectedBy: 'v2' }
-        return publishTodayBias(v2)
-      }
-      console.log('   [v2 headline] empty — falling back to v1 for this cycle')
+      v2 = await getV2HeadlineBias()
     } catch (e) {
-      console.error(`⚠️ [v2 headline] failed, falling back to v1: ${e?.message}`)
+      console.error(`⚠️ [v2 headline] DEGRADED (${e?.message}) — serving last published bias, publishing nothing`)
+      return getCached('today_bias') || null
     }
+    if (v2) {
+      // Stamp the lock with today's date even though v2 doesn't use it for selection (its state is
+      // per-pair). saveTodayBiasState persists { lock, result } and loadTodayBiasState only restores
+      // the cached result when lock.date === today — without this stamp the cache is dropped on every
+      // Railway restart, which would silently reset the churn guard's incumbent on each deploy.
+      todayBiasLock = { date: utcDay(), pair: v2.pair, symbol: v2.symbol, selectedBy: 'v2' }
+      return publishTodayBias(v2)
+    }
+    console.log('   [v2 headline] no qualifying bias — publishing nothing (no history row, no DM, no channel post)')
+    return null
   }
 
   const day = utcDay()
@@ -2469,10 +2482,16 @@ async function publishTodayBias(result) {
   return result
 }
 
-// Save a Today's Bias snapshot to history whenever it changes
+// Save a Today's Bias snapshot to history whenever it changes.
+// Stamped with the engine that produced it so the two are never mixed again in a win rate — v1 and
+// v2 are different engines and averaging them describes neither. Requires (run once in Supabase):
+//   alter table bias_history add column if not exists engine text;
+// Pre-migration rows stay null and are excluded by the `.eq('engine','v2')` filter in
+// /api/bias-performance, which is what drops the historical XAUUSD rows (v2 does not score gold).
 async function saveBiasHistory(result, previousKey) {
   try {
     const { error } = await supabase.from('bias_history').insert({
+      engine: result.engine === 'v2' ? 'v2' : 'v1',
       pair: result.pair,
       direction: result.direction,
       confidence: result.confidence,
@@ -2522,24 +2541,8 @@ app.get('/api/ai-costs', (req, res) => {
   res.json({ success: true, ...aiCosts, totalUSD: +aiCosts.totalUSD.toFixed(4) })
 })
 
-// 📜 Bias History — timeline of all Today's Bias changes (default: last 7 days, max 30)
-app.get('/api/bias-history', async (req, res) => {
-  try {
-    const days = Math.min(parseInt(req.query.days) || 7, 30)
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-    const { data, error } = await supabase
-      .from('bias_history')
-      .select('*')
-      .gte('generated_at', since)
-      .order('generated_at', { ascending: false })
-      .limit(100)
-    if (error) throw error
-    res.json({ success: true, history: data || [], days })
-  } catch (e) {
-    console.error('bias-history error:', e?.message)
-    res.json({ success: true, history: [], error: 'history unavailable' })
-  }
-})
+// NOTE: /api/bias-history was removed — it had no callers. The Bias History modal reads
+// /api/bias-performance, which returns the same rows PLUS a real-market score per bias.
 
 // ============================================
 // 🎯 BIAS ACCURACY TRACKER
@@ -2624,12 +2627,15 @@ async function scoreBias(row) {
 // 🎯 Bias performance — every bias scored vs real market + summary stats
 app.get('/api/bias-performance', async (req, res) => {
   try {
-    const days = Math.min(parseInt(req.query.days) || 14, 30)
+    const days = Math.min(parseInt(req.query.days) || 7, 90)
     const cacheKey = `bias_performance_${days}`
     if (isCacheFresh(cacheKey)) return res.json(getCached(cacheKey))
     const since = new Date(Date.now() - days * 86400 * 1000).toISOString()
+    // v2 rows ONLY. A win rate blended across two engines describes neither, and pre-migration rows
+    // have engine=null so they drop out on their own — XAUUSD included, which v2 never scores.
     const { data: rows, error } = await supabase
       .from('bias_history').select('*')
+      .eq('engine', 'v2')
       .gte('generated_at', since)
       .order('generated_at', { ascending: false })
       .limit(50)

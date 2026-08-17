@@ -58,17 +58,29 @@ export default function Dashboard() {
   const [biasSummary, setBiasSummary] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
 
-  const openBiasHistory = async () => {
-    setShowBiasHistory(true)
+  const [historyDays, setHistoryDays] = useState(7)
+
+  const loadBiasHistory = async (days) => {
     setHistoryLoading(true)
     try {
       // Performance endpoint returns the same history PLUS a real-market score per bias + summary stats
-      const res = await fetch(`${API_BASE}/api/bias-performance?days=14`)
+      const res = await fetch(`${API_BASE}/api/bias-performance?days=${days}`)
       const data = await res.json()
       setBiasHistory(Array.isArray(data.history) ? data.history : [])
       setBiasSummary(data.summary || null)
     } catch (e) { setBiasHistory([]); setBiasSummary(null) }
     setHistoryLoading(false)
+  }
+
+  const openBiasHistory = async () => {
+    setShowBiasHistory(true)
+    await loadBiasHistory(historyDays)
+  }
+
+  const selectHistoryDays = async (days) => {
+    if (days === historyDays) return
+    setHistoryDays(days)
+    await loadBiasHistory(days)
   }
 
   const [strength, setStrength] = useState(null)
@@ -755,11 +767,32 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <History size={16} className="text-cyan-400" />
                 <h3 className="text-sm font-bold text-white">Bias History</h3>
-                <span className="text-[10px] text-slate-500">Last 14 days</span>
+                <span className="text-[10px] text-slate-500">Last {historyDays} days</span>
               </div>
-              <button onClick={() => setShowBiasHistory(false)} className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors">
-                <X size={14} className="text-slate-400" />
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Full static class strings per variant — interpolated Tailwind classes purge at build time */}
+                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-white/5">
+                  <button
+                    onClick={() => selectHistoryDays(7)}
+                    className={historyDays === 7
+                      ? 'px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 transition-colors'
+                      : 'px-2 py-0.5 rounded-md text-[10px] font-semibold text-slate-400 hover:text-slate-200 transition-colors'}
+                  >
+                    7D
+                  </button>
+                  <button
+                    onClick={() => selectHistoryDays(30)}
+                    className={historyDays === 30
+                      ? 'px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 transition-colors'
+                      : 'px-2 py-0.5 rounded-md text-[10px] font-semibold text-slate-400 hover:text-slate-200 transition-colors'}
+                  >
+                    30D
+                  </button>
+                </div>
+                <button onClick={() => setShowBiasHistory(false)} className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/5 hover:bg-white/10 transition-colors">
+                  <X size={14} className="text-slate-400" />
+                </button>
+              </div>
             </div>
             {/* ── Accuracy Summary Banner ── */}
             {biasSummary && (biasSummary.scored > 0 || biasSummary.live > 0) && (
