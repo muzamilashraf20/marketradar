@@ -31,10 +31,16 @@ const MODELS = {
 };
 
 // --- tunable config ----------------------------------------------------------
-// Gold disabled from v2 OUTPUT for launch — unreliable direction in headline-driven chop (real yields
-// vs safe-haven vs oil/inflation conflict). Gold price still feeds cross-asset / COT / yields as an
-// INPUT. Flip V2_GOLD_ENABLED to true post-launch to restore, after the gold-specific rework.
-const V2_GOLD_ENABLED = false;
+// Gold was disabled from v2 OUTPUT for launch — unreliable direction in headline-driven chop (real
+// yields vs safe-haven vs oil/inflation conflict). Gold price has always fed cross-asset / COT /
+// yields as an INPUT, and XAU is scored every run regardless; this flag only gates whether XAUUSD
+// reaches CONFIG.PAIRS and therefore the output.
+//
+// Re-enabled 2026-08-17. Gold remains the most whipsaw-prone instrument in the set, so watch
+// bias_history_v2 for XAUUSD specifically: if it opens and closes materially more often than the FX
+// pairs, report it rather than adjusting thresholds — the thresholds are shared, and moving them to
+// suit gold would silently re-tune all seven FX pairs too. Reverting is this one line.
+const V2_GOLD_ENABLED = true;
 const V2_ALL_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD", "NZDUSD", "USDCHF"];
 const CONFIG = {
   OPEN_THRESHOLD: 1.8,     // |diff| needed to open a bias, and the far side needed to flip (dead-band edge).
