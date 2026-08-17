@@ -565,7 +565,7 @@ async function checkAndSendNewsAlerts() {
       // Rate-limited by the TIER2_COOLDOWN gate above — no extra cooldown needed.
       if (process.env.V2_SHADOW_CRON === 'on') {
         console.log('🔬 [v2-shadow] shaker trigger → immediate re-run')
-        runV2Shadow('shaker').catch(e => console.error('v2 shaker run error:', e?.message))
+        runV2Shadow('shaker').catch(e => v2AdminAlert(e, 'v2 shadow run (shaker)'))
       }
     } else {
       // ⚡ TIER 1 — normal catalyst: locked pair reasoning refresh only, NO pair switch
@@ -5028,6 +5028,46 @@ function v2AdminChat() {
   return id
 }
 
+// Runtime admin alerting for engine-level failures. Deliberately separate from v2HealthCheck below:
+// that is a DAILY sweep over telemetry with a 72h re-alert, which is right for slow degradations
+// (a source drifting stale) but useless for a hard failure. An exhausted Anthropic balance or a
+// Railway restart loop otherwise produces one log line every couple of hours and no notification at
+// all, which is how those went unnoticed. Dedup is per error CLASS on a 30-minute window, so a
+// 2h-cron failing repeatedly alerts once, not every run.
+const V2_ALERT_DEDUP_MS = 30 * 60 * 1000
+const v2AlertLast = new Map()   // errorClass → epoch ms of the last alert actually sent
+
+// Anthropic failures are split out because they demand different responses and folding them into one
+// "AI failed" alert makes it un-actionable: a credit/quota problem is ours and needs a top-up right
+// now, a 429 or 5xx is theirs and usually self-heals before anyone can act.
+function classifyEngineError(err) {
+  const status = err?.status ?? err?.response?.status ?? null
+  const raw = `${err?.error?.type || ''} ${err?.message || ''}`.toLowerCase()
+  if (/credit balance|insufficient|billing|quota|payment/.test(raw)) return { cls: 'anthropic_credit', label: 'Anthropic credit/quota exhausted', urgent: true }
+  if (status === 401 || status === 403 || /api key|authentication|unauthorized/.test(raw)) return { cls: 'anthropic_auth', label: 'Anthropic auth rejected — check ANTHROPIC_API_KEY', urgent: true }
+  if (status === 429 || /rate.?limit|overloaded/.test(raw)) return { cls: 'anthropic_ratelimit', label: 'Anthropic rate limited / overloaded', urgent: false }
+  if ((status != null && status >= 500) || /timeout|etimedout|econnreset|socket hang up|enotfound/.test(raw)) return { cls: 'upstream', label: 'Upstream or network failure', urgent: false }
+  return { cls: 'engine', label: 'Engine run failed', urgent: false }
+}
+
+// No-ops (logs only) when TG_ADMIN_CHAT_ID is unset. Returns whether an alert was actually sent.
+async function v2AdminAlert(err, context = 'v2 engine') {
+  const { cls, label, urgent } = classifyEngineError(err)
+  const now = Date.now()
+  const suppressed = now - (v2AlertLast.get(cls) ?? 0) < V2_ALERT_DEDUP_MS
+  console.error(`🚨 [v2 alert:${cls}] ${context} — ${label}: ${err?.message || err}${suppressed ? ' (deduped, already alerted within 30min)' : ''}`)
+  if (suppressed) return false
+  const chat = v2AdminChat()
+  if (!chat) { console.error('⚠️ [v2 alert] no TG_ADMIN_CHAT_ID set — logged only'); return false }
+  // Stamp BEFORE awaiting the send: two failures landing together must not both clear the window.
+  v2AlertLast.set(cls, now)
+  const msg = `${urgent ? '🔴' : '🟠'} <b>BiasForge — ${context}</b>\n\n<b>${label}</b>\n`
+    + `<code>${String(err?.message || err).slice(0, 300)}</code>\n\n`
+    + `<i>This error class is muted for ${V2_ALERT_DEDUP_MS / 60000} min.</i>`
+  try { await sendTG(chat, msg) } catch (e) { console.error(`⚠️ [v2 alert] send failed: ${e?.message}`) }
+  return true
+}
+
 async function v2HealthCheck() {
   try {
     const rows = (Array.isArray(v2Telemetry) ? v2Telemetry : await v2LoadSnapshot(V2_TELEMETRY_KEY)) || []
@@ -5564,8 +5604,8 @@ app.listen(5000, () => {
     // tha (aur us window mein dobara restart hua to run aur aage khisak jaata). Boot ke thodi der baad
     // ek run khud kick karo taake restart kabhi biases freeze na kare. 90s delay se v1 pehle shared
     // candle cache warm kar leta hai.
-    setTimeout(() => { runV2Shadow('boot').catch(e => console.error('v2 shadow boot error:', e?.message)) }, 90 * 1000)
-    setInterval(() => { runV2Shadow('cron').catch(e => console.error('v2 shadow cron error:', e?.message)) }, mins * 60 * 1000)
+    setTimeout(() => { runV2Shadow('boot').catch(e => v2AdminAlert(e, 'v2 shadow run (boot)')) }, 90 * 1000)
+    setInterval(() => { runV2Shadow('cron').catch(e => v2AdminAlert(e, 'v2 shadow run (cron)')) }, mins * 60 * 1000)
     // Market-open catch-up: fixed 2h tick weekly open se decoupled hai — Sunday 17:00 ET pe biases
     // ~2h tak frozen reh sakte the jab tak koi tick open-hours mein na aaye. Har 5min check karo aur
     // jaise hi market closed→open flip kare, EK run fire karo. runV2Shadow ka closed-gate abhi bhi
@@ -5575,7 +5615,7 @@ app.listen(5000, () => {
       const closedNow = isForexClosed()
       if (v2PrevClosed && !closedNow) {
         console.log('🔬 v2 shadow: market just opened (closed→open) — firing catch-up run')
-        runV2Shadow('open').catch(e => console.error('v2 shadow open-run error:', e?.message))
+        runV2Shadow('open').catch(e => v2AdminAlert(e, 'v2 shadow run (open)'))
       }
       v2PrevClosed = closedNow
     }, 5 * 60 * 1000)
@@ -5612,7 +5652,7 @@ app.listen(5000, () => {
         for (const r of hits) v2InvalFiredAt.set(r.pair, now)
         console.log(`🔬 [v2 inval watch] ${hits.map(r => r.pair).join(', ')} broke invalidation → runV2Shadow('invalidation')`)
         await runV2Shadow('invalidation')
-      } catch (e) { console.error('v2 invalidation watch error:', e?.message) }
+      } catch (e) { v2AdminAlert(e, 'v2 invalidation watch') }
     }, 10 * 60 * 1000)
 
     console.log(`🔬 v2 shadow cron ON (every ${mins}min, +1 boot run + open catch-up + 10min invalidation watch → bias_state_v2 / bias_history_v2)`)
