@@ -11,6 +11,7 @@ import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
 import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
+import * as XLSX from 'xlsx'
 import { Resend } from 'resend'
 import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated } from './biasEngineV2/biasEngine.js'
 
@@ -1321,12 +1322,49 @@ async function fetchRateDifferentials() {
     }
   } catch (e) { console.warn(`⚠️ [rates] AUD/RBA failed: ${e?.message}`) }
 
+  // NZD — RBNZ table B2 "daily close" workbook. RBNZ discontinued the B2 CSV, so an .xlsx (~445KB)
+  // is the only machine-readable form left. INM.DG102.NZZCF = 2-year secondary-market government
+  // bond closing yield — a TRUE 2y, unlike the GBP 5y proxy. Published with a ~1 business day lag.
+  //
+  // Three things here are deliberate:
+  //   - the column is resolved by SERIES ID, never by position. Two header rows sit above the ids
+  //     and RBNZ has reordered columns before; a fixed index would silently read a different
+  //     maturity, which is far worse than dropping out.
+  //   - dates are read as RAW Excel serials. With cellDates the parser builds Dates in LOCAL time
+  //     and toISOString() then shifts them a day backwards on a UTC+ host — and a one-day skew is
+  //     enough to trip the contemporaneity check in computeMacroRateScores.
+  //   - the full browser User-Agent is required; rbnz.govt.nz 403s a short or unknown agent (same
+  //     trick the BoE block above needs).
+  try {
+    const r = await axios.get('https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx', {
+      timeout: 30000, responseType: 'arraybuffer',
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' },
+    })
+    const sheet = XLSX.read(r.data, { type: 'buffer' }).Sheets['Data']
+    const grid = sheet ? XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true }) : []
+    const idRow = grid.findIndex(row => String(row?.[0]).trim() === 'Series Id')
+    const col = idRow >= 0 ? grid[idRow].findIndex(h => String(h).trim() === 'INM.DG102.NZZCF') : -1
+    if (col > 0) {
+      const EXCEL_EPOCH = Date.UTC(1899, 11, 30)
+      // Only the tail matters — the sheet carries daily rows back to 1985, so walk from the end.
+      const rows = []
+      for (let i = grid.length - 1; i >= 0 && rows.length < RATE_HISTORY_KEEP + 6; i--) {
+        const serial = grid[i]?.[0], v = parseFloat(grid[i]?.[col])
+        if (typeof serial !== 'number' || serial < 20000 || isNaN(v)) continue
+        rows.push({ d: new Date(EXCEL_EPOCH + serial * 86400000).toISOString().slice(0, 10), v })
+      }
+      out.NZD = pick(desc(rows))
+    } else {
+      console.warn('⚠️ [rates] NZD/RBNZ: series INM.DG102.NZZCF not found — B2 sheet layout may have changed')
+    }
+  } catch (e) { console.warn(`⚠️ [rates] NZD/RBNZ failed: ${e?.message}`) }
+
   // Per-currency last-good fallback so one flaky source never blanks the whole set.
   const merged = { ...out }
   if (lastGoodRates) for (const c of Object.keys(lastGoodRates)) { if (!merged[c] && lastGoodRates[c]) merged[c] = lastGoodRates[c] }
   const fresh = Object.keys(out).filter(c => out[c])
   if (fresh.length) { lastGoodRates = { ...(lastGoodRates || {}), ...Object.fromEntries(fresh.map(c => [c, out[c]])) }; setCache('rate_diffs_v2', merged) }
-  console.log(`   [v2 rates] ${fresh.length}/6 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
+  console.log(`   [v2 rates] ${fresh.length}/7 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
   return merged
 }
 async function fetchUSActuals() {

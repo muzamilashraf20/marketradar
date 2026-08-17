@@ -180,11 +180,13 @@ async function writeThesis(args, onUsage) {
 // comparable to the others' — a given bps move on a 5y point is not the same signal as on a 2y —
 // but the score is a deviation from the cross-sectional MEAN, and being absent entirely scored GBP
 // pairs at exactly 0.00 macro on every run, which is worse than an imperfect proxy.
-// CHF and NZD are still out. NZD is coming (RBNZ, xlsx). CHF has no live source at all: the SNB
-// discontinued its daily Confederation bond yields (cube `rendoblid`) after 2025-07-31, and the API
-// still answers — it returns that final row for any later date — so it cannot simply be polled.
-// USDCHF therefore stays on macro_basis "REDIST". That is a known limitation, not a bug.
-const RATE_XSECTION = ["USD", "EUR", "JPY", "CAD", "AUD", "GBP"];
+// NZD is a TRUE 2y (RBNZ B2, series INM.DG102.NZZCF) and needs no such caveat.
+// CHF is the one still out, and has no live source at all: the SNB discontinued its daily
+// Confederation bond yields (cube `rendoblid`) after 2025-07-31, and the API still answers — it
+// returns that final row for ANY later date, so polling it would silently score a year-old number
+// as today's. USDCHF therefore stays on macro_basis "REDIST" until a replacement source exists.
+// That is a known limitation, not a bug.
+const RATE_XSECTION = ["USD", "EUR", "JPY", "CAD", "AUD", "GBP", "NZD"];
 const RATE_LOOKBACK = 3;          // sessions
 const RATE_MIN_XSECTION = 4;      // below this the mean is meaningless → null, not 0
 const RATE_FLOOR_BPS = 3.0;       // measured at the 2.5th pct of 19 months of history — near-inert by design
