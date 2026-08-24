@@ -252,8 +252,18 @@ function computeMacroRateScores(rates) {
 // redistributed proportionally across orderflow/sentiment — for BOTH legs, so the two composites
 // stay on the same basis and subtracting them remains meaningful. Weights always re-normalise to 1,
 // so a redistributed composite sits on the same -5..+5 scale and OPEN_THRESHOLD keeps its meaning.
+// Legs that can NEVER appear in the rate cross-section, because they are not currencies and have no
+// government bond yield — but which are NOT missing macro data either. XAU's macro leg is scored by
+// the model directly off real yields / Fed stance (see the [v2 xau] log line), and real yields are
+// gold's single most important fundamental driver. Treating its absence from RATE_XSECTION as
+// "macro unknown" collapsed macro's weight to 0 on EVERY gold run and silently discarded that score,
+// leaving XAUUSD to trade on orderflow + sentiment alone. Only a CURRENCY that ought to have a rate
+// and doesn't (CHF today) is a genuine null.
+const MACRO_RATE_EXEMPT = new Set(["XAU"]);
+
 function pairComposite(scores, weights, base, quote, macroRate) {
-  const macroNull = macroRate?.scores?.[base] == null || macroRate?.scores?.[quote] == null;
+  const legMacroNull = (c) => !MACRO_RATE_EXEMPT.has(c) && macroRate?.scores?.[c] == null;
+  const macroNull = legMacroNull(base) || legMacroNull(quote);
   const w = macroNull
     ? { w1: 0, w2: weights.w2 / (weights.w2 + weights.w3), w3: weights.w3 / (weights.w2 + weights.w3) }
     : weights;
@@ -261,7 +271,7 @@ function pairComposite(scores, weights, base, quote, macroRate) {
     const s = scores[c] || { macro: 0, orderflow: 0, sentiment: 0 };
     return w.w1 * (s.macro ?? 0) + w.w2 * (s.orderflow ?? 0) + w.w3 * (s.sentiment ?? 0);
   };
-  const nulls = [base, quote].filter((c) => macroRate?.scores?.[c] == null);
+  const nulls = [base, quote].filter(legMacroNull);
   // Decompose the diff into per-component contributions. diff === m + o + s exactly, because the
   // composite is linear in the scores. Recorded so that when a bias later resolves, WHICH component
   // actually drove it is answerable — USDCAD and EURUSD have near-identical leg divergence (4.30 vs
