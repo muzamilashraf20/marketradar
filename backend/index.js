@@ -5313,8 +5313,33 @@ function buildV2Feeds() {
         console.log(`   [v2 mkt] ${pair}: SKIP no_daily (candles=${Array.isArray(dvals) ? dvals.length : 'none'})`)
         return null
       }
-      const { price, adrUsedPct, adr } = v2AdrFromDaily(pair, dvals)
-      if (price == null) { console.log(`   [v2 mkt] ${pair}: SKIP bad_price`); return null }
+      const { price: candlePrice, adrUsedPct, adr } = v2AdrFromDaily(pair, dvals)
+      if (candlePrice == null) { console.log(`   [v2 mkt] ${pair}: SKIP bad_price`); return null }
+
+      // PRICE FRESHNESS. The daily candle cache has a 6h TTL, so its forming-bar close can be hours
+      // old — while the 10-min invalidation watcher and the serve-time display guard both read live
+      // spot. decide()'s invalidation trigger is a question about the CURRENT price, so that split
+      // stranded biases: the watcher saw a breach on live spot and fired a run, the engine then
+      // re-decided on a stale candle close, saw no breach, and HELD. The bias stayed `running` in
+      // the DB but was dropped from every display, re-fired a full engine run (Haiku + Sonnet) every
+      // 30min forever, and never wrote its outcome row. On 2026-08-24 this had consumed BOTH running
+      // biases at once — "every running bias is breached — nothing to surface" — leaving Today's
+      // Bias empty, with no v1 fallback behind it.
+      //
+      // Reading the same freshest price the guard reads closes the gap. v2CachedPrice returns the
+      // NEWEST of live spot / v1 daily / v2 daily, so this can only move price forward in time.
+      // Note the watcher caches its spot immediately BEFORE firing the run, so an invalidation-
+      // triggered run now decides on exactly the price that triggered it.
+      //
+      // adr / adrUsedPct / pdh / pdl still come from the daily candles on purpose: those are daily
+      // by definition, and adrUsedPct is computed from today's HIGH-LOW range, not from price.
+      let price = candlePrice
+      let priceSrc = 'daily-candle'
+      const freshPx = v2CachedPrice(pair)
+      if (freshPx && Number.isFinite(freshPx.price)) {
+        price = freshPx.price
+        priceSrc = `cached-${Math.round((Date.now() - freshPx.timestamp) / 60000)}min`
+      }
 
       // 1day only by default — ATR from daily (dailyADR*√5). Weekly is OPTIONAL: use a REAL weekly
       // ATR ONLY if it's already cached (read-only, spends no credits); never fetch weekly here.
@@ -5332,7 +5357,7 @@ function buildV2Feeds() {
       const buf = V2_CONFIG.INVALIDATION_ATR_BUFFER * adr   // 0.2 × daily ATR cushion
       const invBuy = pdl != null ? (pdl - buf).toFixed(dp) : 'n/a'
       const invSell = pdh != null ? (pdh + buf).toFixed(dp) : 'n/a'
-      console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${pdl != null ? pdl.toFixed(dp) : 'n/a'} PDH=${pdh != null ? pdh.toFixed(dp) : 'n/a'} | inval BUY=${invBuy} SELL=${invSell} (buf=${buf.toFixed(dp)}) adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}]`)
+      console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${pdl != null ? pdl.toFixed(dp) : 'n/a'} PDH=${pdh != null ? pdh.toFixed(dp) : 'n/a'} | inval BUY=${invBuy} SELL=${invSell} (buf=${buf.toFixed(dp)}) adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}, px:${priceSrc}]`)
       return { price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
     },
     // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
