@@ -59,8 +59,24 @@ const CONFIG = {
                               // obvious liquidity pool on the chart. 0.2 restores the cushion this
                               // constant was written for (the log line in index.js still described it
                               // as "0.2 × daily ATR cushion" the whole time it was 0).
-  ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
-  ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
+  ADR_EXHAUSTION_PCT: 1.0,    // EFFECTIVELY OFF. adrUsedPct is Math.min(todayRange/adr, 1), so it can
+                              // never EXCEED 1.0 — a cap of 1.0 means `adrUsedPct > cap` is never true
+                              // and no open is ever blocked. Kept as a value rather than deleting the
+                              // check so re-enabling is one number.
+                              //
+                              // Was 0.80. The filter reads as a volatility guard ("the day's move is
+                              // done, entering now is chasing") but it does not behave like one:
+                              // today's high-low range only ever GROWS through the session, so
+                              // adrUsedPct rises monotonically regardless of whether the pair is
+                              // trending or just chopping. In practice it is a time-of-day gate that
+                              // closes the door every afternoon.
+                              // Evidence: 354 threshold crossings over 18 days produced only 70 opens
+                              // (20%), and AUDUSD was logged blocked at diff 2.8 — over 1.5x the open
+                              // threshold — purely on adr_exhausted.
+                              // It also compounded with the zero invalidation cushion: a bias stopped
+                              // out on a morning wick could not re-open later the same day because ADR
+                              // had filled by then, which is why the dashboard sat empty.
+  ADR_EXHAUSTION_HIGH_ATR: 1.10, // multiplier on the cap for hot-ATR weeks — inert while the cap is 1.0
   MIN_HOLD_CONFIDENCE: 55,    // conviction FLOOR for an ALREADY-OPEN bias, set at the Grade-C line (55) —
                               // a held bias below Grade C (i.e. Grade D) has no real edge, so go FLAT
                               // instead of showing a confusing sub-C directional card.
