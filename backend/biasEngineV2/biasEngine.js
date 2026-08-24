@@ -50,7 +50,15 @@ const CONFIG = {
                            // 3-session change, 1.8 is the right dead-band again.
                            // computeConfidence is anchored on this — its slope is re-scaled to match.
   ATR_INVALIDATION_MULT: 1.5, // FALLBACK only (when PDH/PDL unavailable): entry ± m*ATR
-  INVALIDATION_ATR_BUFFER: 0, // no cushion — invalidation sits exactly at PDL/PDH (tighter, reacts faster)
+  INVALIDATION_ATR_BUFFER: 0.2, // cushion as a fraction of daily ATR, applied BEYOND PDL/PDH.
+                              // Was 0 ("tighter, reacts faster"). 18 days of outcomes say it reacted to
+                              // the wrong thing: median hold collapsed to 0.8h, and only 12% of
+                              // level_break exits were actually in loss — the rest were not proven
+                              // wrong, they were stopped out by a wick touching the previous day's
+                              // high/low exactly. A level with no cushion is a stop sitting on the most
+                              // obvious liquidity pool on the chart. 0.2 restores the cushion this
+                              // constant was written for (the log line in index.js still described it
+                              // as "0.2 × daily ATR cushion" the whole time it was 0).
   ADR_EXHAUSTION_PCT: 0.80,   // skip fresh opens if >80% of ADR already spent...
   ADR_EXHAUSTION_HIGH_ATR: 1.10, // ...but relax the cap when ATR week is hot (multiplier on the 0.80)
   MIN_HOLD_CONFIDENCE: 55,    // conviction FLOOR for an ALREADY-OPEN bias, set at the Grade-C line (55) —
