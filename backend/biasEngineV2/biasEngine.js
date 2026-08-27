@@ -684,6 +684,30 @@ async function runEngine({ supabase, feeds, onUsage }) {
         + ` realized=${outcome.realized_pips}p mfe=${outcome.mfe} mae=${outcome.mae} held=${outcome.held_hours}h`);
     }
 
+    // Persist the outcome as its own bias_history_v2 row. saveState() above already wrote the
+    // transition row (direction/thesis/grade); this ADDITIONAL row is the performance record —
+    // how the bias that just ended actually did. Never throw: a failed insert must not be able to
+    // take down an engine run, so it is logged and the loop continues.
+    if (outcome) {
+      const { error: eOutcome } = await supabase.from("bias_history_v2").insert({
+        pair,
+        direction: outcome.direction,
+        status: "closed",
+        closed_reason: outcome.closed_reason,
+        ended_by: outcome.ended_by,
+        entry_price: outcome.entry_price,
+        exit_price: outcome.exit_price,
+        realized_pips: outcome.realized_pips,
+        mfe: outcome.mfe,
+        mae: outcome.mae,
+        held_hours: outcome.held_hours,
+        grade: outcome.grade_at_entry,
+        diff_at_entry: outcome.diff_at_entry,
+        created_at: new Date().toISOString(),
+      });
+      if (eOutcome) console.error(`⚠️ [v2 db] outcome insert bias_history_v2(${pair}) failed: ${eOutcome.message}${eOutcome.code ? ` (${eOutcome.code})` : ""}`);
+    }
+
     results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis, contrib: pc.contrib, outcome });
   }
 

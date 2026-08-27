@@ -52,3 +52,17 @@ create table if not exists bias_history_v2 (
 );
 
 create index if not exists bias_history_v2_pair_idx on bias_history_v2 (pair, created_at desc);
+
+-- MIGRATION (2026-08-27) — outcome columns on bias_history_v2. Until now the history table recorded
+-- only how a bias LOOKED at each transition (direction, thesis, grade, entry_price) and nothing about
+-- how it actually PERFORMED. runEngine() computed an `outcome` object on every CLOSE/FLIP —
+-- exit price, realized pips, MFE/MAE, hold time — and then console.logged it and threw it away.
+-- bias_state_v2's row is overwritten on the next transition, so once a bias ended those numbers were
+-- gone for good and the track record could not be reconstructed after the fact. These columns give the
+-- engine somewhere to persist that outcome row.
+alter table bias_history_v2 add column if not exists exit_price    numeric;
+alter table bias_history_v2 add column if not exists realized_pips numeric;
+alter table bias_history_v2 add column if not exists mfe           numeric;
+alter table bias_history_v2 add column if not exists mae           numeric;
+alter table bias_history_v2 add column if not exists held_hours    numeric;
+alter table bias_history_v2 add column if not exists ended_by      text;
