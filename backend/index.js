@@ -13,7 +13,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
 import * as XLSX from 'xlsx'
 import { Resend } from 'resend'
-import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated, pipFor as v2PipFor } from './biasEngineV2/biasEngine.js'
+import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated, pipFor as v2PipFor, invalidationLevel as v2InvalidationLevel } from './biasEngineV2/biasEngine.js'
 
 const app = express()
 const rssParser = new Parser()
@@ -5354,11 +5354,22 @@ function buildV2Feeds() {
       const pdh = prev ? parseFloat(prev.high) : null
       const pdl = prev ? parseFloat(prev.low) : null
       const dp = pair.includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
-      const buf = V2_CONFIG.INVALIDATION_ATR_BUFFER * adr   // 0.2 × daily ATR cushion
-      const invBuy = pdl != null ? (pdl - buf).toFixed(dp) : 'n/a'
-      const invSell = pdh != null ? (pdh + buf).toFixed(dp) : 'n/a'
-      console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${pdl != null ? pdl.toFixed(dp) : 'n/a'} PDH=${pdh != null ? pdh.toFixed(dp) : 'n/a'} | inval BUY=${invBuy} SELL=${invSell} (buf=${buf.toFixed(dp)}) adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}, px:${priceSrc}]`)
-      return { pair, price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
+      const mkt = { pair, price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
+      // Preview the levels through the SAME function decide() uses, rather than re-deriving them
+      // here. A local copy of the formula drifts the moment the real one changes — this line spent
+      // the whole time the cushion was 0 still describing it as "0.2 × daily ATR cushion", and it
+      // would now print the raw PDL/PDH level while the engine used the 0.5 ADR floor.
+      const buf = V2_CONFIG.INVALIDATION_ATR_BUFFER * adr
+      const invBuy = v2InvalidationLevel('BUY', mkt), invSell = v2InvalidationLevel('SELL', mkt)
+      const fl = (v) => Number.isFinite(v) ? v.toFixed(dp) : 'n/a'
+      // flag which constraint set each level, so a run of floored levels is visible at a glance
+      const src = (v, anchor, sign) => Number.isFinite(v) && Number.isFinite(anchor)
+        ? (Math.abs(v - (anchor + sign * buf)) < 1e-9 ? 'pd' : 'floor') : '-'
+      console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${fl(pdl)} PDH=${fl(pdh)}`
+        + ` | inval BUY=${fl(invBuy)}(${src(invBuy, pdl, -1)}) SELL=${fl(invSell)}(${src(invSell, pdh, +1)})`
+        + ` (buf=${buf.toFixed(dp)} floor=${(V2_CONFIG.MIN_INVALIDATION_ADR * adr).toFixed(dp)})`
+        + ` adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}, px:${priceSrc}]`)
+      return mkt
     },
     // RUNNING MFE / MAE. Called on every HOLD refresh for a pair that still holds a bias.
     //
