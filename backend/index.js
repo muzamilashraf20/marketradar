@@ -13,7 +13,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import Parser from 'rss-parser'
 import * as XLSX from 'xlsx'
 import { Resend } from 'resend'
-import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated } from './biasEngineV2/biasEngine.js'
+import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated, pipFor as v2PipFor } from './biasEngineV2/biasEngine.js'
 
 const app = express()
 const rssParser = new Parser()
@@ -5358,9 +5358,40 @@ function buildV2Feeds() {
       const invBuy = pdl != null ? (pdl - buf).toFixed(dp) : 'n/a'
       const invSell = pdh != null ? (pdh + buf).toFixed(dp) : 'n/a'
       console.log(`   [v2 mkt] ${pair}: price=${price.toFixed(dp)} PDL=${pdl != null ? pdl.toFixed(dp) : 'n/a'} PDH=${pdh != null ? pdh.toFixed(dp) : 'n/a'} | inval BUY=${invBuy} SELL=${invSell} (buf=${buf.toFixed(dp)}) adrUsed=${Math.round(adrUsedPct * 100)}% [${atrSrc}, px:${priceSrc}]`)
-      return { price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
+      return { pair, price, atr, adr, pdh, pdl, adrUsedPct, isHighAtrWeek }
     },
-    // updateRunning intentionally omitted in shadow — running MFE/MAE stats not tracked yet
+    // RUNNING MFE / MAE. Called on every HOLD refresh for a pair that still holds a bias.
+    //
+    // This was omitted when the shadow engine was built, and because the call site uses optional
+    // chaining (`feeds.updateRunning?.()`) its absence was silent: mfe/mae sat at their schema
+    // default of 0 forever, so every outcome row recorded 0.0/0.0 excursion.
+    //
+    // SAMPLED, NOT CONTINUOUS. Price is read once per engine run (2h cron, plus watcher/shaker
+    // ticks), so an excursion that opens and closes between two runs is never seen. These are a
+    // lower bound on the true excursion, not the intrabar extreme — do not present them as MFE/MAE
+    // in the textbook sense.
+    //
+    // Both are POSITIVE magnitudes, matching the v1 performance path (mfePips/maePips):
+    // mfe = best move in the bias's favour, mae = worst move against it, each in pips.
+    async updateRunning(pair, price) {
+      try {
+        if (!Number.isFinite(+price)) return
+        const { data, error } = await supabase.from('bias_state_v2')
+          .select('direction, entry_price, mfe, mae').eq('pair', pair).maybeSingle()
+        if (error) { console.error(`⚠️ [v2 db] updateRunning read(${pair}) failed: ${error.message}`); return }
+        if (!data || data.direction === 'FLAT' || data.entry_price == null) return
+        const excursion = ((+price - +data.entry_price) * (data.direction === 'BUY' ? 1 : -1)) / v2PipFor(pair)
+        if (!Number.isFinite(excursion)) return
+        const prevMfe = +(data.mfe ?? 0), prevMae = +(data.mae ?? 0)
+        // max() against the previous value is what makes these RATCHETS — they only ever widen.
+        const mfe = Math.max(prevMfe, +excursion.toFixed(1))
+        const mae = Math.max(prevMae, +(-excursion).toFixed(1))
+        if (mfe === prevMfe && mae === prevMae) return          // no new extreme — skip the write
+        const { error: e2 } = await supabase.from('bias_state_v2').update({ mfe, mae }).eq('pair', pair)
+        if (e2) console.error(`⚠️ [v2 db] updateRunning write(${pair}) failed: ${e2.message}`)
+        else console.log(`   [v2 excursion] ${pair} mfe=${mfe}p mae=${mae}p (now ${excursion.toFixed(1)}p)`)
+      } catch (e) { console.error(`⚠️ [v2 db] updateRunning(${pair}) error: ${e?.message}`) }
+    },
   }
 }
 

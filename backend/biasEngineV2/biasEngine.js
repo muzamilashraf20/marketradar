@@ -59,6 +59,35 @@ const CONFIG = {
                               // obvious liquidity pool on the chart. 0.2 restores the cushion this
                               // constant was written for (the log line in index.js still described it
                               // as "0.2 × daily ATR cushion" the whole time it was 0).
+  MIN_INVALIDATION_ADR: 0.5,  // MINIMUM distance from entry to the invalidation level, as a fraction
+                              // of the pair's daily range (ADR). PDL/PDH stays the level whenever it
+                              // already sits further out than this; the floor only pushes the level
+                              // AWAY, never closer.
+                              //
+                              // The 0.2 cushion above is added BEYOND yesterday's extreme, so the
+                              // distance from ENTRY depends on where price happens to sit relative to
+                              // PDL/PDH. Open next to yesterday's low and the whole stop is the
+                              // cushion. Measured over 117 episodes: 40% of biases opened with the
+                              // level under 0.25 ADR away (median 0.15 ADR ~ 5 pips on GBPUSD), and
+                              // those were invalidated 53.2% of the time. The rate falls monotonically
+                              // with distance — 30.3% at 0.25-0.5, 17.6% at 0.5-0.75, 15.4% at
+                              // 0.75-1.0 — while expected cost per bias (rate x distance) stays flat
+                              // at 0.10-0.14 ADR. 0.5 buys roughly a two-thirds cut in invalidations
+                              // for no extra expected cost.
+                              //
+                              // NOT set higher: past ~0.5 ADR the level_break rate keeps falling but
+                              // median hold does not improve (3.58h at 0.25-0.5 vs 2.01h at 0.5-0.75),
+                              // so wider only moves the cause of death to the conviction floor and the
+                              // 2h cadence — and 1.0 would double the loss per stop on n=7.
+  LEVEL_BREAK_COOLDOWN_H: 6,  // After a bias dies on its level, that pair cannot re-open in the SAME
+                              // direction for this many hours. PDH/PDL only changes at the daily
+                              // candle rollover, so a same-session re-entry is a fresh bias aimed at
+                              // the IDENTICAL level that just killed it. Measured: 82.5% of re-entries
+                              // after a level_break were same-direction, the level had moved 0.0 pips
+                              // at the median, and 67.7% of them died on that same level again.
+                              // 6h blocks 25 of 33 such re-entries (18 of which failed identically)
+                              // and covers most of one trading session. Not longer: from 6h to 24h the
+                              // extra blocks are 3 good re-entries to 1 bad, which over-blocks.
   ADR_EXHAUSTION_PCT: 1.0,    // EFFECTIVELY OFF. adrUsedPct is Math.min(todayRange/adr, 1), so it can
                               // never EXCEED 1.0 — a cap of 1.0 means `adrUsedPct > cap` is never true
                               // and no open is ever blocked. Kept as a value rather than deleting the
@@ -82,8 +111,12 @@ const CONFIG = {
                               // instead of showing a confusing sub-C directional card.
                               // HELD biases only — opens/flips stay gated on OPEN_THRESHOLD alone.
   PAIRS: V2_ALL_PAIRS.filter(p => V2_GOLD_ENABLED || p !== "XAUUSD"),
-  // pip size per pair for MFE/MAE + invalidation reporting
-  PIP: { XAUUSD: 0.1, USDJPY: 0.01, default: 0.0001 },
+  // pip size for MFE/MAE + invalidation reporting. JPY is a RULE, not a list of pairs: every
+  // JPY pair and cross quotes to 2dp, so listing them one by one (it was `USDJPY: 0.01`) meant
+  // adding GBPJPY or EURJPY later would silently fall through to 0.0001 and put every level and
+  // every pip figure on that cross out by a factor of 100. Per-pair keys still win, for genuine
+  // one-offs like gold.
+  PIP: { XAUUSD: 0.1, JPY: 0.01, default: 0.0001 },
 };
 
 // Regime weight vectors
@@ -327,7 +360,9 @@ function composite(scores, weights) {
 //    Per-pair, independent. Two flip triggers: score hysteresis OR ATR invalidation.
 // ---------------------------------------------------------------------------
 function pipFor(pair) {
-  return CONFIG.PIP[pair] ?? CONFIG.PIP.default;
+  if (CONFIG.PIP[pair] != null) return CONFIG.PIP[pair];        // explicit per-pair override
+  if (String(pair).includes("JPY")) return CONFIG.PIP.JPY;      // USDJPY, GBPJPY, EURJPY, ...
+  return CONFIG.PIP.default;
 }
 
 function newDirection(diff) {
@@ -339,6 +374,25 @@ function newDirection(diff) {
  * @param diff   score(base) - score(quote)
  * @param market { price, atr(weekly), adr(daily), pdh, pdl, adrUsedPct, isHighAtrWeek }
  */
+// Re-entry guard. A bias that died on its level must not immediately re-open the same thesis against
+// the same level — PDH/PDL is fixed until the daily rollover, so a same-session re-entry is aiming at
+// the identical price that just invalidated it.
+//
+// No new column is needed: saveState's CLOSE writes direction FLAT but leaves entry_price and
+// invalidation_level intact, and the level sits BELOW entry for a BUY and ABOVE it for a SELL, so the
+// direction of the bias that died is recoverable from the row itself. updated_at is the close time —
+// a FLAT row never gets the HOLD refresh patch, which is the only other writer of that field.
+// When the row cannot tell us (missing prices), this allows the open: the guard never blocks on a guess.
+function inLevelBreakCooldown(state, direction, now = Date.now()) {
+  if (!state || state.status !== "closed" || state.closed_reason !== "level_break") return false;
+  const closedAt = state.updated_at ? new Date(state.updated_at).getTime() : NaN;
+  if (!Number.isFinite(closedAt)) return false;
+  if ((now - closedAt) / 3600000 >= CONFIG.LEVEL_BREAK_COOLDOWN_H) return false;
+  const entry = +state.entry_price, level = +state.invalidation_level;
+  if (!Number.isFinite(entry) || !Number.isFinite(level) || entry === level) return false;
+  return (level < entry ? "BUY" : "SELL") === direction;
+}
+
 function decide(state, diff, market) {
   const { price, adrUsedPct, isHighAtrWeek } = market;
   const T = CONFIG.OPEN_THRESHOLD;
@@ -352,6 +406,8 @@ function decide(state, diff, market) {
     if (adrUsedPct > cap) return { action: "HOLD_FLAT", reason: "adr_exhausted" };
 
     const direction = newDirection(diff);
+    // Same pair, same direction, still inside the cooldown from its own level break → stay flat.
+    if (inLevelBreakCooldown(state, direction)) return { action: "HOLD_FLAT", reason: "level_break_cooldown" };
     return { action: "OPEN", direction, invalidation: invalidationLevel(direction, market) };
   }
 
@@ -404,9 +460,36 @@ function isInvalidated(direction, price, level) {
 // only when PDH/PDL are unavailable.
 function invalidationLevel(direction, market) {
   const { price, atr, adr, pdh, pdl } = market;
-  const buffer = CONFIG.INVALIDATION_ATR_BUFFER * (adr ?? atr ?? 0);
-  if (direction === "BUY") return (pdl != null) ? pdl - buffer : price - CONFIG.ATR_INVALIDATION_MULT * atr;
-  return (pdh != null) ? pdh + buffer : price + CONFIG.ATR_INVALIDATION_MULT * atr;
+  const range = adr ?? atr ?? 0;
+  const buffer = CONFIG.INVALIDATION_ATR_BUFFER * range;
+  // Number.isFinite, not != null: parseFloat on a malformed candle yields NaN, and NaN != null is
+  // TRUE — so the old guard took the PDL/PDH branch anyway and returned a NaN level. isInvalidated
+  // treats a non-finite level as "not breached", which meant such a bias could never be invalidated
+  // at all. A NaN now falls through to the ATR fallback, which is what that fallback is for.
+  const anchor = direction === "BUY" ? pdl : pdh;
+  let structural;
+  if (Number.isFinite(anchor)) {
+    structural = direction === "BUY" ? anchor - buffer : anchor + buffer;
+  } else {
+    // Loud on purpose. While the old guard was `!= null`, a NaN anchor produced a NaN level, and
+    // isInvalidated() reads a non-finite level as "not breached" — so the bias could never be
+    // invalidated and simply ran forever. That failed silently. If the candle feed ever hands us a
+    // bad high/low again, this line is the evidence.
+    console.warn(`⚠️ [v2 inval] ${market.pair ?? "?"} ${direction}: ${direction === "BUY" ? "PDL" : "PDH"} not finite (raw=${anchor}) `
+      + `— falling back to entry ± ${CONFIG.ATR_INVALIDATION_MULT}×ATR`);
+    structural = direction === "BUY"
+      ? price - CONFIG.ATR_INVALIDATION_MULT * atr
+      : price + CONFIG.ATR_INVALIDATION_MULT * atr;
+  }
+  // MINIMUM DISTANCE FLOOR. Keep the structural level when it is already further from entry than
+  // MIN_INVALIDATION_ADR; otherwise push it out to exactly that distance. min/max picks whichever
+  // is FURTHER from price, so this can only widen the stop — it never tightens one, and it never
+  // moves the level to the wrong side of price.
+  if (!Number.isFinite(price)) return structural;
+  const minDist = CONFIG.MIN_INVALIDATION_ADR * range;
+  return direction === "BUY"
+    ? Math.min(structural, price - minDist)
+    : Math.max(structural, price + minDist);
 }
 
 // ---------------------------------------------------------------------------
@@ -718,7 +801,7 @@ async function runEngine({ supabase, feeds, onUsage }) {
 
 export {
   CONFIG, REGIMES, MODELS,
-  detectRegime, composite, decide, invalidationLevel, isInvalidated, pipFor,
+  detectRegime, composite, decide, invalidationLevel, isInvalidated, pipFor, inLevelBreakCooldown,
   extractSignals, scoreCurrencies, writeThesis,
   runEngine,
 };
