@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useCleanMode } from '../../hooks/useCleanMode'
 import {
   LayoutDashboard, TrendingUp, Newspaper, Calendar,
   ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
@@ -26,6 +27,7 @@ export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, isPro, isActualPro, trialExpired, planLoaded, logout } = useAuth()
+  const cleanMode = useCleanMode()
 
   const handleLogout = () => {
     logout()
@@ -152,7 +154,7 @@ export default function Sidebar({ onClose }) {
             {initial}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-white font-medium truncate">{email}</p>
+            {!cleanMode && <p className="text-xs text-white font-medium truncate">{email}</p>}
             <p className={`text-[10px] ${!planLoaded ? 'text-slate-400' : isActualPro ? 'text-cyan-400' : 'text-amber-400'}`}>{planLabel}</p>
           </div>
         </div>

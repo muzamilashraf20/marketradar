@@ -16,7 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import matter from 'gray-matter';
 import { marked } from 'marked';
 
@@ -39,10 +39,34 @@ const DIST        = path.resolve(__dirname, '..', 'dist');
 const CONTENT_DIR = path.resolve(__dirname, '..', 'content', 'blog');
 const OUT_BLOG    = path.join(DIST, 'blog');
 
+/* ------------------------- LANDING PRERENDER ----------------------- */
+// The React landing page rendered to static HTML at build time. Without this,
+// the initial response for / is an empty <div id="root"> and every word of the
+// page — headline, section copy, FAQ answers — is invisible to anything that
+// does not execute JavaScript.
+const SSR_ENTRY   = path.resolve(__dirname, '..', 'dist-ssr', 'entry-prerender.js');
+const API_BASE    = process.env.VITE_API_URL || 'https://marketradar-production.up.railway.app';
+// Last known good bias values. Lets a build survive the API being down without
+// falling back to an empty compass. Regenerated on every successful build.
+const SNAPSHOT    = path.resolve(__dirname, '.landing-snapshot.json');
+// How many biases get a card in the hero. Mirrors CARDS in useCompassData.js.
+const COMPASS_CARDS = 2;
+// Grade C and above; D excluded. Mirrors PUBLISHABLE_GRADES in useCompassData.js
+// — the two must stay in step or the static HTML and the client disagree about
+// what is publishable.
+const PUBLISHABLE_GRADES = new Set(['A', 'A-', 'B', 'C']);
+// Mirrors BANNED_IN_COPY in useCompassData.js. The thesis is model-generated and
+// unreviewed; on the landing page it is marketing copy, so one that trips a
+// banned term is not quoted. See the note there for why.
+const BANNED_IN_COPY =
+  /\bsignals?\b|\bsetups?\b|\bentry\b|\bentries\b|\bstop[- ]?loss\b|\btake[- ]?profit\b|\bwin rate\b|\bguarantee\w*|\bproven\b|\brisk[- ]free\b|\bodds\b|\bprobabilit\w+/i;
+const publishableThesis = t => (t && !BANNED_IN_COPY.test(t) ? t : null);
+
 // Non-blog routes for the sitemap — keep roughly in sync with the app.
 const STATIC_ROUTES = [
   { loc: '/',          changefreq: 'daily',   priority: '1.0' },
   { loc: '/pricing',   changefreq: 'weekly',  priority: '0.9' },
+  { loc: '/about',     changefreq: 'monthly', priority: '0.7' },
   { loc: '/blog',      changefreq: 'daily',   priority: '0.8' },
   { loc: '/changelog', changefreq: 'weekly',  priority: '0.6' },
   { loc: '/contact',   changefreq: 'monthly', priority: '0.5' },
@@ -529,6 +553,249 @@ ${posts.map(p => `- [${p.title}](${postUrl(p)}): ${p.description}`).join('\n')}
 `;
 }
 
+/* --------------------- LANDING PRERENDER (build) -------------------- */
+
+const LANDING_TITLE = 'Macro Bias for Forex & Prop Firm Traders | BiasForge';
+const LANDING_DESC  =
+  "Directional macro bias for every major forex pair, with the invalidation level where it's wrong. Built for prop firm and funded traders.";
+
+async function getJson(url, ms = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Shaped exactly as LiveCompass expects, so the same code path renders on the
+// server and in the browser.
+//
+// The Grade B floor is applied HERE as well as in useCompassData.js. Filtering
+// only on the client would still bake a C or D into the static HTML, which is
+// what a crawler and a JavaScript-disabled visitor read. Keep the two in step.
+function shapeCompass(json) {
+  if (!json?.success || !Array.isArray(json.pairs) || !json.pairs.length) return null;
+  const rows = json.pairs
+    .filter(p => p.direction !== 'FLAT' && p.confidence != null && PUBLISHABLE_GRADES.has(p.grade))
+    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+    // Not capped: the panel header states how many biases are live, and capping
+    // to the card count would make it under-report.
+    .map(p => ({
+      pair: p.pair,
+      direction: p.direction,
+      confidence: p.confidence,
+      grade: p.grade,
+      entryTiming: p.entryTiming,
+      thesis: publishableThesis(p.thesis),
+      invalidationLevel: p.invalidationLevel,
+      isHeadline: p.isHeadline,
+      updatedAt: p.updatedAt,
+    }));
+  // Engine freshness is taken across every live bias, not just the strong ones —
+  // a run that produced only weak reads still ran.
+  const lastRun = json.pairs.map(p => p.updatedAt).filter(Boolean).sort().pop() || null;
+  // An empty row set is a legitimate result, not a failure: the hero drops the
+  // compass. Returned rather than null so it is not mistaken for a failed fetch
+  // and quietly replaced with the previous build's snapshot.
+  // Every pair that did not get a card, including publishable ones outside the
+  // top two, so the chip row always accounts for the rest of the board.
+  const carded = new Set(rows.slice(0, COMPASS_CARDS).map(r => r.pair));
+  const alsoScoring = json.pairs.map(p => p.pair).filter(p => !carded.has(p));
+  return { rows, activeCount: rows.length, scanned: json.pairs.length, alsoScoring, lastRun };
+}
+
+function shapeEvents(json) {
+  if (!Array.isArray(json)) return null;
+  const now = Date.now();
+  const upcoming = json
+    .filter(e => e?.title && new Date(e.date).getTime() > now)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  const high = upcoming.filter(e => e.impact === 'High');
+  const take = (high.length ? high : upcoming).slice(0, 3);
+  return take.length ? take.map(({ title, country, date, impact }) => ({ title, country, date, impact })) : null;
+}
+
+async function loadLiveData() {
+  let compass = null;
+  let events = null;
+  try {
+    const [c, e] = await Promise.allSettled([
+      getJson(`${API_BASE}/api/macro-compass`),
+      getJson(`${API_BASE}/api/calendar`),
+    ]);
+    if (c.status === 'fulfilled') compass = shapeCompass(c.value);
+    if (e.status === 'fulfilled') events = shapeEvents(e.value);
+  } catch { /* fall through to the snapshot */ }
+
+  // Whatever came back gets banked; whatever did not falls back to the last
+  // build's values. A build must never publish an empty compass just because
+  // the API blipped during CI.
+  let snap = {};
+  try { snap = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')); } catch { /* first build */ }
+
+  const out = { compass: compass || snap.compass || null, events: events || snap.events || null };
+  if (compass || events) {
+    try { fs.writeFileSync(SNAPSHOT, JSON.stringify(out, null, 2)); } catch { /* read-only CI fs */ }
+  }
+  return { ...out, fresh: { compass: !!compass, events: !!events } };
+}
+
+// JSON destined for an inline <script>. Escaping "<" is what stops a string in
+// the data from closing the script tag early.
+const inlineJson = (v) => JSON.stringify(v ?? null).replace(/</g, '\\u003c');
+
+function landingSchemas({ FAQ, PRICE_MONTHLY, PRICE_ANNUAL }) {
+  const software = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: BRAND,
+    description: LANDING_DESC,
+    applicationCategory: 'FinanceApplication',
+    operatingSystem: 'Web',
+    url: `${SITE_URL}/`,
+    offers: [
+      { '@type': 'Offer', price: String(PRICE_MONTHLY), priceCurrency: 'USD', name: 'Pro (monthly)', category: 'Subscription' },
+      { '@type': 'Offer', price: String(PRICE_ANNUAL), priceCurrency: 'USD', name: 'Pro (annual)', category: 'Subscription' },
+    ],
+  };
+
+  // Generated from the same array the page renders, so the two cannot diverge.
+  const faq = {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: FAQ.map(({ q, a }) => ({
+      '@type': 'Question',
+      name: q,
+      acceptedAnswer: { '@type': 'Answer', text: a },
+    })),
+  };
+
+  const org = {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: BRAND,
+    url: `${SITE_URL}/`,
+    logo: LOGO_URL,
+    sameAs: [X_URL, 'https://t.me/biasforgeofficial'],
+  };
+
+  return [software, faq, org].map(jsonld).join('\n    ');
+}
+
+// Attribute values get the apostrophe escaped too, so a value is safe inside
+// either quote style. esc() alone leaves ' untouched.
+const escAttr = (s = '') => esc(s).replace(/'/g, '&#39;');
+
+// Swap the value of a <meta> tag if it exists, append it to <head> if it does not.
+//
+// The quote character is captured and back-referenced rather than matched with a
+// [^"'] class: an apostrophe inside the existing value (…where it's wrong…) ended
+// the class early, so the replacement landed mid-sentence and left the tail of the
+// old value dangling after it.
+//
+// The replacement is a function, not a template string, because $&, $` and $' in
+// the new copy would otherwise be interpreted as replacement patterns.
+function setMeta(html, attr, name, content) {
+  const re = new RegExp(`(<meta\\s+${attr}=["']${name}["']\\s+content=)(["'])[\\s\\S]*?\\2`, 'i');
+  if (re.test(html)) return html.replace(re, (_m, pre, q) => `${pre}${q}${escAttr(content)}${q}`);
+  return html.replace('</head>', `  <meta ${attr}="${name}" content="${escAttr(content)}" />\n  </head>`);
+}
+
+async function prerenderLanding() {
+  const shell = path.join(DIST, 'index.html');
+  if (!fs.existsSync(shell)) {
+    console.error('  ✗ dist/index.html not found — run `vite build` first.');
+    process.exit(1);
+  }
+  if (!fs.existsSync(SSR_ENTRY)) {
+    console.error(`  ✗ ${path.relative(process.cwd(), SSR_ENTRY)} not found — run the --ssr build first.`);
+    process.exit(1);
+  }
+
+  const raw = fs.readFileSync(shell, 'utf8');
+
+  // Every route other than / keeps the plain SPA shell. Vercel checks the
+  // filesystem before rewrites, so / is served this prerendered index.html
+  // while /pricing, /dashboard and the rest rewrite to app.html — which means
+  // no app route ever ships a flash of landing copy it then throws away.
+  fs.writeFileSync(path.join(DIST, 'app.html'), raw);
+
+  const mod = await import(pathToFileURL(SSR_ENTRY).href);
+  const { compass, events, fresh } = await loadLiveData();
+
+  const markup = mod.render({ compass, events });
+
+  let html = raw
+    .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(LANDING_TITLE)}</title>`)
+    .replace(
+      /<link\s+rel=["']canonical["']\s+href=["'][^"']*["']\s*\/?>/i,
+      () => `<link rel="canonical" href="${SITE_URL}/" />`
+    );
+
+  html = setMeta(html, 'name', 'description', LANDING_DESC);
+  html = setMeta(html, 'property', 'og:title', LANDING_TITLE);
+  html = setMeta(html, 'property', 'og:description', LANDING_DESC);
+  html = setMeta(html, 'property', 'og:url', `${SITE_URL}/`);
+  html = setMeta(html, 'name', 'twitter:title', LANDING_TITLE);
+  html = setMeta(html, 'name', 'twitter:description', LANDING_DESC);
+
+  html = html.replace('</head>', `  ${landingSchemas(mod)}\n  </head>`);
+
+  // The markup goes inside #root; the data goes in ahead of the module bundle so
+  // the browser's first render already has the same values the HTML was built
+  // with, and never flashes a skeleton over real numbers.
+  const data =
+    `<script>window.__BF_COMPASS__=${inlineJson(compass)};` +
+    `window.__BF_EVENTS__=${inlineJson(events)};</script>`;
+
+  const rootRe = /<div id="root">\s*<\/div>/i;
+  if (!rootRe.test(html)) {
+    console.error('  ✗ could not find <div id="root"></div> in dist/index.html — prerender aborted.');
+    process.exit(1);
+  }
+  html = html.replace(rootRe, `<div id="root">${markup}</div>\n    ${data}`);
+
+  fs.writeFileSync(shell, html);
+
+  // ── /about, same pipeline ──
+  // Vercel checks the filesystem before rewrites, so dist/about/index.html is
+  // served directly and the SPA route never runs for a cold visit.
+  const aboutTitle = 'About BiasForge | Macro Research for Forex Traders';
+  const aboutDesc =
+    'BiasForge is an independent macro research tool for forex, prop firm and funded traders — one directional read per pair, with the invalidation level where it stops being valid.';
+
+  let aboutHtml = raw
+    .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(aboutTitle)}</title>`)
+    .replace(
+      /<link\s+rel=["']canonical["']\s+href=["'][^"']*["']\s*\/?>/i,
+      () => `<link rel="canonical" href="${SITE_URL}/about" />`
+    );
+  aboutHtml = setMeta(aboutHtml, 'name', 'description', aboutDesc);
+  aboutHtml = setMeta(aboutHtml, 'property', 'og:title', aboutTitle);
+  aboutHtml = setMeta(aboutHtml, 'property', 'og:description', aboutDesc);
+  aboutHtml = setMeta(aboutHtml, 'property', 'og:url', `${SITE_URL}/about`);
+  aboutHtml = setMeta(aboutHtml, 'name', 'twitter:title', aboutTitle);
+  aboutHtml = setMeta(aboutHtml, 'name', 'twitter:description', aboutDesc);
+  aboutHtml = aboutHtml.replace(rootRe, `<div id="root">${mod.renderAbout()}</div>`);
+
+  const aboutDir = path.join(DIST, 'about');
+  fs.mkdirSync(aboutDir, { recursive: true });
+  fs.writeFileSync(path.join(aboutDir, 'index.html'), aboutHtml);
+
+  const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
+  console.log(`  ✓ / prerendered (${kb} kB)`);
+  const strong = compass?.rows?.length ?? 0;
+  console.log(`      bias data: ${fresh.compass ? 'live' : compass ? 'snapshot' : 'NONE'}` +
+              ` · biases baked: ${strong}${strong === 0 ? ' (compass hidden)' : ''}` +
+              ` · events: ${fresh.events ? 'live' : events ? 'snapshot' : 'NONE'}`);
+  console.log(`  ✓ /about prerendered (${(Buffer.byteLength(aboutHtml) / 1024).toFixed(1)} kB)`);
+  console.log('  ✓ app.html (SPA shell for every non-root route)');
+}
+
 /* ------------------------------- BUILD ----------------------------- */
 function loadPosts() {
   if (!fs.existsSync(CONTENT_DIR)) return [];
@@ -554,7 +821,7 @@ function loadPosts() {
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
-function run() {
+async function run() {
   console.log('› Generating static blog…');
   if (!fs.existsSync(DIST)) {
     console.error('  ✗ dist/ not found — run `vite build` first.');
@@ -578,7 +845,11 @@ function run() {
   fs.writeFileSync(path.join(DIST, 'llms.txt'), renderLlms(posts));
 
   console.log(`  ✓ /blog (index), sitemap.xml, llms.txt`);
+
+  console.log('› Prerendering the landing page…');
+  await prerenderLanding();
+
   console.log(`› Done — ${posts.length} post(s).`);
 }
 
-run();
+run().catch(e => { console.error('  ✗ build failed:', e); process.exit(1); });

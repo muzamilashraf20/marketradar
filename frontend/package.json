@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/generate-blog.mjs",
+    "build": "vite build && vite build --ssr src/entry-prerender.jsx --outDir dist-ssr --emptyOutDir && node scripts/generate-blog.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

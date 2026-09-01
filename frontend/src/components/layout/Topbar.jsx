@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useCleanMode } from '../../hooks/useCleanMode'
 import {
   Menu, Search, Bell, Settings, LogOut, User, ChevronDown, X,
   BarChart3, Newspaper, Calendar, Shield, BookOpen, FileText,
@@ -186,6 +187,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
 
   const handleLogout = () => { logout(); navigate('/login') }
 
+  const cleanMode = useCleanMode()
   const email = user?.email || ''
   const initial = email.charAt(0).toUpperCase() || 'U'
 
@@ -328,16 +330,18 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0">
                 {initial}
               </div>
-              <span className="hidden md:block text-xs text-slate-300 max-w-[100px] truncate">
-                {email}
-              </span>
+              {!cleanMode && (
+                <span className="hidden md:block text-xs text-slate-300 max-w-[100px] truncate">
+                  {email}
+                </span>
+              )}
               <ChevronDown size={14} className={`text-slate-500 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {dropdownOpen && (
               <div className="absolute right-0 top-full mt-2 w-48 bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-white/10">
-                  <p className="text-xs text-white font-semibold truncate">{email}</p>
+                  {!cleanMode && <p className="text-xs text-white font-semibold truncate">{email}</p>}
                   <p className={`text-[10px] mt-0.5 ${!planLoaded ? 'text-slate-400' : isPro ? 'text-cyan-400' : 'text-amber-400'}`}>{!planLoaded ? '··· Plan' : isPro ? 'Pro Plan' : 'Locked'}</p>
                 </div>
                 <div className="py-1">

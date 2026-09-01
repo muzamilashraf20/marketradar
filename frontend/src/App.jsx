@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 
 import LandingPage from './pages/LandingPage'
+import LandingV2 from './pages/LandingV2'
+import AboutPage from './pages/About'
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
@@ -29,12 +31,12 @@ import ProGate from './components/common/ProGate'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
-  if (loading) return (
-    <div className="min-h-screen bg-[#030712] flex items-center justify-center">
-      <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-    </div>
-  )
-  return user ? <Navigate to="/dashboard" replace /> : <Navigate to="/landing" replace />
+  // Rendered in place, not redirected: / is the canonical URL and the one
+  // page that ships prerendered. Bouncing it to /landing would throw that
+  // HTML away and hand Google a redirect on its entry point. The landing is
+  // also what shows while auth resolves, so there is no spinner flash over
+  // markup the browser has already painted.
+  return user && !loading ? <Navigate to="/dashboard" replace /> : <LandingV2 />
 }
 
 export default function App() {
@@ -44,10 +46,13 @@ export default function App() {
         <Route path="/" element={<RootRedirect />} />
 
         {/* Public Routes */}
-        <Route path="/landing" element={<LandingPage />} />
+        <Route path="/landing" element={<LandingV2 />} />
+        {/* The previous landing page, kept reachable for side-by-side review. */}
+        <Route path="/landing-old" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/pricing" element={<Pricing />} />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/refund" element={<Refund />} />

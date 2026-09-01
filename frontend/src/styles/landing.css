@@ -1,0 +1,320 @@
+/* ═══════════════════════════════════════════════════════════════════
+   BiasForge landing — design tokens, type scale and the four animations.
+
+   Scoped under .bf-landing so nothing here can leak into the app UI.
+   Tailwind still does layout and spacing; this file owns the things
+   Tailwind cannot express cleanly: 0.5px borders, the headline metrics,
+   and transform/opacity keyframes.
+
+   ANIMATION RULE (load-bearing): only `transform` and `opacity` are
+   animated anywhere on this page. Never height/width/top/left — they
+   force layout on every frame and page speed is a ranking factor we
+   cannot afford to lose right now.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.bf-landing {
+  --bf-bg:        #030712;
+  --bf-surface:   #0b1220;
+  --bf-border:    #1e293b;
+  --bf-text:      #f8fafc;
+  --bf-text-2:    #94a3b8;
+  --bf-muted:     #475569;
+  --bf-cyan:      #06b6d4;
+  --bf-emerald:   #10b981;
+  --bf-bear:      #f43f5e;
+  --bf-warn:      #f59e0b;
+
+  background: var(--bf-bg);
+  color: var(--bf-text);
+  /* One family for the whole page. System stack = zero network cost,
+     so it never blocks the Largest Contentful Paint. */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto,
+               'Helvetica Neue', Arial, sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ───────── Type ───────── */
+
+.bf-h1 {
+  font-weight: 500;
+  letter-spacing: -0.9px;
+  line-height: 1.12;
+  color: var(--bf-text);
+  font-size: clamp(2.05rem, 5.2vw, 3rem);
+}
+
+/* The H1's forced line break only reads correctly if line one actually fits its
+   column. Sizing off the viewport cannot know that — the copy column is a grid
+   track, not the window — so a 1024px laptop wrapped "prop firm" onto its own
+   line. Sizing off the CONTAINER holds ~8% headroom at every width, which also
+   absorbs the difference between the system fonts this page falls back to. */
+.bf-hero-copy { container-type: inline-size; }
+@supports (font-size: 1cqw) {
+  .bf-hero-copy .bf-h1 { font-size: clamp(2.05rem, 6.9cqw, 3rem); }
+}
+
+.bf-h2 {
+  font-weight: 500;
+  letter-spacing: -0.7px;
+  line-height: 1.14;
+  color: var(--bf-text);
+  font-size: clamp(1.7rem, 3.6vw, 2.6rem);
+}
+
+.bf-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--bf-cyan);
+}
+
+.bf-body {
+  font-size: 16px;
+  line-height: 1.72;
+  color: var(--bf-text-2);
+}
+
+.bf-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Tertiary text.
+
+   The palette's #475569 ("text muted") measures 2.6:1 against #030712 and
+   Tailwind's slate-500 measures 4.23:1 — both under the 4.5:1 AA floor for
+   normal-size text, and this page sets most of its quiet copy at 12–13px.
+   #7c8aa0 is the muted grey the blog already uses and measures 5.75:1, so the
+   three-level hierarchy survives without any of it failing contrast. */
+.bf-t3 { color: #7c8aa0; }
+.bf-landing a.bf-t3:hover { color: var(--bf-text); }
+
+/* The H1 line break is intentional at desktop width and collapses on phones,
+   where forcing it would strand a single word on line two. */
+.bf-br { display: none; }
+@media (min-width: 768px) { .bf-br { display: block; } }
+
+/* ───────── Surfaces ───────── */
+
+.bf-card {
+  background: var(--bf-surface);
+  border: 0.5px solid var(--bf-border);
+  border-radius: 11px;
+}
+
+.bf-pill {
+  border-radius: 9999px;
+}
+
+.bf-hairline { border: 0.5px solid var(--bf-border); }
+.bf-hairline-t { border-top: 0.5px solid var(--bf-border); }
+.bf-hairline-b { border-bottom: 0.5px solid var(--bf-border); }
+
+/* Keyboard focus has to stay visible on every interactive element. */
+.bf-landing a:focus-visible,
+.bf-landing button:focus-visible,
+.bf-landing summary:focus-visible {
+  outline: 2px solid var(--bf-cyan);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* ═══════════ 1. Hero entrance ═══════════
+   Rise 14px + fade, staggered via --d. */
+@keyframes bf-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.bf-rise {
+  opacity: 0;
+  animation: bf-rise 0.62s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: var(--d, 0ms);
+}
+
+/* ═══════════ 3. Bar fill ═══════════
+   scaleX(0) → value, origin left. The track reserves the full width up
+   front, so the fill animating cannot shift a single pixel of layout. */
+.bf-bar {
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.14);
+  overflow: hidden;
+}
+.bf-bar-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: 9999px;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bf-bar-fill.is-filled { transform: scaleX(var(--fill, 0)); }
+
+/* ═══════════ 4. News ticker ═══════════ */
+@keyframes bf-ticker-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.bf-ticker-item {
+  animation: bf-ticker-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Skeletons breathe on opacity only — never on size. */
+@keyframes bf-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.28; }
+}
+.bf-skeleton {
+  background: rgba(148, 163, 184, 0.10);
+  border-radius: 5px;
+  animation: bf-pulse 1.6s ease-in-out infinite;
+}
+
+/* The live dot is the only thing on the page that loops. */
+@keyframes bf-blip {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.bf-blip { animation: bf-blip 2.4s ease-in-out infinite; }
+
+/* ───────── Reduced motion ─────────
+   Every element renders in its FINAL state, with no motion at all. */
+@media (prefers-reduced-motion: reduce) {
+  .bf-landing *,
+  .bf-landing *::before,
+  .bf-landing *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .bf-rise { opacity: 1; transform: none; }
+  .bf-bar-fill.is-filled { transform: scaleX(var(--fill, 0)); }
+  .bf-blip { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   AMBIENT MOTION
+
+   Everything below animates transform or opacity only. Nothing here
+   touches a layout property, so none of it can cost a frame to reflow
+   or move a single pixel of the page.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Scroll-triggered section entrances ──
+   The hiding rule is scoped to .bf-js, a class React adds on mount. The
+   prerendered document does not carry it, so with JavaScript disabled every
+   element renders in its final state and nothing is ever stuck at opacity 0.
+   useReveal arms only elements that start below the fold, so content already
+   on screen at load never blinks out and back. */
+.bf-js .bf-armed {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.bf-js .bf-armed.is-in {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 0.62s cubic-bezier(0.16, 1, 0.3, 1) var(--d, 0ms),
+    transform 0.62s cubic-bezier(0.16, 1, 0.3, 1) var(--d, 0ms);
+}
+
+/* ── Live dot: radar ping ──
+   An expanding ring that fades, drawn on a pseudo-element so the dot itself
+   never changes size and cannot nudge the text beside it. */
+.bf-ping { position: relative; }
+.bf-ping::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid currentColor;
+  transform: scale(1);
+  opacity: 0.7;
+  animation: bf-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+@keyframes bf-ping {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  70%  { transform: scale(3.2); opacity: 0;   }
+  100% { transform: scale(3.2); opacity: 0;   }
+}
+
+/* ── A conviction value just changed on a live fetch ──
+   A tinted overlay fading in and out, rather than a background-color
+   transition, so this stays an opacity animation. */
+.bf-row { position: relative; }
+.bf-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--bf-cyan);
+  opacity: 0;
+  pointer-events: none;
+}
+.bf-row.is-fresh::before { animation: bf-fresh 300ms ease-out; }
+@keyframes bf-fresh {
+  0%   { opacity: 0; }
+  40%  { opacity: 0.07; }
+  100% { opacity: 0; }
+}
+
+/* ── Ambient hero wash ──
+   One very low-opacity cyan radial drifting on a 20s cycle. If it reads as a
+   moving blob it is too strong: keep the opacity under 0.05 and the travel
+   inside a few percent of the viewport. */
+.bf-ambient {
+  position: absolute;
+  inset: -10% -10% auto -10%;
+  height: 620px;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(46% 52% at 32% 34%, rgba(6, 182, 212, 0.10), transparent 70%);
+  animation: bf-drift 20s ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes bf-drift {
+  0%, 100% { transform: translate3d(0, 0, 0)       scale(1);    }
+  33%      { transform: translate3d(3%, 1.5%, 0)   scale(1.06); }
+  66%      { transform: translate3d(-2%, -1%, 0)   scale(1.03); }
+}
+
+/* ── Micro-interactions ── */
+.bf-lift {
+  transition: transform 150ms ease, background-color 150ms ease,
+              border-color 150ms ease, filter 150ms ease;
+}
+.bf-lift:hover { transform: translateY(-1px); filter: brightness(1.06); }
+
+.bf-card-lift { transition: transform 150ms ease, border-color 150ms ease; }
+.bf-card-lift:hover { transform: translateY(-2px); border-color: #334155; }
+
+/* Nav underline grows from the left. scaleX on a pseudo-element, so no
+   width animation and no reflow. */
+.bf-navlink { position: relative; }
+.bf-navlink::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -5px;
+  height: 1.5px;
+  background: var(--bf-cyan);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bf-navlink:hover::after,
+.bf-navlink:focus-visible::after { transform: scaleX(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Every element sits in its final state, with no motion at all. */
+  .bf-js .bf-armed { opacity: 1; transform: none; }
+  .bf-ping::after,
+  .bf-ambient,
+  .bf-row.is-fresh::before { animation: none; }
+  .bf-ping::after { opacity: 0; }
+  .bf-lift:hover,
+  .bf-card-lift:hover { transform: none; }
+  .bf-navlink::after { transition: none; }
+}

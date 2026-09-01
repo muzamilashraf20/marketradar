@@ -125,7 +125,7 @@ export default function COTReport() {
               <Target size={16} className="text-cyan-400" />
             </div>
             <div className="flex-1 min-w-[200px]">
-              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">Strongest Setup This Week</div>
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">Widest Positioning Gap</div>
               <div className="text-sm font-bold text-white">
                 {bestSetup} <span className="text-slate-500 font-normal">— {strongestBull.currency} strongest bull vs {strongestBear.currency} strongest bear</span>
               </div>

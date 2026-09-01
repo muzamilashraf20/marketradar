@@ -737,7 +737,7 @@ export default function Dashboard() {
 
               {!strength.marketClosed && strength.bestPairs?.[0] && (
                 <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-slate-500">Best trade:</span>
+                  <span className="text-xs text-slate-500">Strongest bias:</span>
                   <span className="text-xs font-bold text-emerald-400">
                     {strength.bestPairs[0].action} {strength.bestPairs[0].pair}
                   </span>

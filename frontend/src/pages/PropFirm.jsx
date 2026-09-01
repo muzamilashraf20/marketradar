@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Shield, AlertTriangle, TrendingUp, DollarSign, RefreshCw, Save, Sparkles, CheckCircle2, XCircle, Clock, Brain, Zap, Calendar, Trophy, BarChart3, Target } from 'lucide-react';
+import { Shield, AlertTriangle, TrendingUp, DollarSign, RefreshCw, Save, CheckCircle2, XCircle, Clock, Brain, Zap, Calendar, Trophy, BarChart3, Target } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
 
 const STORAGE_KEY = 'biasforge_propfirm_settings';
@@ -124,6 +124,12 @@ export default function PropFirmMode() {
     ? Math.max(0, Math.floor((new Date() - new Date(challengeStartDate)) / (1000 * 60 * 60 * 24)))
     : 0;
   const daysRemaining = challengeDays > 0 ? Math.max(0, challengeDays - daysElapsed) : null;
+  // A fixed challenge window only exists when a start date and a non-zero day count are set.
+  const hasChallengeWindow = challengeDays > 0 && !!challengeStartDate;
+  // Once the window is up there are no days left to count — say so instead of showing "0".
+  const challengeEnded = hasChallengeWindow && daysElapsed >= challengeDays;
+  // Never let the elapsed day exceed the total ("Day 46 of 33" reads as a broken calculation).
+  const daysElapsedDisplay = Math.min(daysElapsed, challengeDays);
   const profitProgress = profitTargetAmount > 0 ? Math.min(100, Math.max(0, (totalPnlNum / profitTargetAmount) * 100)) : 0;
 
   // Consistency rule check
@@ -300,13 +306,20 @@ export default function PropFirmMode() {
                 </p>
                 <p className="text-xs text-slate-500">of ${profitTargetAmount.toLocaleString()} target</p>
               </div>
-              {daysRemaining !== null && daysRemaining >= 0 && (
-                <div className="text-right">
-                  <p className={`text-2xl font-black ${daysRemaining <= 5 ? 'text-red-400' : daysRemaining <= 10 ? 'text-amber-400' : 'text-white'}`}>
-                    {daysRemaining}
-                  </p>
-                  <p className="text-xs text-slate-500">days left</p>
-                </div>
+              {hasChallengeWindow && (
+                challengeEnded ? (
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-slate-400">Challenge window ended</p>
+                    <p className="text-xs text-slate-500">{challengeDays}-day window</p>
+                  </div>
+                ) : (
+                  <div className="text-right">
+                    <p className={`text-2xl font-black ${daysRemaining <= 5 ? 'text-red-400' : daysRemaining <= 10 ? 'text-amber-400' : 'text-white'}`}>
+                      {daysRemaining}
+                    </p>
+                    <p className="text-xs text-slate-500">days left</p>
+                  </div>
+                )
               )}
             </div>
             <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
@@ -347,7 +360,7 @@ export default function PropFirmMode() {
         )}
 
         {/* ═══════════════════════════════════ */}
-        {/* 🚀 AI PRE-TRADE GUARDIAN */}
+        {/* PRE-TRADE CHECK */}
         {/* ═══════════════════════════════════ */}
         <div className="relative bg-gradient-to-br from-cyan-500/10 via-[#020617] to-emerald-500/10 border border-cyan-500/30 rounded-2xl p-6 overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl -z-0" />
@@ -356,15 +369,9 @@ export default function PropFirmMode() {
           <div className="relative z-10">
             <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
               <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="flex items-center gap-1 px-2 py-1 bg-cyan-500/20 border border-cyan-500/30 rounded-md">
-                    <Sparkles className="w-3 h-3 text-cyan-400" />
-                    <span className="text-[10px] uppercase tracking-wider text-cyan-300 font-bold">World's First</span>
-                  </div>
-                </div>
                 <h2 className="text-2xl font-black text-white flex items-center gap-2">
                   <Brain className="w-6 h-6 text-cyan-400" />
-                  AI Pre-Trade Guardian
+                  Pre-Trade Check
                 </h2>
                 <p className="text-sm text-slate-400 mt-1">
                   Before you click buy/sell — let AI check your trade against news, drawdown & bias.
@@ -637,7 +644,11 @@ export default function PropFirmMode() {
               </label>
               <input type="date" value={challengeStartDate} onChange={(e) => setChallengeStartDate(e.target.value)}
                 className="w-full max-w-xs bg-[#030712] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-500" />
-              {daysElapsed > 0 && <p className="text-xs text-slate-500 mt-1">Day {daysElapsed} of {challengeDays > 0 ? challengeDays : '∞'}</p>}
+              {hasChallengeWindow && (daysElapsed > 0 || challengeEnded) && (
+                <p className="text-xs text-slate-500 mt-1">
+                  {challengeEnded ? 'Challenge window ended' : `Day ${daysElapsedDisplay} of ${challengeDays}`}
+                </p>
+              )}
             </div>
           </div>
         </div>

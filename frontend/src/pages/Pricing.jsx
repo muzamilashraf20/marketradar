@@ -48,7 +48,7 @@ export default function Pricing() {
     'Unlimited AI Bias generation',
     'Full Economic Calendar with countdowns',
     'Unlimited Live News with AI scoring',
-    'AI Pre-Trade Guardian',
+    'Pre-Trade Check',
     'All 5 Event Playbooks (FOMC, NFP, CPI, ECB, BOE)',
     'COT Report — Institutional positioning',
     'MarketMovers Radar — Real-time alerts',
