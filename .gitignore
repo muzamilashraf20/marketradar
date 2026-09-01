@@ -80,3 +80,12 @@ coverage/
 backend/.env
 frontend/.env
 __pycache__/
+
+# ===========================
+# CLAUDE CODE
+# ===========================
+# launch.json (dev-server config) is tracked and shared. These are not:
+# settings.local.json holds machine-specific permission allowlists with
+# absolute local paths, and skills/ is a large vendored toolkit.
+.claude/settings.local.json
+.claude/skills/
