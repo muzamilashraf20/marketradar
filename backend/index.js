@@ -1893,6 +1893,20 @@ let lastTodaysBiasKey = ''
 let lastChannelPostKey = ''  // "{DIRECTION} {PAIR} {GRADE}" — persisted per-day so restarts don't re-post
 const TODAY_BIAS_TTL = 45 * 60 * 1000 // 45 min — keeps Anthropic cost bounded under dashboard traffic
 
+// ── How old a Today's Bias may be before the dashboard calls it stale ──
+// Derived, not a magic number. Two lags stack during completely healthy operation:
+//   1. generatedAt is the pair's bias_state_v2.updated_at — when the engine last
+//      SCORED it. On a 2h cycle that is routinely 0–120 min old.
+//   2. /api/today-bias serves its whole response from a TODAY_BIAS_TTL cache with
+//      generatedAt frozen inside it, so after a run the card can keep showing the
+//      previous run's timestamp for up to 45 more minutes.
+// Worst healthy case is therefore cycle + TTL. A threshold below that labels a
+// perfectly current bias stale — the old hardcoded 60 min flagged roughly the back
+// half of every normal cycle. Served to the client so raising the cadence in
+// Railway env cannot silently reintroduce the bug.
+const V2_CYCLE_MIN = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '120', 10)
+const TODAY_BIAS_STALE_AFTER_MIN = V2_CYCLE_MIN + TODAY_BIAS_TTL / 60000 + 15
+
 // ── 💰 AI cost tracking — logs every Anthropic call's token usage and estimated cost ──
 const MODEL_PRICES = { 'claude-sonnet-4-6': { in: 3, out: 15 }, 'claude-haiku-4-5-20251001': { in: 1, out: 5 } } // $ per 1M tokens
 let aiCosts = { date: new Date().toISOString().slice(0, 10), totalUSD: 0, calls: 0, byFeature: {} }
@@ -2903,23 +2917,33 @@ app.get('/api/macro-compass', async (req, res) => {
 })
 
 app.get('/api/today-bias', async (req, res) => {
+  // The client derives its own "stale" label from this rather than hardcoding a
+  // number that can fall behind the engine's cadence.
+  const staleAfterMins = TODAY_BIAS_STALE_AFTER_MIN
   try {
     if (isForexClosed()) {
       const cached = getCached('today_bias')
-      return res.json({ success: true, marketClosed: true, reason: 'Forex market closed (weekend)', ...(cached || { bias: null }), stale: !!cached })
+      // NOT flagged stale. The engine is idle because the market is shut, which is
+      // correct behaviour, not staleness — and this branch used to mark ANY cached
+      // bias stale regardless of age, so the card spent every weekend inviting a
+      // refresh that lands right back here and changes nothing.
+      return res.json({
+        success: true, marketClosed: true, reason: 'Forex market closed (weekend)',
+        ...(cached || { bias: null }), stale: false, staleAfterMins,
+      })
     }
     if (isCacheFreshFor('today_bias', TODAY_BIAS_TTL)) {
-      return res.json({ success: true, ...getCached('today_bias'), cached: true })
+      return res.json({ success: true, ...getCached('today_bias'), cached: true, staleAfterMins })
     }
     const result = await computeTodaysAIBias()
-    if (!result) return res.json({ success: true, bias: null, reason: 'No strong pair available right now' })
+    if (!result) return res.json({ success: true, bias: null, reason: 'No strong pair available right now', staleAfterMins })
     // computeTodaysAIBias falls back to the old cache on AI failure — flag it if it's older than the TTL
     const isStale = result.updatedAt && (Date.now() - new Date(result.updatedAt).getTime()) > TODAY_BIAS_TTL
-    res.json({ success: true, ...result, stale: isStale })
+    res.json({ success: true, ...result, stale: isStale, staleAfterMins })
   } catch (e) {
     console.error('today-bias error:', e?.message)
     const cached = getCached('today_bias')
-    res.json({ success: true, ...(cached || { bias: null }), stale: !!cached, error: 'compute failed' })
+    res.json({ success: true, ...(cached || { bias: null }), stale: !!cached, staleAfterMins, error: 'compute failed' })
   }
 })
 
@@ -5679,7 +5703,7 @@ app.listen(5000, () => {
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
   if (process.env.V2_SHADOW_CRON === 'on') {
-    const mins = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '120', 10)
+    const mins = V2_CYCLE_MIN
     // setInterval ka pehla tick poore interval baad aata hai — har restart ~2h blind window chhodta
     // tha (aur us window mein dobara restart hua to run aur aage khisak jaata). Boot ke thodi der baad
     // ek run khud kick karo taake restart kabhi biases freeze na kare. 90s delay se v1 pehle shared

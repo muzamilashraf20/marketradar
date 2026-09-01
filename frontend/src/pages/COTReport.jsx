@@ -118,7 +118,7 @@ export default function COTReport() {
           </p>
         </div>
 
-        {/* ── Best Trade Setup (Auto-suggested) ── */}
+        {/* ── Widest Positioning Gap (auto-derived) ── */}
         {!loading && bestSetup && (
           <div className="bg-gradient-to-r from-cyan-500/10 to-emerald-500/10 border border-cyan-500/20 rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
             <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center shrink-0">

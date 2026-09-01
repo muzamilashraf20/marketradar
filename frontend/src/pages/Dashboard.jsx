@@ -4,7 +4,7 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, AlertCircle, ShieldCheck,
   Newspaper, Calendar, ArrowUpRight,
-  BarChart2, RefreshCw, Zap, Loader2, History, X, Radar
+  BarChart2, RefreshCw, Zap, Loader2, History, X, Radar, Clock
 } from 'lucide-react'
 import { useEffect } from 'react'
 import { SkeletonRow } from '../components/common/Skeleton'
@@ -186,6 +186,9 @@ export default function Dashboard() {
           entryQuality: data.bias?.entryQuality || null,
           generatedAt: data.generatedAt || data.updatedAt || data.bias?.generatedAt || null,
           stale: !!data.stale,
+          // Served by the backend, derived from the engine's own cadence.
+          staleAfterMins: data.staleAfterMins ?? null,
+          marketClosed: !!data.marketClosed,
           selectionMethod: data.selectionMethod || 'formula',
           selectionReasoning: data.selectionReasoning || null,
         })
@@ -268,11 +271,22 @@ export default function Dashboard() {
       }
     : getBiasFromStrength()
 
-  // Bias freshness: stale if generated 60+ minutes ago, or backend flagged it stale
+  // Bias freshness.
+  //
+  // generatedAt is when the ENGINE last scored the pair, not when this page
+  // loaded, so on a 2h cycle it is routinely 0–120 min old and the endpoint can
+  // serve it from a 45 min cache on top. The old hardcoded 60 min therefore
+  // labelled roughly the back half of every healthy cycle "Stale". The backend
+  // now sends the threshold it derives from its own cadence; 180 is only a
+  // fallback for an older API that does not send one.
   const biasAgeMins = todaysBias?.generatedAt
     ? Math.floor((Date.now() - new Date(todaysBias.generatedAt).getTime()) / 60000)
     : null
-  const biasIsStale = todaysBias?.stale || (biasAgeMins !== null && biasAgeMins >= 60)
+  const biasStaleAfter = todaysBias?.staleAfterMins ?? 180
+  // A closed market is not a stale engine. It is idle on purpose, and there is
+  // nothing a refresh could fetch.
+  const biasIsStale = !todaysBias?.marketClosed &&
+    (todaysBias?.stale || (biasAgeMins !== null && biasAgeMins >= biasStaleAfter))
   const biasGeneratedLabel = todaysBias?.generatedAt
     ? new Date(todaysBias.generatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
     : null
@@ -436,7 +450,16 @@ export default function Dashboard() {
                   <p className="text-[10px] text-cyan-400/70 line-clamp-2 mt-0.5">🎯 {todaysBias.selectionReasoning}</p>
                 )}
                 {todaysBias.ai && biasGeneratedLabel ? (
-                  biasIsStale ? (
+                  todaysBias.marketClosed ? (
+                    /* Plain text, not a button: the market is shut, so a refresh
+                       lands back on the same closed-market branch and changes
+                       nothing. A control that cannot do anything is worse than
+                       no control. */
+                    <p className="mt-1 flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                      <Clock size={10} />
+                      Markets closed · last scored {biasGeneratedLabel}
+                    </p>
+                  ) : biasIsStale ? (
                     <button
                       onClick={fetchTodayBias}
                       className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300 transition-colors"
