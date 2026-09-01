@@ -1,51 +1,27 @@
 import { Compass, CalendarDays, Newspaper, PieChart, BarChart2, NotebookPen } from 'lucide-react'
-import { Section, Lede, Ref } from './Section'
+import { Section, Lede, Ref, Screenshot } from './Section'
 
 /* Each line is framed as what the trader gets out of it, not what the feature is. */
 const CARDS = [
-  {
-    icon: Compass,
-    name: 'Macro compass',
-    line: 'A directional bias and invalidation level for every major pair.',
-    shot: { src: '/screens/01-overview.png', w: 5120, h: 2856,
-      alt: 'BiasForge macro bias dashboard showing directional bias and conviction for the major forex pairs, the overview a funded trader opens each session' },
-  },
-  {
-    icon: CalendarDays,
-    name: 'Economic calendar',
-    line: 'High-impact events with what they mean for direction — not just when they land.',
-    shot: { src: '/screens/04-calendar.png', w: 5120, h: 2546,
-      alt: 'BiasForge economic calendar listing high-impact forex events with forecast and previous figures, the week a funded trader plans around' },
-  },
-  {
-    icon: Newspaper,
-    name: 'Live news',
-    line: 'Headlines scored by market impact, with the forex read attached.',
-    shot: { src: '/screens/05-news.png', w: 5120, h: 2768,
-      alt: 'BiasForge live news feed for forex traders, each headline scored by market impact with the macro read attached' },
-  },
-  {
-    icon: PieChart,
-    name: 'COT report',
-    line: 'Where institutional positioning actually sits, updated every week.',
-    shot: { src: '/screens/07-cot.png', w: 5120, h: 3766,
-      alt: 'BiasForge COT report showing net institutional positioning per currency from the weekly CFTC release' },
-  },
-  {
-    icon: BarChart2,
-    name: 'Currency strength',
-    line: 'Which currency is leading and which is lagging, across the majors.',
-    shot: { src: '/screens/06-strength.png', w: 5120, h: 3736,
-      alt: 'BiasForge currency strength page ranking the major currencies from strongest to weakest, so a trader can see which is leading the session' },
-  },
-  {
-    icon: NotebookPen,
-    name: 'Trade journal',
-    line: 'Your trades against the bias that was live when you took them.',
-  },
+  { icon: Compass,     name: 'Macro compass',     line: 'A directional bias and invalidation level for every major pair.' },
+  { icon: CalendarDays, name: 'Economic calendar', line: 'High-impact events with what they mean for direction — not just when they land.' },
+  { icon: Newspaper,   name: 'Live news',         line: 'Headlines scored by market impact, with the forex read attached.' },
+  { icon: PieChart,    name: 'COT report',        line: 'Where institutional positioning actually sits, updated every week.' },
+  { icon: BarChart2,   name: 'Currency strength', line: 'Which currency is leading and which is lagging, across the majors.' },
+  { icon: NotebookPen, name: 'Trade journal',     line: 'Your trades against the bias that was live when you took them.' },
 ]
 
-/* Section 6 — what's inside. */
+/* Section 6 — what's inside.
+
+   The cards carried thumbnails and they did not work. At a third of the grid
+   they were far too small for any interface to be legible, so they read as
+   decoration — and there was no capture for the trade journal, leaving one card
+   visibly short of the other five.
+
+   Both problems have the same fix. The grid is text only, which makes all six
+   cards identical in weight and removes the empty slot by construction, and the
+   product is shown once underneath at a size where it can actually be read. One
+   legible surface beats six illegible ones. */
 export default function Inside() {
   return (
     <Section eyebrow="The full picture" headline="Every input that moves a currency, in one place." wide>
@@ -57,28 +33,28 @@ export default function Inside() {
       </Lede>
 
       <ul className="mt-16 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {/* Rendered as a member expression, not a destructured binding: the base
-            no-unused-vars rule does not track JSX usage and flags the binding. */}
         {CARDS.map(card => (
-          <li key={card.name} className="bf-card bf-card-lift p-5 flex flex-col">
+          <li key={card.name} className="bf-card p-5" data-reveal>
             <card.icon size={17} className="text-cyan-400 shrink-0" aria-hidden="true" strokeWidth={1.75} />
             <h3 className="mt-3.5 text-[15px] font-medium text-slate-100">{card.name}</h3>
             <p className="mt-2 text-[14px] leading-[1.65] text-slate-400">{card.line}</p>
-
-            {card.shot && (
-              <img
-                src={card.shot.src}
-                alt={card.shot.alt}
-                width={card.shot.w}
-                height={card.shot.h}
-                loading="lazy"
-                decoding="async"
-                className="mt-5 w-full h-auto rounded-lg bf-hairline"
-              />
-            )}
           </li>
         ))}
       </ul>
+
+      {/* Cropped to the interface column. The full capture is a whole-page
+          screenshot whose left 29.7% is the app sidebar — and whose first line
+          is "Good afternoon, Muzamil Ashraf.", the personal identity this page
+          deliberately does not carry. The crop starts below both. */}
+      <div className="mt-16 sm:mt-20">
+        <Screenshot
+          src="/screens/01-overview.png"
+          srcW={5120} srcH={2856}
+          crop={{ x: 29.7, y: 10, w: 50, h: 88 }}
+          bleed
+          alt="BiasForge macro bias dashboard showing directional bias and conviction for the major forex pairs, the overview a funded trader opens each session"
+        />
+      </div>
     </Section>
   )
 }

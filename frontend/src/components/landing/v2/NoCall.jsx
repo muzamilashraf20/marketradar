@@ -1,4 +1,4 @@
-import { Section, Lede, Shot } from './Section'
+import { Section, Lede, Screenshot } from './Section'
 
 /* Section 7.
 
@@ -19,12 +19,15 @@ export default function NoCall() {
         direction. A bias you can&rsquo;t trust is worse than no bias.
       </Lede>
 
-      <div className="mt-16 sm:mt-20 max-w-3xl">
-        <Shot
+      {/* max-w-4xl, not the full bleed the app captures get: this one is a 952px
+          modal, so 896px renders it at 0.94x — still sharp. Bleeding it to 1280
+          would upscale it 1.35x and undo the point. */}
+      <div className="mt-16 sm:mt-20 max-w-4xl">
+        <Screenshot
           src="/screens/08-no-call.png"
+          srcW={952} srcH={821}
+          crop={{ x: 0, y: 0, w: 98.3, h: 100 }}
           alt="BiasForge event brief for a high-impact US economic calendar print, reporting that the macro evidence is split and declining to publish a directional bias"
-          width={952}
-          height={821}
         />
       </div>
     </Section>

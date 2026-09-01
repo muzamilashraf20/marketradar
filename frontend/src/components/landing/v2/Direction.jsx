@@ -43,17 +43,22 @@ export default function Direction() {
           its native width and the three columns move alongside it instead of
           below. A portrait card beside its own explanation reads better than a
           soft one stretched across the column anyway. */}
+      {/* minmax(0, CARD.w) rather than a fixed track: at the lg breakpoint a rigid
+          600px column left the text 304px and could not give way. The card scales
+          down instead, and the overlay is in percent so it follows without any
+          further arithmetic. */}
       <div
-        className="mt-16 sm:mt-20 grid gap-10 lg:gap-14 items-start lg:grid-cols-[var(--bf-card-w)_1fr]"
+        className="mt-16 sm:mt-20 grid gap-10 lg:gap-14 items-start lg:grid-cols-[minmax(0,var(--bf-card-w))_1fr]"
         style={{ '--bf-card-w': `${CARD.w}px` }}
       >
-        <figure className="relative w-full" style={{ maxWidth: CARD.w }} data-reveal>
+        <figure className="relative w-full max-w-full" style={{ maxWidth: CARD.w }} data-reveal>
         <Shot
           src="/screens/02-bias-card.png"
           alt="BiasForge bias card for a forex pair, expanded to show the directional macro read, the conviction score and the invalidation level where the bias is closed"
           width={CARD.w}
           height={CARD.h}
           reveal={false}
+          className="bf-screen"
         />
 
         {/* Calls out the invalidation block on the card itself.
@@ -73,11 +78,9 @@ export default function Direction() {
         >
           <div className="rounded-md border border-cyan-400/70 bg-cyan-400/[0.07] w-full h-full" />
         </div>
-          <figcaption
-            className="absolute right-[3.3%] top-[78.4%] bf-pill bg-[#030712] bf-hairline px-2.5 py-1 text-[10.5px] font-medium text-cyan-400 whitespace-nowrap"
-            style={{ borderColor: 'rgba(6,182,212,0.4)' }}
-          >
-            The invalidation level
+          <figcaption className="mt-3 flex items-center gap-2 text-[12.5px] text-cyan-400">
+            <span className="inline-block w-6 h-px bg-cyan-400/70 shrink-0" aria-hidden="true" />
+            The invalidation level — the price that closes this bias
           </figcaption>
         </figure>
 

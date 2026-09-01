@@ -1,4 +1,4 @@
-import { Section, Lede, Ref, Shot } from './Section'
+import { Section, Lede, Ref, Screenshot } from './Section'
 
 const STATS = [
   'Daily drawdown tracking',
@@ -22,11 +22,12 @@ export default function PropFirmMode() {
       </Lede>
 
       <div className="mt-16 sm:mt-20">
-        <Shot
+        <Screenshot
           src="/screens/03-propfirm.png"
+          srcW={5120} srcH={3598}
+          crop={{ x: 29.7, y: 6.5, w: 50, h: 91.5 }}
+          bleed
           alt="BiasForge Prop Firm Mode showing a prop firm trader's live daily and total drawdown bars against their funded account limits, with the room remaining before a breach"
-          width={5120}
-          height={3598}
         />
       </div>
 
