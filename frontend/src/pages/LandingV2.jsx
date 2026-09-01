@@ -6,6 +6,7 @@ import Direction from '../components/landing/v2/Direction'
 import Noise from '../components/landing/v2/Noise'
 import PropFirmMode from '../components/landing/v2/PropFirmMode'
 import Inside from '../components/landing/v2/Inside'
+import Inputs from '../components/landing/v2/Inputs'
 import NoCall from '../components/landing/v2/NoCall'
 import Plan from '../components/landing/v2/Plan'
 import About from '../components/landing/v2/About'
@@ -31,6 +32,8 @@ export default function LandingV2() {
         <Noise />
         <PropFirmMode />
         <Inside />
+        {/* The three input surfaces, at a size where they can be read. */}
+        <Inputs />
         <NoCall />
         <Plan />
         <About />
