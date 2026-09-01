@@ -682,6 +682,37 @@ app.post('/api/ai', aiRateLimiter, async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
   try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); trackAI('ai-analyze', 'claude-sonnet-4-6', m.usage); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
+// Widest strength divergence across the majors — the pair with the largest gap
+// between its two legs. Extracted because TWO functions populate the 'strength'
+// cache: this file's getLiveStrength() (called by the v2 engine for its safe-haven
+// read) and the /api/strength handler. getLiveStrength used to write
+// `bestPairs: []` hardcoded, and whichever ran first won the cache — so after an
+// engine tick the Currency Strength page served an empty bestPairs and rendered
+// "Widest divergence: N/A" with the divergences section missing entirely, while
+// its own client-side Divergence Alerts list stayed populated. One derivation,
+// used by both writers, so the cached object is complete no matter who fills it.
+const DIVERGENCE_PAIRS = [
+  ['EUR','USD'],['GBP','USD'],['USD','JPY'],['AUD','USD'],['USD','CAD'],
+  ['USD','CHF'],['NZD','USD'],['EUR','GBP'],['EUR','JPY'],['GBP','JPY'],['AUD','JPY'],
+]
+function widestDivergence(sorted) {
+  if (!Array.isArray(sorted) || sorted.length < 2) return []
+  if (sorted.every(c => c.strength === 0)) return []
+  const str = {}
+  sorted.forEach(c => { str[c.currency] = c.strength })
+  let best = null, bestDiff = 0
+  for (const [b, q] of DIVERGENCE_PAIRS) {
+    if (str[b] === undefined || str[q] === undefined) continue
+    const diff = (str[b] || 0) - (str[q] || 0)
+    if (Math.abs(diff) <= bestDiff) continue
+    bestDiff = Math.abs(diff)
+    best = diff > 0
+      ? { pair: `${b}${q}`, action: 'BUY',  reason: `${b} stronger than ${q}` }
+      : { pair: `${b}${q}`, action: 'SELL', reason: `${q} stronger than ${b}` }
+  }
+  return best ? [best] : []
+}
+
 // Returns fresh currency strength, computing it live if the cache is cold and the market is open.
 // Returns null when the forex market is closed (weekend) — strength is meaningless then.
 async function getLiveStrength() {
@@ -699,7 +730,7 @@ async function getLiveStrength() {
     const norm = {}; Object.keys(avg).forEach(c => norm[c] = Math.round(((avg[c]-mn)/rng)*100))
     const sorted = Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
     const allZ = sorted.every(c => c.strength === 0)
-    const result = { success:true, currencies:sorted, bestPairs:[], marketClosed:allZ, updatedAt:new Date().toISOString() }
+    const result = { success:true, currencies:sorted, bestPairs:widestDivergence(sorted), marketClosed:allZ, updatedAt:new Date().toISOString() }
     if (!allZ) setCache('strength', result)
     return result
   } catch (e) { return getCached('strength') || null }
@@ -4598,24 +4629,8 @@ app.get('/api/strength', async (req, res) => {
     const vals=Object.values(avg),mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1
     const norm={};Object.keys(avg).forEach(c=>norm[c]=Math.round(((avg[c]-mn)/rng)*100))
     const sorted=Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
-   const allZ=sorted.every(c=>c.strength===0),bp=[]
-    const oandaPairs=[['EUR','USD'],['GBP','USD'],['USD','JPY'],['AUD','USD'],['USD','CAD'],['USD','CHF'],['NZD','USD'],['EUR','GBP'],['EUR','JPY'],['GBP','JPY'],['AUD','JPY']]
-    if(!allZ&&sorted.length>=2){
-      const str={};sorted.forEach(c=>str[c.currency]=c.strength)
-      let best=null,bestDiff=0
-      oandaPairs.forEach(([b,q])=>{
-        if(str[b]!==undefined&&str[q]!==undefined){
-          const diff=(str[b]||0)-(str[q]||0)
-          if(Math.abs(diff)>bestDiff){
-            bestDiff=Math.abs(diff)
-            best=diff>0
-              ?{pair:`${b}${q}`,action:'BUY',reason:`${b} stronger than ${q}`}
-              :{pair:`${b}${q}`,action:'SELL',reason:`${q} stronger than ${b}`}
-          }
-        }
-      })
-      if(best)bp.push(best)
-    }
+    const allZ=sorted.every(c=>c.strength===0)
+    const bp=widestDivergence(sorted)
     // NOTE: no bias push from here. Currency strength is deliberately EXCLUDED from the bias engine
     // (lagging — viewer-only), so pushing a strength-derived "Bias Change Alert" to Telegram/email
     // contradicted the engine. Bias pushes come from the v2 engine (publishTodayBias) only.
