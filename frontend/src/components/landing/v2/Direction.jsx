@@ -9,7 +9,7 @@ import { Section, Lede, Ref, Shot } from './Section'
 
    When those numbers change the overlay below must be rescanned: a different
    crop has a different aspect, so the block does not land at the same percentage. */
-const CARD = { w: 317, h: 437 }
+const CARD = { w: 600, h: 792 }
 
 const COLUMNS = [
   {
@@ -59,21 +59,22 @@ export default function Direction() {
         {/* Calls out the invalidation block on the card itself.
 
             Measured by scanning the capture for the block's rose border, not
-            guessed. On the first crop (317x437) it ran y 329-389 / x 18-298 =
-            75.3% down, 14.0% tall, 5.7% inset. The placeholder values had it at
-            62% — a third of the card too high — with the label at 76%, sitting
-            directly on the box it labels.
+            guessed — and rescanned on every recapture, because each crop has had
+            a different aspect and the block has not landed twice in the same
+            place. On this one (600x792) it runs y 658-780 / x 20-580: 83.1%
+            down, 15.5% tall, ~3.3% inset. That bottom edge is 98.6% of the
+            image, so the label sits ABOVE the block rather than under it.
 
             Percentages, so it tracks the image at every width. */}
         <div
           className="absolute pointer-events-none"
-          style={{ left: '5.5%', right: '5.5%', top: '75.3%', height: '14%' }}
+          style={{ left: '3.3%', right: '3.2%', top: '83.1%', height: '15.5%' }}
           aria-hidden="true"
         >
           <div className="rounded-md border border-cyan-400/70 bg-cyan-400/[0.07] w-full h-full" />
         </div>
           <figcaption
-            className="absolute right-[5.5%] top-[90.8%] bf-pill bg-[#030712] bf-hairline px-2.5 py-1 text-[10.5px] font-medium text-cyan-400 whitespace-nowrap"
+            className="absolute right-[3.3%] top-[78.4%] bf-pill bg-[#030712] bf-hairline px-2.5 py-1 text-[10.5px] font-medium text-cyan-400 whitespace-nowrap"
             style={{ borderColor: 'rgba(6,182,212,0.4)' }}
           >
             The invalidation level
