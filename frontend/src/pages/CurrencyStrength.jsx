@@ -112,7 +112,7 @@ export default function CurrencyStrength() {
                 <p className="text-sm text-red-400 mt-1">{weakest?.strength}% strength</p>
               </div>
               <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-2xl p-5">
-                <p className="text-sm text-cyan-300 mb-1">⚡ Best Trade</p>
+                <p className="text-sm text-cyan-300 mb-1">⚡ Widest divergence</p>
                 <p className="text-2xl font-black text-white">
                   {data.bestPairs?.[0]?.pair || 'N/A'}
                 </p>
@@ -162,10 +162,10 @@ export default function CurrencyStrength() {
               })}
             </div>
 
-            {/* Best Pairs To Trade */}
+            {/* Widest divergences */}
             {data.bestPairs?.length > 0 && (
               <div className="bg-[#020617] border border-white/10 rounded-2xl p-6">
-                <h2 className="text-white font-bold text-lg mb-4">⚡ Best Pairs To Trade Now</h2>
+                <h2 className="text-white font-bold text-lg mb-4">⚡ Widest divergences</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {data.bestPairs.map((p, i) => (
                     <div key={i} className={`rounded-xl p-4 border ${p.action === 'BUY' ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
@@ -236,7 +236,7 @@ export default function CurrencyStrength() {
                       </div>
                     ))}
                   </div>
-                  <p className="text-[10px] text-slate-600 mt-3">Higher gap = stronger divergence = higher conviction trade</p>
+                  <p className="text-[10px] text-slate-600 mt-3">Higher gap = stronger divergence</p>
                 </div>
               )
             })()}
