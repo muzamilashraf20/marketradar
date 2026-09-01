@@ -41,7 +41,7 @@ export function Ref({ href, children }) {
 /* Product screenshot. Explicit width/height on every one of these — the browser
    reserves the exact box before the file arrives, which is what keeps
    cumulative layout shift at zero on a page that is mostly images below the fold. */
-export function Shot({ src, alt, width, height, className = '', priority = false }) {
+export function Shot({ src, alt, width, height, className = '', priority = false, reveal = true }) {
   return (
     <img
       src={src}
@@ -50,7 +50,9 @@ export function Shot({ src, alt, width, height, className = '', priority = false
       height={height}
       loading={priority ? 'eager' : 'lazy'}
       decoding="async"
-      data-reveal
+      // Off when an ancestor is the reveal target instead — an image that
+      // animates independently of its own annotations pulls them apart.
+      {...(reveal ? { 'data-reveal': '' } : {})}
       className={`w-full h-auto rounded-xl bf-hairline shadow-[0_18px_50px_-20px_rgba(0,0,0,0.9)] ${className}`}
     />
   )

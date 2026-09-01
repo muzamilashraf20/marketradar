@@ -6,7 +6,7 @@ import Direction from '../components/landing/v2/Direction'
 import Noise from '../components/landing/v2/Noise'
 import PropFirmMode from '../components/landing/v2/PropFirmMode'
 import Inside from '../components/landing/v2/Inside'
-import TrackRecord from '../components/landing/v2/TrackRecord'
+import NoCall from '../components/landing/v2/NoCall'
 import Plan from '../components/landing/v2/Plan'
 import About from '../components/landing/v2/About'
 import Faq from '../components/landing/v2/Faq'
@@ -31,8 +31,7 @@ export default function LandingV2() {
         <Noise />
         <PropFirmMode />
         <Inside />
-        {/* Shell only — flag defaults to off until there is enough recorded data. */}
-        <TrackRecord />
+        <NoCall />
         <Plan />
         <About />
         <Faq />

@@ -25,8 +25,8 @@ export default function PropFirmMode() {
         <Shot
           src="/screens/03-propfirm.png"
           alt="BiasForge Prop Firm Mode showing a prop firm trader's live daily and total drawdown bars against their funded account limits, with the room remaining before a breach"
-          width={1600}
-          height={1000}
+          width={5120}
+          height={3598}
         />
       </div>
 
