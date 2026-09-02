@@ -100,7 +100,7 @@ export default function DrawdownLive() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap px-4 pt-4 pb-3.5 bf-hairline-b">
         <div>
           <h3 className="text-[13.5px] font-medium text-slate-100 tracking-tight">Prop Firm Mode</h3>
-          <p className="text-[11px] bf-t3 mt-0.5">Your funded account's limits, tracked against every trade</p>
+          <p className="text-[11px] bf-t3 mt-0.5">Every funded trader's limits, tracked against every trade</p>
         </div>
         <span className="bf-pill bf-hairline text-[9.5px] font-bold uppercase tracking-wider px-2 py-[3px] bf-t3">
           Example

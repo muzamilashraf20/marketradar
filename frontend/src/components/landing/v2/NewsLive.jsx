@@ -122,8 +122,8 @@ export default function NewsLive() {
       </ul>
 
       <p className="bf-hairline-t px-4 py-3 text-[10.5px] leading-relaxed bf-t3">
-        Impact scoring is a read on how much a headline matters to the majors — it is not a
-        forecast.
+        Impact scoring is a read on how much a headline matters to a forex trader on the
+        majors — it is not a forecast.
       </p>
     </div>
   )
