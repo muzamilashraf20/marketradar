@@ -21,13 +21,16 @@ export default function PropFirmMode() {
         your remaining room before you take it.
       </Lede>
 
-      <div className="mt-16 sm:mt-20">
+      {/* The daily and total drawdown pair, cropped from the full-page capture.
+          Deliberately NOT the challenge-progress card that sits above it: that
+          one shows a running P&L against a target, and a profit figure on this
+          page would read as a claim about results whatever the caption said. */}
+      <div className="mt-14 sm:mt-16 max-w-[640px]">
         <Screenshot
           src="/screens/03-propfirm.png"
           srcW={5120} srcH={3598}
-          crop={{ x: 29.7, y: 6.5, w: 50, h: 91.5 }}
-          bleed
-          alt="BiasForge Prop Firm Mode showing a prop firm trader's live daily and total drawdown bars against their funded account limits, with the room remaining before a breach"
+          crop={{ x: 29.7, y: 52.4, w: 50, h: 10.2 }}
+          alt="BiasForge Prop Firm Mode showing a prop firm trader's daily and total drawdown against their funded account limits, with the room remaining before a breach"
         />
       </div>
 

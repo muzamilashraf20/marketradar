@@ -3,6 +3,7 @@ import { Check, Bitcoin, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../../context/AuthContext'
 import { Section } from './Section'
+import { FAQ } from './faqData'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -59,7 +60,12 @@ export default function Plan() {
 
   return (
     <Section id="pricing" eyebrow="Pricing" headline="One plan. The whole picture.">
-      <div className="mt-12 max-w-md">
+      {/* Card left, answers right. The right half was empty and read as
+          unfinished. These are the first three FAQ entries reused verbatim from
+          faqData — the same source the FAQPage schema is generated from, so
+          there is exactly one copy of each answer on the page. */}
+      <div className="mt-12 grid lg:grid-cols-[minmax(0,26rem)_1fr] gap-10 lg:gap-16 items-start">
+        <div className="max-w-md">
         <div
           className="inline-flex bf-pill bf-hairline p-0.5 text-[13px]"
           role="group"
@@ -154,7 +160,17 @@ export default function Plan() {
           <p className="mt-4 text-center text-[12.5px] bf-t3">
             Card or crypto · BTC, USDT and USDC accepted · Cancel anytime.
           </p>
+          </div>
         </div>
+
+        <dl className="space-y-8" data-reveal>
+          {FAQ.slice(0, 3).map(({ q, a }) => (
+            <div key={q}>
+              <dt className="text-[15px] font-medium text-slate-100">{q}</dt>
+              <dd className="mt-2.5 text-[14.5px] leading-[1.75] text-slate-400">{a}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
     </Section>
   )

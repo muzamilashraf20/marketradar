@@ -4,7 +4,7 @@ import { Section, Lede, Ref } from './Section'
    personal handle. The longer version of this lives at /about. */
 export default function About() {
   return (
-    <Section eyebrow="About BiasForge" headline="Built for traders who want a reason, not a signal.">
+    <Section eyebrow="About BiasForge" headline="Built for traders who want a reason, not a ticket to copy.">
       <Lede>
         BiasForge is an independent macro research tool for forex traders. We read the same
         inputs a macro desk reads — the calendar, the newsflow, institutional positioning, rate

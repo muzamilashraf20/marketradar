@@ -23,10 +23,11 @@ import AboutPage from './pages/About'
 export { FAQ } from './components/landing/v2/faqData'
 export { PRICE_MONTHLY, PRICE_ANNUAL, GUMROAD_URL } from './components/landing/v2/Plan'
 
-export function render({ compass, events }) {
+export function render({ compass, events, calls }) {
   // The components read these off globalThis during their first render.
   globalThis.__BF_COMPASS__ = compass || null
   globalThis.__BF_EVENTS__ = events || null
+  globalThis.__BF_CALLS__ = calls || null
 
   // The pricing section calls useNavigate for the crypto checkout's sign-in
   // redirect, and that throws outside a Router. MemoryRouter gives the static

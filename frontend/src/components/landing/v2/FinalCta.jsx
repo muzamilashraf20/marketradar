@@ -3,7 +3,7 @@ import { GUMROAD_URL } from './Plan'
 /* Section 11 */
 export default function FinalCta() {
   return (
-    <section className="px-5 sm:px-8 py-24 sm:py-32">
+    <section className="px-5 sm:px-8 py-16">
       <div className="mx-auto max-w-5xl">
         <h2 className="bf-h2 max-w-[20ch]">Trade with a direction, or trade without one.</h2>
 

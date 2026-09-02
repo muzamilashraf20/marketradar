@@ -10,8 +10,11 @@ export function Section({ id, eyebrow, headline, children, className = '', wide 
   const ref = useReveal()
 
   return (
-    <section ref={ref} id={id} className={`px-5 sm:px-8 py-20 sm:py-28 ${className}`}>
-      <div className={`mx-auto ${wide ? 'max-w-6xl' : 'max-w-5xl'}`}>
+    <section ref={ref} id={id} className={`px-5 sm:px-8 py-16 ${className}`}>
+      {/* py-16 puts 128px between every pair of sections, the floor of the
+          allowed range. Content caps at 1024px, or 1088px on the wider sections — both inside
+          the 900–1100px measure. Nothing bleeds past it except the hero. */}
+      <div className={`mx-auto ${wide ? 'max-w-[68rem]' : 'max-w-5xl'}`}>
         <p className="bf-eyebrow" data-reveal>{eyebrow}</p>
         <h2 className="bf-h2 mt-5 max-w-[22ch]" data-reveal>{headline}</h2>
         {children}
@@ -83,6 +86,48 @@ export function Screenshot({ src, alt, srcW, srcH, crop, bleed = false, classNam
           }}
         />
       </div>
+    </div>
+  )
+}
+
+/* Two bands of the same capture stacked into one frame, with the middle cut out.
+
+   The bias card is 792px tall, mostly because its reasoning paragraph runs seven
+   lines. Cropping it to a single band loses either the header and conviction
+   ring or the invalidation block, and the invalidation block is the reason the
+   section exists. Stacking the top band and the bottom band drops the middle of
+   the paragraph instead, which lands the card at the required height and keeps
+   both ends. The dashboard clamps that same paragraph to two lines, so the
+   result reads the way the product actually renders it. */
+export function StackedShot({ src, alt, srcW, srcH, bands, className = '' }) {
+  const totalH = bands.reduce((a, b) => a + b.h, 0)
+  const aspect = ((bands[0].w / 100) * srcW) / ((totalH / 100) * srcH)
+
+  return (
+    <div className={`bf-screen relative overflow-hidden ${className}`} style={{ aspectRatio: aspect }}>
+      {bands.map((b, i) => (
+        <div
+          key={i}
+          className="relative overflow-hidden"
+          // Each band takes its share of the frame height, so the two crops meet
+          // with no seam and the frame reserves its box before the image loads.
+          style={{ height: `${(b.h / totalH) * 100}%` }}
+        >
+          <img
+            src={src}
+            alt={i === 0 ? alt : ''}
+            aria-hidden={i === 0 ? undefined : 'true'}
+            loading="lazy"
+            decoding="async"
+            className="absolute max-w-none"
+            style={{
+              width: `${(100 / b.w) * 100}%`,
+              left: `${-(b.x / b.w) * 100}%`,
+              top: `${-(b.y / b.h) * 100}%`,
+            }}
+          />
+        </div>
+      ))}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { Section, Lede, Ref, Shot } from './Section'
+import { Section, Lede, Ref, StackedShot } from './Section'
 
 /* Native size of 02-bias-card.png as it sits on disk.
 
@@ -29,9 +29,9 @@ const COLUMNS = [
 /* Section 3 — the differentiating section, and the one given the most space. */
 export default function Direction() {
   return (
-    <Section id="features" eyebrow="A compass, not a signal button" headline="Every bias comes with the level where it's wrong." wide>
+    <Section id="features" eyebrow="Direction and invalidation" headline="Every bias comes with the level where it's wrong." wide>
       <Lede>
-        A signal tells you where to buy and where to stop, and leaves you nothing to think
+        Being handed a buy price and a stop leaves you nothing to think
         about. A <Ref href="/blog/what-is-market-bias">macro bias</Ref> tells you which way the
         fundamentals lean and exactly where that reasoning breaks. You still take your own entries
         — with a reason behind the direction and a hard line under it.
@@ -52,32 +52,28 @@ export default function Direction() {
         style={{ '--bf-card-w': `${CARD.w}px` }}
       >
         <figure className="relative w-full max-w-full" style={{ maxWidth: CARD.w }} data-reveal>
-        <Shot
-          src="/screens/02-bias-card.png"
-          alt="BiasForge bias card for a forex pair, expanded to show the directional macro read, the conviction score and the invalidation level where the bias is closed"
-          width={CARD.w}
-          height={CARD.h}
-          reveal={false}
-          className="bf-screen"
-        />
+          <StackedShot
+            src="/screens/02-bias-card.png"
+            srcW={CARD.w} srcH={CARD.h}
+            bands={[
+              { x: 0, y: 0,    w: 100, h: 49.2 },   // header, ring, direction, grade, timing, age, two lines of reasoning
+              { x: 0, y: 81.4, w: 100, h: 18.6 },   // the invalidation block
+            ]}
+            alt="BiasForge bias card for a forex pair, showing the directional macro read, the conviction score and the invalidation level where the bias is closed — the read a funded trader acts on"
+          />
 
-        {/* Calls out the invalidation block on the card itself.
+          {/* Calls out the invalidation block. The two bands occupy 73.1% and
+              26.9% of the frame, and within the lower band the block runs from
+              8.8% to 91.8% — so in frame coordinates it starts at 75.3% and is
+              22.3% tall. Percentages, so it tracks the frame at every width. */}
+          <div
+            className="absolute pointer-events-none"
+            style={{ left: '3.3%', right: '3.2%', top: '75.3%', height: '22.3%' }}
+            aria-hidden="true"
+          >
+            <div className="rounded-md border border-cyan-400/70 bg-cyan-400/[0.07] w-full h-full" />
+          </div>
 
-            Measured by scanning the capture for the block's rose border, not
-            guessed — and rescanned on every recapture, because each crop has had
-            a different aspect and the block has not landed twice in the same
-            place. On this one (600x792) it runs y 658-780 / x 20-580: 83.1%
-            down, 15.5% tall, ~3.3% inset. That bottom edge is 98.6% of the
-            image, so the label sits ABOVE the block rather than under it.
-
-            Percentages, so it tracks the image at every width. */}
-        <div
-          className="absolute pointer-events-none"
-          style={{ left: '3.3%', right: '3.2%', top: '83.1%', height: '15.5%' }}
-          aria-hidden="true"
-        >
-          <div className="rounded-md border border-cyan-400/70 bg-cyan-400/[0.07] w-full h-full" />
-        </div>
           <figcaption className="mt-3 flex items-center gap-2 text-[12.5px] text-cyan-400">
             <span className="inline-block w-6 h-px bg-cyan-400/70 shrink-0" aria-hidden="true" />
             The invalidation level — the price that closes this bias

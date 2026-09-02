@@ -6,7 +6,7 @@ export default function Hero() {
   const compass = useCompassData()
 
   return (
-    <section className="relative px-5 sm:px-8 pt-28 pb-16 sm:pt-32 sm:pb-24 overflow-hidden">
+    <section className="relative px-5 sm:px-8 pt-20 pb-16 sm:pt-20 sm:pb-16 overflow-hidden">
       {/* Ambient wash — hero only, nothing behind any other section. */}
       <div className="bf-ambient" aria-hidden="true" />
 

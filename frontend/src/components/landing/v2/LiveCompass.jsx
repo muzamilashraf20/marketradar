@@ -93,7 +93,7 @@ export default function LiveCompass({ rows, lastRun, ready, alsoScoring = [], ch
            because at the lg breakpoint the panel column is 429px, which would
            put cards at 197px — back under the dashboard width this rebuild
            exists to match. Stacked cards are full width and always legible. */
-        <ul className="grid grid-cols-1 xl:grid-cols-2 gap-2.5 p-3">
+        <ul className="grid grid-cols-1 lg:grid-cols-2 gap-2.5 p-3">
           {shown.map(row => (
             <BiasCard key={row.pair} row={row} justChanged={changed.has(row.pair)} />
           ))}
@@ -101,7 +101,7 @@ export default function LiveCompass({ rows, lastRun, ready, alsoScoring = [], ch
       ) : (
         /* Skeleton at the card footprint, so the swap to real data cannot shift
            anything below it. */
-        <ul className="grid grid-cols-1 xl:grid-cols-2 gap-2.5 p-3">
+        <ul className="grid grid-cols-1 lg:grid-cols-2 gap-2.5 p-3">
           {Array.from({ length: CARDS }, (_, i) => (
             <li
               key={i}

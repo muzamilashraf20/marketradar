@@ -622,13 +622,16 @@ function shapeEvents(json) {
 async function loadLiveData() {
   let compass = null;
   let events = null;
+  let calls = null;
   try {
-    const [c, e] = await Promise.allSettled([
+    const [c, e, k] = await Promise.allSettled([
       getJson(`${API_BASE}/api/macro-compass`),
       getJson(`${API_BASE}/api/calendar`),
+      getJson(`${API_BASE}/api/bias-calls`),
     ]);
     if (c.status === 'fulfilled') compass = shapeCompass(c.value);
     if (e.status === 'fulfilled') events = shapeEvents(e.value);
+    if (k.status === 'fulfilled' && k.value?.success && Array.isArray(k.value.calls)) calls = k.value.calls;
   } catch { /* fall through to the snapshot */ }
 
   // Whatever came back gets banked; whatever did not falls back to the last
@@ -637,11 +640,15 @@ async function loadLiveData() {
   let snap = {};
   try { snap = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')); } catch { /* first build */ }
 
-  const out = { compass: compass || snap.compass || null, events: events || snap.events || null };
-  if (compass || events) {
+  const out = {
+    compass: compass || snap.compass || null,
+    events: events || snap.events || null,
+    calls: calls || snap.calls || null,
+  };
+  if (compass || events || calls) {
     try { fs.writeFileSync(SNAPSHOT, JSON.stringify(out, null, 2)); } catch { /* read-only CI fs */ }
   }
-  return { ...out, fresh: { compass: !!compass, events: !!events } };
+  return { ...out, fresh: { compass: !!compass, events: !!events, calls: !!calls } };
 }
 
 // JSON destined for an inline <script>. Escaping "<" is what stops a string in
@@ -725,9 +732,9 @@ async function prerenderLanding() {
   fs.writeFileSync(path.join(DIST, 'app.html'), raw);
 
   const mod = await import(pathToFileURL(SSR_ENTRY).href);
-  const { compass, events, fresh } = await loadLiveData();
+  const { compass, events, calls, fresh } = await loadLiveData();
 
-  const markup = mod.render({ compass, events });
+  const markup = mod.render({ compass, events, calls });
 
   let html = raw
     .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(LANDING_TITLE)}</title>`)
@@ -750,7 +757,8 @@ async function prerenderLanding() {
   // with, and never flashes a skeleton over real numbers.
   const data =
     `<script>window.__BF_COMPASS__=${inlineJson(compass)};` +
-    `window.__BF_EVENTS__=${inlineJson(events)};</script>`;
+    `window.__BF_EVENTS__=${inlineJson(events)};` +
+    `window.__BF_CALLS__=${inlineJson(calls)};</script>`;
 
   const rootRe = /<div id="root">\s*<\/div>/i;
   if (!rootRe.test(html)) {
@@ -791,7 +799,8 @@ async function prerenderLanding() {
   const strong = compass?.rows?.length ?? 0;
   console.log(`      bias data: ${fresh.compass ? 'live' : compass ? 'snapshot' : 'NONE'}` +
               ` · biases baked: ${strong}${strong === 0 ? ' (compass hidden)' : ''}` +
-              ` · events: ${fresh.events ? 'live' : events ? 'snapshot' : 'NONE'}`);
+              ` · events: ${fresh.events ? 'live' : events ? 'snapshot' : 'NONE'}` +
+              ` · closed calls baked: ${calls?.length ?? 0}`);
   console.log(`  ✓ /about prerendered (${(Buffer.byteLength(aboutHtml) / 1024).toFixed(1)} kB)`);
   console.log('  ✓ app.html (SPA shell for every non-root route)');
 }

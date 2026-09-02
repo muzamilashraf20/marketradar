@@ -8,13 +8,15 @@ import { FAQ } from './faqData'
    the markup whether or not it is open — which is what the crawler reads. */
 export default function Faq() {
   return (
-    <section id="faq" className="px-5 sm:px-8 py-20 sm:py-28">
-      <div className="mx-auto max-w-3xl">
+    <section id="faq" className="px-5 sm:px-8 py-16">
+      <div className="mx-auto max-w-5xl">
         <p className="bf-eyebrow">Questions</p>
         <h2 className="bf-h2 mt-5">What traders ask before signing up.</h2>
 
         <div className="mt-12 bf-hairline-t">
-          {FAQ.map(({ q, a }) => (
+          {/* The first three are answered beside the pricing card. Repeating them
+              here would put the same copy on the page twice. */}
+          {FAQ.slice(3).map(({ q, a }) => (
             <details key={q} className="group bf-hairline-b">
               <summary className="flex items-start justify-between gap-6 py-5 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <h3 className="text-[15.5px] font-medium text-slate-100 leading-snug">{q}</h3>
