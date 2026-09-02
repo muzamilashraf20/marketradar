@@ -1,24 +1,43 @@
 import { useState } from 'react';
-import { Mail, Send } from 'lucide-react';
+import { Mail, Send, Loader2, AlertCircle } from 'lucide-react';
 import SimplePageLayout from '../components/common/SimplePageLayout';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const SUPPORT_EMAIL = 'support@biasforge.co';
 
 export default function Contact() {
   const [form, setForm] = useState({ name: '', email: '', message: '' });
   const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSubmit = () => {
-    if (!form.name || !form.email || !form.message) {
-      alert("Please fill all fields");
+  // This used to console.log the form and claim "Message Sent!" — the message
+  // went nowhere. Success is now only rendered after the API confirms the send.
+  const handleSubmit = async () => {
+    if (!form.name.trim() || !form.email.trim() || !form.message.trim()) {
+      setError('Please fill in your name, email and message.');
       return;
     }
-    
-    console.log("Form submitted:", form);
-    setSent(true);
-    
-    setTimeout(() => {
+
+    setSending(true);
+    setError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/contact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'We could not send your message.');
+      }
+      setSent(true);
       setForm({ name: '', email: '', message: '' });
-      setSent(false);
-    }, 2000);
+    } catch (e) {
+      setError(e.message || 'We could not send your message.');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -53,6 +72,13 @@ export default function Contact() {
               <div className="text-6xl mb-6">✅</div>
               <h3 className="text-2xl font-bold text-white mb-2">Message Sent!</h3>
               <p className="text-slate-400 text-lg">We'll get back to you within 24 hours.</p>
+              <button
+                type="button"
+                onClick={() => setSent(false)}
+                className="mt-6 text-sm text-cyan-400 hover:underline"
+              >
+                Send another message
+              </button>
             </div>
           ) : (
             <form className="space-y-6">
@@ -95,13 +121,24 @@ export default function Contact() {
                 />
               </div>
 
+              {error && (
+                <div className="flex items-start gap-2.5 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+                  <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+                  <p className="text-sm text-red-300 leading-relaxed">
+                    {error} You can also email us directly at{' '}
+                    <a href={`mailto:${SUPPORT_EMAIL}`} className="text-cyan-400 hover:underline">{SUPPORT_EMAIL}</a>.
+                  </p>
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={handleSubmit}
-                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-black font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-[1.02]"
+                disabled={sending}
+                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-black font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 disabled:cursor-not-allowed"
               >
-                <Send className="w-5 h-5" />
-                Send Message
+                {sending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                {sending ? 'Sending…' : 'Send Message'}
               </button>
             </form>
           )}

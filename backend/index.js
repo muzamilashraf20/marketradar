@@ -26,8 +26,6 @@ app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
-const LS_API_KEY = process.env.LEMONSQUEEZY_API_KEY
-const LS_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
@@ -199,10 +197,6 @@ async function getEconomicCalendar() {
   }
 }
 
-const PLANS = {
-  pro_monthly: { variantId: '1682107', name: 'BiasForge Pro Monthly' },
-  pro_annual: { variantId: '1682117', name: 'BiasForge Pro Annual' },
-}
 // ============================================
 // 📧 EMAIL + 📱 TELEGRAM SUBSCRIBERS
 // ============================================
@@ -608,62 +602,206 @@ app.post('/api/login', async (req, res) => {
 })
 
 // ============================================
-// 💳 PAYMENTS
+// 💳 BILLING — Gumroad
 // ============================================
-app.post('/api/checkout', async (req, res) => {
-  const { planKey } = req.body; const plan = PLANS[planKey]
-  if (!plan) return res.status(400).json({ error: 'Invalid plan' })
+// Gumroad has no Stripe-style billing portal. Nothing in their API mints a
+// customer-facing manage/cancel URL, and there is no cancel-subscription
+// endpoint — customers self-serve either from the "Manage membership" link in
+// their receipt email or from their Gumroad Library. What the API DOES give us
+// is a sales lookup by buyer email (the only billing identifier we persist —
+// user_plans stores no sale_id or subscription_id) plus resend_receipt. So the
+// Manage button's real action is: put that receipt, with its manage link, back
+// in the customer's inbox on demand. Everything else is an honest fallback.
+const GUMROAD_API = 'https://api.gumroad.com/v2'
+const GUMROAD_TOKEN = process.env.GUMROAD_ACCESS_TOKEN
+const GUMROAD_PRODUCT_ID = process.env.GUMROAD_PRODUCT_ID || null // optional narrowing
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@biasforge.co'
+
+// Minimal HTML escape — these fields are user-controlled and land in an email.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+// Resolve the caller's Supabase session. Replies 401 and returns null when the
+// caller isn't signed in, so routes can `if (!user) return` and move on.
+async function requireUser(req, res) {
+  const authHeader = req.headers.authorization
+  if (!authHeader) { res.status(401).json({ error: 'Not authenticated' }); return null }
   try {
-    const response = await axios.post('https://api.lemonsqueezy.com/v1/checkouts', { data: { type: 'checkouts', attributes: { checkout_data: {}, product_options: { redirect_url: 'https://www.biasforge.co/?payment=success' } }, relationships: { store: { data: { type: 'stores', id: String(LS_STORE_ID) } }, variant: { data: { type: 'variants', id: String(plan.variantId) } } } } }, { headers: { 'Authorization': `Bearer ${LS_API_KEY}`, 'Content-Type': 'application/vnd.api+json', 'Accept': 'application/vnd.api+json' } })
-    res.json({ success: true, url: response.data.data.attributes.url })
-  } catch (e) { res.status(500).json({ error: 'Checkout failed' }) }
-})
-app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  try {
-    const event = req.headers['x-event-name']
-    const payload = JSON.parse(req.body)
-    const email = payload.data?.attributes?.user_email?.toLowerCase()?.trim()
-    const variantId = String(payload.data?.attributes?.variant_id || '')
-
-    console.log(`💳 Webhook: ${event} — ${email} — variant ${variantId}`)
-
-    if ((event === 'subscription_created' || event === 'order_created') && email) {
-      const tier = 'pro'
-
-      // Try to find user by email and update their plan
-      const { data: authUsers } = await supabase.auth.admin.listUsers()
-      const matchedUser = authUsers?.users?.find(u => u.email?.toLowerCase() === email)
-
-      if (matchedUser) {
-        await supabase.from('user_plans').upsert({
-          user_id: matchedUser.id,
-          email,
-          tier,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' })
-        console.log(`✅ Plan upgraded to PRO: ${email} (${matchedUser.id})`)
-      } else {
-        // User not found by auth, upsert by email
-        await supabase.from('user_plans').upsert({
-          email,
-          tier,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'email' })
-        console.log(`✅ Plan upgraded to PRO by email: ${email}`)
-      }
-    }
-
-    if (event === 'subscription_cancelled' && email) {
-      await supabase.from('user_plans').update({
-        tier: 'free',
-        updated_at: new Date().toISOString(),
-      }).eq('email', email)
-      console.log(`⚠️ Plan downgraded to FREE: ${email}`)
-    }
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error } = await supabase.auth.getUser(token)
+    if (error || !user) { res.status(401).json({ error: 'Invalid token' }); return null }
+    return user
   } catch (e) {
-    console.error('Webhook error:', e.message)
+    res.status(401).json({ error: 'Invalid token' }); return null
   }
-  res.json({ received: true })
+}
+
+// Newest recurring sale for this email. NEVER throws: a missing token or a
+// Gumroad outage resolves to { ok:false, sale:null } so callers degrade to the
+// instructions + cancellation-request path instead of a dead end.
+async function findGumroadSale(email) {
+  if (!GUMROAD_TOKEN) return { ok: false, reason: 'no_token', sale: null, active: false }
+  try {
+    const params = { access_token: GUMROAD_TOKEN, email }
+    if (GUMROAD_PRODUCT_ID) params.product_id = GUMROAD_PRODUCT_ID
+    const r = await axios.get(`${GUMROAD_API}/sales`, { params, timeout: 12000 })
+    const all = Array.isArray(r.data?.sales) ? r.data.sales : []
+    const newestFirst = all
+      .filter(s => s.is_recurring_billing && !s.refunded)
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    // Prefer a live subscription; fall back to the most recent recurring sale so
+    // someone already cancelled (but still inside their paid period) can still
+    // pull their receipt.
+    const live = newestFirst.find(s => !s.cancelled && !s.ended)
+    const sale = live || newestFirst[0] || null
+    return { ok: true, reason: null, sale, active: !!live }
+  } catch (e) {
+    console.error('Gumroad sales lookup failed:', e?.response?.status || '', e.message)
+    return { ok: false, reason: 'api_error', sale: null, active: false }
+  }
+}
+
+// What can this user actually do? Drives which controls the Billing panel shows.
+app.get('/api/billing/status', async (req, res) => {
+  const user = await requireUser(req, res); if (!user) return
+  try {
+    const { data: planRow } = await supabase
+      .from('user_plans').select('tier').eq('user_id', user.id).single()
+    const { ok, reason, sale, active } = await findGumroadSale(user.email)
+    res.json({
+      success: true,
+      email: user.email,
+      tier: planRow?.tier || 'free',
+      canResendReceipt: !!sale,
+      lookup: ok ? 'ok' : reason, // 'no_token' | 'api_error' — panel explains, never blanks
+      subscription: sale ? {
+        productName: sale.product_name || null,
+        price: sale.formatted_display_price || null,
+        recurrence: sale.subscription_duration || null,
+        since: sale.created_at || null,
+        active,
+      } : null,
+      supportEmail: SUPPORT_EMAIL,
+    })
+  } catch (e) {
+    console.error('Billing status error:', e.message)
+    res.status(500).json({ error: 'status_failed', message: 'Could not read your billing status.', supportEmail: SUPPORT_EMAIL })
+  }
+})
+
+// Ask Gumroad to re-send the purchase receipt — the email that carries the
+// "Manage membership" link the customer needs in order to cancel.
+app.post('/api/billing/resend-receipt', async (req, res) => {
+  const user = await requireUser(req, res); if (!user) return
+  const { ok, reason, sale } = await findGumroadSale(user.email)
+  if (!sale) {
+    return res.status(404).json({
+      error: ok ? 'no_sale' : reason,
+      message: ok
+        ? `We could not find a Gumroad purchase under ${user.email}.`
+        : 'We could not reach Gumroad just now.',
+      supportEmail: SUPPORT_EMAIL,
+    })
+  }
+  try {
+    await axios.post(
+      `${GUMROAD_API}/sales/${encodeURIComponent(sale.id)}/resend_receipt`,
+      null,
+      { params: { access_token: GUMROAD_TOKEN }, timeout: 12000 }
+    )
+    console.log(`Receipt resent for ${user.email}`)
+    res.json({ success: true, sentTo: user.email })
+  } catch (e) {
+    console.error('Gumroad resend_receipt failed:', e?.response?.status || '', e.message)
+    res.status(502).json({ error: 'resend_failed', message: 'Gumroad would not re-send the receipt.', supportEmail: SUPPORT_EMAIL })
+  }
+})
+
+// The safety net: a cancellation request that lands in a human inbox. Only
+// answers success once Resend has actually accepted the email.
+app.post('/api/billing/cancel-request', async (req, res) => {
+  const user = await requireUser(req, res); if (!user) return
+  const note = String(req.body?.note || '').trim().slice(0, 2000)
+  try {
+    const { data: planRow } = await supabase
+      .from('user_plans').select('tier, updated_at').eq('user_id', user.id).single()
+    const { sale } = await findGumroadSale(user.email)
+    const when = new Date().toISOString()
+    const saleRows = sale
+      ? `<p><b>Gumroad sale id:</b> ${esc(sale.id)}<br><b>Subscription id:</b> ${esc(sale.subscription_id || '—')}<br><b>Product:</b> ${esc(sale.product_name || '—')} (${esc(sale.formatted_display_price || '—')})</p>`
+      : `<p><b>Gumroad:</b> no matching sale resolved for this email — look them up manually in the Gumroad dashboard.</p>`
+    const { error } = await resend.emails.send({
+      from: `BiasForge <${FROM_EMAIL}>`,
+      to: [SUPPORT_EMAIL],
+      replyTo: user.email,
+      subject: `Cancellation request — ${user.email}`,
+      html: `<h2>Cancellation request</h2>
+<p><b>Account email:</b> ${esc(user.email)}<br><b>User id:</b> ${esc(user.id)}<br><b>Plan tier:</b> ${esc(planRow?.tier || 'unknown')}<br><b>Requested at:</b> ${esc(when)}</p>
+${saleRows}
+${note ? `<p><b>Their note:</b><br>${esc(note).replace(/\n/g, '<br>')}</p>` : ''}
+<p>Cancel it from the Gumroad dashboard → Sales → search this email → Cancel subscription, then reply to this email to confirm.</p>`,
+    })
+    if (error) throw new Error(error.message || 'Resend rejected the message')
+    console.log(`Cancellation request sent to support for ${user.email}`)
+    res.json({ success: true, supportEmail: SUPPORT_EMAIL })
+  } catch (e) {
+    console.error('Cancellation request failed:', e.message)
+    res.status(502).json({
+      error: 'send_failed',
+      message: 'We could not submit your request automatically.',
+      supportEmail: SUPPORT_EMAIL,
+    })
+  }
+})
+
+// ============================================
+// ✉️ CONTACT FORM
+// ============================================
+// Was a console.log that told the user "Message Sent!" and sent nothing.
+const CONTACT_RATE_LIMIT = 5 // messages per IP per hour
+const contactRateMap = new Map()
+function contactRateLimiter(req, res, next) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown'
+  const now = Date.now()
+  let entry = contactRateMap.get(ip)
+  if (!entry || now > entry.resetAt) { entry = { count: 0, resetAt: now + 60 * 60 * 1000 }; contactRateMap.set(ip, entry) }
+  entry.count++
+  if (entry.count > CONTACT_RATE_LIMIT) {
+    return res.status(429).json({ error: 'rate_limited', message: 'Too many messages from this connection — please try again later.', supportEmail: SUPPORT_EMAIL })
+  }
+  if (contactRateMap.size > 5000) contactRateMap.clear()
+  next()
+}
+
+app.post('/api/contact', contactRateLimiter, async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 200)
+  const email = String(req.body?.email || '').trim().slice(0, 320)
+  const message = String(req.body?.message || '').trim().slice(0, 5000)
+  if (!name || !email || !message) {
+    return res.status(400).json({ error: 'missing_fields', message: 'Name, email and message are all required.', supportEmail: SUPPORT_EMAIL })
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ error: 'bad_email', message: "That email address doesn't look right.", supportEmail: SUPPORT_EMAIL })
+  }
+  try {
+    const { error } = await resend.emails.send({
+      from: `BiasForge <${FROM_EMAIL}>`,
+      to: [SUPPORT_EMAIL],
+      replyTo: email,
+      subject: `Contact form — ${name}`,
+      html: `<h2>New contact message</h2>
+<p><b>From:</b> ${esc(name)} &lt;${esc(email)}&gt;<br><b>Received:</b> ${esc(new Date().toISOString())}</p>
+<hr>
+<p>${esc(message).replace(/\n/g, '<br>')}</p>`,
+    })
+    if (error) throw new Error(error.message || 'Resend rejected the message')
+    console.log(`Contact message from ${email}`)
+    res.json({ success: true })
+  } catch (e) {
+    console.error('Contact form send failed:', e.message)
+    res.status(502).json({ error: 'send_failed', message: 'We could not send your message.', supportEmail: SUPPORT_EMAIL })
+  }
 })
 
 // ============================================

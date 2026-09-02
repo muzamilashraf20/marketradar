@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@lemonsqueezy/lemonsqueezy.js": "^4.0.0",
     "@supabase/supabase-js": "^2.106.2",
     "@tailwindcss/vite": "^4.2.2",
     "axios": "^1.16.0",
