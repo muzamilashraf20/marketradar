@@ -3085,6 +3085,62 @@ app.get('/api/macro-compass', async (req, res) => {
   }
 })
 
+/* Closed bias calls, for the landing page's record section.
+
+   Two things about bias_history_v2 make this less trivial than a select:
+
+   1. A closed row NULLS its invalidation_level. The level lives on the `running`
+      row that opened the call, so each closure is paired back to its opening by
+      pair + direction. Excluding direction='FLAT' first is what makes that pair
+      up cleanly — flat-state closures are not calls and have no level, and they
+      were what broke the match.
+
+   2. There is no "held" outcome. The engine closes a bias for exactly three
+      reasons, and only one of them is price crossing the line:
+        level_break      - price crossed the invalidation level
+        conviction_floor - conviction fell below the floor, call withdrawn
+        regime_reversal  - the regime flipped underneath it
+      The reason is passed through verbatim rather than collapsed into
+      held/invalidated, because calling a withdrawn call "held" would assert an
+      outcome the engine never measured.
+
+   No aggregate is computed or returned here. Per-call facts only. */
+app.get('/api/bias-calls', async (req, res) => {
+  try {
+    if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
+    const { data, error } = await supabase
+      .from('bias_history_v2')
+      .select('pair,direction,status,closed_reason,invalidation_level,created_at')
+      .neq('direction', 'FLAT')
+      .order('created_at', { ascending: true })
+      .limit(2000)
+    if (error) throw error
+
+    const opens = new Map()
+    const calls = []
+    for (const r of data || []) {
+      const k = `${r.pair}|${r.direction}`
+      if (r.status === 'running') { opens.set(k, r); continue }
+      if (r.status !== 'closed') continue
+      const level = r.invalidation_level ?? opens.get(k)?.invalidation_level ?? null
+      calls.push({
+        pair: r.pair,
+        direction: r.direction,
+        invalidationLevel: level,
+        outcome: r.closed_reason || 'closed',
+        openedAt: opens.get(k)?.created_at || null,
+        closedAt: r.created_at,
+      })
+    }
+    calls.reverse()   // newest first
+    const limit = Math.min(parseInt(req.query.limit || '24', 10) || 24, 60)
+    res.json({ success: true, calls: calls.slice(0, limit), total: calls.length })
+  } catch (e) {
+    console.error('bias-calls error:', e?.message)
+    res.json({ success: false, error: 'Failed to load bias calls' })
+  }
+})
+
 app.get('/api/today-bias', async (req, res) => {
   // The client derives its own "stale" label from this rather than hardcoding a
   // number that can fall behind the engine's cadence.
