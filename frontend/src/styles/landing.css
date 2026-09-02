@@ -333,3 +333,22 @@
   .bf-card-lift:hover { transform: none; }
   .bf-navlink::after { transition: none; }
 }
+
+/* Drawdown bars sweeping out to their value.
+
+   scaleX on an inner element rather than an animated width: the transform runs
+   on the compositor, reserves no space and cannot shift the money figures
+   beside it. The resting width is --w, so with JavaScript disabled — where
+   .bf-js never lands — the bar simply renders at its value with no animation. */
+.bf-bar { width: var(--w, 0%); transform-origin: left center; }
+.bf-js .bf-bar { animation: bf-bar-fill 950ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: var(--d, 0ms); }
+@keyframes bf-bar-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+/* The ten impact segments filling left to right as a news card lands. */
+.bf-js .bf-seg { animation: bf-seg-in 260ms ease-out both; animation-delay: var(--d, 0ms); }
+@keyframes bf-seg-in { from { opacity: 0; transform: scaleX(0.2); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .bf-js .bf-bar,
+  .bf-js .bf-seg { animation: none; }
+}

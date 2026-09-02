@@ -1,11 +1,5 @@
-import { Section, Lede, Ref, Screenshot } from './Section'
-
-const STATS = [
-  'Daily drawdown tracking',
-  'Total drawdown tracking',
-  'Max risk per trade',
-  'Pre-trade check',
-]
+import { Section, Lede, Ref } from './Section'
+import DrawdownLive from './DrawdownLive'
 
 /* Section 5 — Prop Firm Mode, its own full section. No firm is named in the copy:
    the screenshot showing one in a dropdown is fine, a written endorsement is not. */
@@ -21,28 +15,18 @@ export default function PropFirmMode() {
         your remaining room before you take it.
       </Lede>
 
-      {/* The daily and total drawdown pair, cropped from the full-page capture.
-          Deliberately NOT the challenge-progress card that sits above it: that
-          one shows a running P&L against a target, and a profit figure on this
-          page would read as a claim about results whatever the caption said. */}
-      <div className="mt-14 sm:mt-16 max-w-[640px]">
-        <Screenshot
-          src="/screens/03-propfirm.png"
-          srcW={5120} srcH={3598}
-          crop={{ x: 29.7, y: 52.4, w: 50, h: 10.2 }}
-          alt="BiasForge Prop Firm Mode showing a prop firm trader's daily and total drawdown against their funded account limits, with the room remaining before a breach"
-        />
+      {/* Rendered, not photographed. Still no profit figure anywhere in it: the
+          bars measure loss used against the limit, which is the thing that ends
+          a funded account. A running P&L on this page would read as a claim
+          about results whatever the caption said. */}
+      <div className="mt-10 sm:mt-12" data-reveal>
+        <DrawdownLive />
       </div>
 
-      <ul className="mt-10 grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {STATS.map(s => (
-          <li key={s} className="bf-card px-4 py-4 text-[13.5px] leading-snug text-slate-300">
-            {s}
-          </li>
-        ))}
-      </ul>
-
-      <p className="mt-8 text-[14px] bf-t3">
+      {/* The chip row that used to sit here read "Daily drawdown tracking" and
+          "Total drawdown tracking" immediately above a panel that now shows
+          both of them, tracked, with the numbers on them. */}
+      <p className="mt-8 text-[14px] bf-t3" data-reveal>
         Preset rule sets for the major prop firms, or enter your own.
       </p>
     </Section>

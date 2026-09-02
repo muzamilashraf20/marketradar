@@ -4835,8 +4835,20 @@ app.get('/api/strength', async (req, res) => {
 // ============================================
 // 📰 NEWS
 // ============================================
+/* Optional narrowing for callers that want the top of the feed rather than all
+   of it — ?minImpact=7&limit=4. Anything missing or unparseable is ignored, so
+   an unfiltered request returns exactly what it always did. */
+function sliceNews(articles, q = {}) {
+  let out = articles
+  const min = Number(q.minImpact)
+  if (Number.isFinite(min)) out = out.filter(a => (a.impact ?? 0) >= min)
+  const limit = Number(q.limit)
+  if (Number.isFinite(limit) && limit > 0) out = out.slice(0, Math.min(limit, 60))
+  return out
+}
+
 app.get('/api/news', async (req, res) => {
-  if (isCacheFresh('latest_news')) return res.json({ success: true, articles: getCached('latest_news') })
+  if (isCacheFresh('latest_news')) return res.json({ success: true, articles: sliceNews(getCached('latest_news'), req.query) })
   const feeds=[{name:'CNBC',url:'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'},{name:'Nasdaq',url:'https://www.nasdaq.com/feed/rssoutbound?category=Markets'},{name:'Fox Business',url:'https://feeds.foxbusiness.com/foxbusiness/markets'},{name:'Reuters',url:'https://feeds.reuters.com/reuters/topNews'},{name:'Investing.com',url:'https://www.investing.com/rss/news.rss'}]
   try {
     const results=await Promise.allSettled(feeds.map(f=>rssParser.parseURL(f.url).then(p=>p.items.slice(0,12).map(i=>({source:f.name,title:i.title||'',summary:i.contentSnippet||'',url:i.link||'',publishedAt:i.pubDate?new Date(i.pubDate).toISOString():new Date().toISOString()})))))
@@ -4857,7 +4869,12 @@ app.get('/api/news', async (req, res) => {
     }
     scored.forEach(a=>{delete a._unscored})
     scored.sort((a,b)=>b.impact!==a.impact?b.impact-a.impact:new Date(b.publishedAt)-new Date(a.publishedAt))
-    setCache('latest_news',scored);res.json({success:true,articles:scored})
+    setCache('latest_news',scored)
+    // The full set is what the dashboard feed wants and what gets cached. The
+    // landing page wants the few highest-impact ones and nothing else, so it can
+    // ask for them rather than pulling ~50 articles to render four cards.
+    // Both filters are optional; without them the response is unchanged.
+    res.json({success:true,articles:sliceNews(scored,req.query)})
   } catch(e){res.status(500).json({success:false,error:'News failed'})}
 })
 
