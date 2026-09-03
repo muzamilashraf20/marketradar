@@ -35,7 +35,10 @@ export default function DataFlow() {
       <div className="relative overflow-x-auto -mx-5 sm:-mx-8 px-5 sm:px-8">
         <div className="min-w-[580px]">
           <svg
-            viewBox="0 0 800 440"
+            /* Cropped to the content. The node rows run y 56-384, so the original
+               440-unit box carried 56 units of nothing at the top and the same at
+               the bottom — about 150px of dead space at the width this renders at. */
+            viewBox="0 36 800 368"
             width="100%"
             className="overflow-visible"
             role="img"
@@ -162,7 +165,7 @@ export default function DataFlow() {
         ← swipe to see full diagram →
       </p>
 
-      <p className="text-center text-[14px] bf-t3 mt-10 max-w-xl mx-auto leading-relaxed">
+      <p className="text-center text-[14px] bf-t3 mt-6 max-w-xl mx-auto leading-relaxed">
         All sources processed simultaneously — no manual interpretation, no guesswork.
       </p>
     </div>

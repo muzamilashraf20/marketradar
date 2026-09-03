@@ -40,29 +40,62 @@ export const trimArticle = a => ({
 
 /* Which headlines belong on a forex page.
 
-   The feed covers markets generally and scores impact honestly, which is how an
-   activist stake in Deutsche Telekom and a casino operator's going-concern
-   warning both arrive at 8/10. Correct scores, wrong page. A first pass at this
-   matched any tag containing "bond" or "gold" and let both of those straight
-   through — so the test is now the tag's leading symbol against a fixed list of
-   currencies, metals, energy and rates, plus a small set of genuinely macro
-   categories. "Policy" is not on that list: it was carrying healthcare and data
-   centres.
+   Two filters, because one in either direction was not enough.
 
-   Nothing is re-scored and nothing is invented. Anything that fails is simply
-   not shown, and if that leaves nothing the panel does not render — the section
-   keeps its copy either way. Two real macro headlines beat four with two
-   earnings stories among them. */
-const MACRO_CATEGORY = /^(fx|forex|currenc|central bank|monetary|trade policy|geopolit|inflation|econom|rates?|yields?|commodit|fiscal|tariff)/i
+   Requiring a macro tag alone was correct and useless: on a day the wires were
+   full of earnings, one article out of forty-six qualified and the section sat
+   there showing a single card. Blocking single-company stories alone let a
+   Clippers suspension and a state supreme court petition through, because the
+   feed files anything it cannot categorise as "General" with no tags at all.
+
+   So a headline has to clear both. It must not look like a single-company story
+   — an earnings beat, a merger, an activist stake, a chief executive leaving, a
+   corporate credit blow-up — and it must carry something macro: a currency, a
+   metal, energy, a central bank, rates, inflation, jobs, tariffs, or market-wide
+   risk. Categories drift between scoring runs, so the tags do most of the work
+   and the category is a second chance rather than the test.
+
+   A ticker in the tags is the giveaway for the first half. AAPL, AVGO, LHX and
+   SHEL all look like currency codes at a glance — three to five capitals — so
+   the check is against the currency list, not against shape alone. */
+const CORPORATE_CATEGORY =
+  /earnings|guidance|m&a|merger|acquisition|activis|buyback|dividend|ipo|corporate|governance|leadership|credit|product|investment/i
+
+const CURRENCY = /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY)$/i
+const TICKER = /^[A-Z]{1,5}$/
+
+const MACRO_CATEGORY =
+  /^(fx|forex|currenc|central bank|monetary|trade|geopolit|inflation|econom|rates?|yields?|commodit|fiscal|tariff|market sentiment|policy)/i
 const MACRO_TAG =
-  /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Yields?|Rates?|Bonds?|Tariffs?|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC|Inflation|CPI|NFP)\b/i
+  /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC|Rates?|Yields?|Inflation|CPI|NFP|Jobs|Labou?r|Growth|Recession|Tariffs?|Trade War|Equities|Volatility|Risk)\b/i
+
+const bareTag = t => String(t).trim().replace(/[↑↓→←]/g, '')
+
+const isSingleName = a =>
+  CORPORATE_CATEGORY.test(a.category || '') ||
+  (a.marketTags || []).some(t => {
+    const s = bareTag(t)
+    return TICKER.test(s) && !CURRENCY.test(s)
+  })
 
 const isMacro = a =>
   MACRO_CATEGORY.test(a.category || '') ||
-  (a.marketTags || []).some(t => MACRO_TAG.test(String(t).trim()))
+  (a.marketTags || []).some(t => MACRO_TAG.test(bareTag(t)))
+
+export const isRelevant = a => !isSingleName(a) && isMacro(a)
+
+/* A currency, metal or central bank in the tags sorts to the front, so on a
+   quiet day the forex story is still card one and market-wide risk fills in
+   behind it. */
+const FX_TAG = /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC)\b/i
+const isFx = a => (a.marketTags || []).some(t => FX_TAG.test(bareTag(t)))
+
+export const rankNews = rows => [...rows.filter(isFx), ...rows.filter(a => !isFx(a))]
 
 export const selectNews = articles =>
-  (articles || []).filter(newsIsPublishable).filter(isMacro).slice(0, NEWS_CARDS).map(trimArticle)
+  rankNews((articles || []).filter(newsIsPublishable).filter(isRelevant))
+    .slice(0, NEWS_CARDS)
+    .map(trimArticle)
 
 export const timeAgo = iso => {
   if (!iso) return ''
@@ -89,7 +122,7 @@ export function useLandingNews() {
 
   useEffect(() => {
     let alive = true
-    fetch(`${API_BASE}/api/news?minImpact=6&limit=12`)
+    fetch(`${API_BASE}/api/news?minImpact=5&limit=50`)
       .then(r => r.json())
       .then(json => {
         if (!alive) return

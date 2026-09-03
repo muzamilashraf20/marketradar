@@ -46,45 +46,47 @@ export default function TrackRecord() {
         level, and how each one ended.
       </Lede>
 
-      {(
-        <ul className="mt-10 sm:mt-12 grid sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-          {(ready ? calls : Array.from({ length: 6 }, () => null)).map((c, i) => {
-            if (!c) {
-              return (
-                <li key={`s-${i}`} className="bf-card p-4 h-[132px]">
-                  <div className="bf-skeleton h-3.5 w-24" style={{ animationDelay: `${i * 80}ms` }} />
-                  <div className="bf-skeleton h-3 w-32 mt-4" style={{ animationDelay: `${i * 80}ms` }} />
-                  <div className="bf-skeleton h-3 w-full mt-5" style={{ animationDelay: `${i * 80}ms` }} />
-                </li>
-              )
-            }
-            const o = outcomeFor(c.outcome)
-            const level = fmtLevel(c.pair, c.invalidationLevel)
-            const isSell = c.direction === 'SELL'
+      {/* Four across, not three. The record only grows — the engine has closed
+          22 biases where it had 17 — and at three columns every new call added a
+          third of a row to the page. Four keeps the cards at 260px, still wider
+          than the pair, the level and the outcome need. */}
+      <ul className="mt-10 sm:mt-12 grid sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        {(ready ? calls : Array.from({ length: 6 }, () => null)).map((c, i) => {
+          if (!c) {
             return (
-              <li key={`${c.pair}-${c.closedAt}`} className="bf-card p-4 flex flex-col" data-reveal>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="bf-mono text-[14px] font-bold tracking-tight">
-                    <span className={isSell ? 'text-rose-400' : 'text-emerald-400'}>{c.direction}</span>{' '}
-                    <span className="text-slate-100">{fmtPair(c.pair)}</span>
-                  </span>
-                  <span className="bf-mono text-[11px] bf-t3 shrink-0">{fmtDate(c.closedAt)}</span>
-                </div>
-
-                <p className="mt-3 text-[12px] bf-t3">
-                  Invalidation level{' '}
-                  <span className="bf-mono text-slate-300">{level || '—'}</span>
-                </p>
-
-                <p className={`mt-auto pt-3 flex items-start gap-2 text-[12px] leading-snug ${o.tone}`}>
-                  <span className={`mt-[5px] w-1.5 h-1.5 rounded-full shrink-0 ${o.dot}`} aria-hidden="true" />
-                  {o.label(level)}
-                </p>
+              <li key={`s-${i}`} className="bf-card p-4 h-[132px]">
+                <div className="bf-skeleton h-3.5 w-24" style={{ animationDelay: `${i * 80}ms` }} />
+                <div className="bf-skeleton h-3 w-32 mt-4" style={{ animationDelay: `${i * 80}ms` }} />
+                <div className="bf-skeleton h-3 w-full mt-5" style={{ animationDelay: `${i * 80}ms` }} />
               </li>
             )
-          })}
-        </ul>
-      )}
+          }
+          const o = outcomeFor(c.outcome)
+          const level = fmtLevel(c.pair, c.invalidationLevel)
+          const isSell = c.direction === 'SELL'
+          return (
+            <li key={`${c.pair}-${c.closedAt}`} className="bf-card p-4 flex flex-col" data-reveal>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="bf-mono text-[14px] font-bold tracking-tight">
+                  <span className={isSell ? 'text-rose-400' : 'text-emerald-400'}>{c.direction}</span>{' '}
+                  <span className="text-slate-100">{fmtPair(c.pair)}</span>
+                </span>
+                <span className="bf-mono text-[11px] bf-t3 shrink-0">{fmtDate(c.closedAt)}</span>
+              </div>
+
+              <p className="mt-3 text-[12px] bf-t3">
+                Invalidation level{' '}
+                <span className="bf-mono text-slate-300">{level || '—'}</span>
+              </p>
+
+              <p className={`mt-auto pt-3 flex items-start gap-2 text-[12px] leading-snug ${o.tone}`}>
+                <span className={`mt-[5px] w-1.5 h-1.5 rounded-full shrink-0 ${o.dot}`} aria-hidden="true" />
+                {o.label(level)}
+              </p>
+            </li>
+          )
+        })}
+      </ul>
     </Section>
   )
 }

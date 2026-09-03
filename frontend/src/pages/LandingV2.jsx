@@ -30,13 +30,14 @@ export default function LandingV2() {
       <Nav />
       <main>
         <Hero />
-        {/* Name the problem, then answer it, then show the thing that answers it. */}
+        {/* The map of what the engine reads sits directly under the two live
+            bias cards, so "trading without a map" lands against one. */}
+        <Inside />
         <Problem />
         <CompassVsSignal />
         <Direction />
         <Noise />
         <PropFirmMode />
-        <Inside />
         <NoCall />
         {/* Individual past calls, pulled live. No aggregate anywhere in it. */}
         <TrackRecord />

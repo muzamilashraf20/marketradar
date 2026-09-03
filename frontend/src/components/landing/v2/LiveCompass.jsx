@@ -89,11 +89,14 @@ export default function LiveCompass({ rows, lastRun, ready, alsoScoring = [], ch
           </a>
         </div>
       ) : ready ? (
-        /* Stacked below xl, two up above it. The two-up only engages at xl
-           because at the lg breakpoint the panel column is 429px, which would
-           put cards at 197px — back under the dashboard width this rebuild
-           exists to match. Stacked cards are full width and always legible. */
-        <ul className="grid grid-cols-1 lg:grid-cols-2 gap-2.5 p-3">
+        /* Two up when there are two. A single card in a two-column grid left
+           the other half of the panel empty, which read as a card that had
+           failed to load rather than as the engine publishing one bias — and
+           one bias is a normal state: right now four majors sit at Grade D and
+           two are flat, so only two clear the floor. On the days it is one,
+           that one takes the full width — which is also the width the card was
+           designed at, so nothing has to shrink to fill the row. */
+        <ul className={`grid gap-2.5 p-3 ${shown.length > 1 ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
           {shown.map(row => (
             <BiasCard key={row.pair} row={row} justChanged={changed.has(row.pair)} />
           ))}

@@ -633,18 +633,31 @@ const NEWS_BANNED =
 
 function shapeNews(json) {
   if (!json?.success || !Array.isArray(json.articles)) return null;
-  /* Mirrors isMacro() in useLandingNews.js — see the note there. The two have
-     to agree or the static HTML and the client render different headlines. */
-  const MACRO_CATEGORY = /^(fx|forex|currenc|central bank|monetary|trade policy|geopolit|inflation|econom|rates?|yields?|commodit|fiscal|tariff)/i;
+  /* Mirrors isRelevant()/rankNews() in useLandingNews.js — see the long note
+     there for why it takes two passes. The two have to agree or the static HTML
+     and the client render different headlines. */
+  const CORPORATE_CATEGORY =
+    /earnings|guidance|m&a|merger|acquisition|activis|buyback|dividend|ipo|corporate|governance|leadership|credit|product|investment/i;
+  const CURRENCY = /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY)$/i;
+  const TICKER = /^[A-Z]{1,5}$/;
+  const MACRO_CATEGORY =
+    /^(fx|forex|currenc|central bank|monetary|trade|geopolit|inflation|econom|rates?|yields?|commodit|fiscal|tariff|market sentiment|policy)/i;
   const MACRO_TAG =
-    /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Yields?|Rates?|Bonds?|Tariffs?|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC|Inflation|CPI|NFP)\b/i;
+    /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC|Rates?|Yields?|Inflation|CPI|NFP|Jobs|Labou?r|Growth|Recession|Tariffs?|Trade War|Equities|Volatility|Risk)\b/i;
+  const FX_TAG =
+    /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC)\b/i;
+  const bareTag = t => String(t).trim().replace(/[↑↓→←]/g, '');
+  const isSingleName = a =>
+    CORPORATE_CATEGORY.test(a.category || '') ||
+    (a.marketTags || []).some(t => { const x = bareTag(t); return TICKER.test(x) && !CURRENCY.test(x); });
   const isMacro = a =>
-    MACRO_CATEGORY.test(a.category || '') ||
-    (a.marketTags || []).some(t => MACRO_TAG.test(String(t).trim()));
+    MACRO_CATEGORY.test(a.category || '') || (a.marketTags || []).some(t => MACRO_TAG.test(bareTag(t)));
+  const isFx = a => (a.marketTags || []).some(t => FX_TAG.test(bareTag(t)));
 
-  const rows = json.articles
+  const clean = json.articles
     .filter(a => a?.title && !NEWS_BANNED.test(a.title) && !NEWS_BANNED.test(a.oneliner || ''))
-    .filter(isMacro)
+    .filter(a => !isSingleName(a) && isMacro(a));
+  const rows = [...clean.filter(isFx), ...clean.filter(a => !isFx(a))]
     .slice(0, 4)
     .map(({ title, source, category, impact, oneliner, marketTags, publishedAt }) => ({
       title, source, category, impact,
@@ -668,7 +681,7 @@ async function loadLiveData() {
       // Slowest endpoint on the API: cold, it fetches five RSS feeds and scores
       // anything unseen before it answers. 12s was not enough and the section
       // silently baked empty.
-      getJson(`${API_BASE}/api/news?minImpact=6&limit=12`, 45000),
+      getJson(`${API_BASE}/api/news?minImpact=5&limit=50`, 45000),
     ]);
     if (c.status === 'fulfilled') compass = shapeCompass(c.value);
     if (e.status === 'fulfilled') events = shapeEvents(e.value);
