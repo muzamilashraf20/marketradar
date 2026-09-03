@@ -8,6 +8,17 @@ const isServer = typeof window === 'undefined'
    peripheral vision while the rest of the section is being read. */
 const SECONDS_PER_CARD = 22
 
+/* A marquee only looks continuous while one copy of the set is wider than the
+   frame it runs in. The macro filter is strict, so on a quiet session the feed
+   returns two headlines, not four — two 360px cards is 720px inside a 1069px
+   panel, and 349px of nothing scrolled through the middle of it every cycle.
+   That is what "no news" looked like.
+
+   So the set is repeated until a copy is at least this many cards wide before
+   the track duplicates it for the loop. Four covers the widest panel the layout
+   ever gives this section. */
+const MIN_CARDS_PER_COPY = 4
+
 /* Impact is scored 1-10 by the engine. Only the top of that range gets the red
    treatment, so "high impact" keeps meaning something on a page where every
    card is trying to look important. */
@@ -103,10 +114,14 @@ export default function NewsLive() {
      the cache are all empty at once. */
   if (ready && articles.length === 0) return null
 
-  // Two copies make the loop seamless; the duration scales with the set so the
-  // cards travel at the same speed whether the feed returned two or four.
-  const track = ready ? [...articles, ...articles] : []
-  const duration = `${Math.max(2, articles.length) * SECONDS_PER_CARD}s`
+  // One copy, padded out to MIN_CARDS_PER_COPY so it always overfills the frame,
+  // then laid down twice so the -50% loop lands the second copy exactly where
+  // the first began. Duration scales with the copy, so the cards travel at the
+  // same speed whatever the feed returned.
+  const repeats = articles.length ? Math.max(1, Math.ceil(MIN_CARDS_PER_COPY / articles.length)) : 1
+  const copy = ready ? Array.from({ length: repeats }, () => articles).flat() : []
+  const track = [...copy, ...copy]
+  const duration = `${Math.max(MIN_CARDS_PER_COPY, copy.length) * SECONDS_PER_CARD}s`
 
   return (
     <div className="bf-card overflow-hidden">
@@ -131,6 +146,9 @@ export default function NewsLive() {
              the start of the second copy — 6px of horizontal padding put a 6px
              jump in the loop every cycle. The gutters live inside the cards. */
           <ul className="bf-wire flex items-stretch w-max" style={{ '--dur': duration }}>
+            {/* Only the first pass is real content. Every repeat and the whole
+                second copy are aria-hidden, so a screen reader hears each
+                headline exactly once however many times it is painted. */}
             {track.map((a, i) => (
               <Slide key={`${a.title}-${i}`} a={a} clone={i >= articles.length} />
             ))}

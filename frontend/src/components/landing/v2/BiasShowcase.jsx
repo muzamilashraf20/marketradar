@@ -4,11 +4,16 @@ import { useCompassData } from './useCompassData'
 
 const isServer = typeof window === 'undefined'
 
-/* Whether the ring should sweep at all, decided once before the first render
-   rather than corrected inside an effect. Reduced motion and a background tab
-   both mean the card renders settled: a frozen timeline would otherwise hold the
-   gauge at zero until the tab was focused. */
-const sweepOnScroll = () => {
+/* Whether the ring can sweep at all, decided once before the first render.
+
+   This has to be read the right way round. When the answer is no — reduced
+   motion, a background tab, the static render — the card must show the settled
+   number, not start an animation that will never advance. It was wired the other
+   way and a hidden document painted a conviction of 0 next to a label reading
+   82/100, because requestAnimationFrame does not fire in a background tab and
+   the count-up never left its first frame. Anything rendering the page headless
+   saw that 0. */
+const canSweep = () => {
   if (isServer) return false
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false
   return document.visibilityState === 'visible'
@@ -94,29 +99,32 @@ function Ring({ value, color, shown, filled, size = 78, stroke = 6 }) {
 export default function BiasShowcase() {
   const { rows, ready } = useCompassData()
   const ref = useRef(null)
-  // Starts settled unless there is a sweep to play, so nothing has to be undone
-  // in an effect.
-  const [run, setRun] = useState(() => !sweepOnScroll())
+  // Two separate questions: may we animate at all, and has the card been
+  // scrolled to yet. Collapsing them into one flag is what put a 0 on screen.
+  const [willAnimate] = useState(canSweep)
+  const [started, setStarted] = useState(false)
 
   useEffect(() => {
     const el = ref.current
-    if (!el || run) return
+    if (!el || !willAnimate || started) return
     const io = new IntersectionObserver(
-      entries => { if (entries.some(e => e.isIntersecting)) { setRun(true); io.disconnect() } },
+      entries => { if (entries.some(e => e.isIntersecting)) { setStarted(true); io.disconnect() } },
       { rootMargin: '0px 0px -12% 0px', threshold: 0.2 }
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [run])
+  }, [willAnimate, started])
 
   /* The pair the engine is leading with, falling back to the highest conviction
      read it has. Never a hand-picked one — whatever is on the dashboard right
      now is what goes here, including on a quiet day. */
   const row = rows.find(r => r.isHeadline) || rows[0] || null
 
-  const shown = useCountUp(row?.confidence, run)
-  const [filled, setFilled] = useState(() => isServer)
-  useEffect(() => { if (run) requestAnimationFrame(() => setFilled(true)) }, [run])
+  const counted = useCountUp(row?.confidence, willAnimate && started)
+  // Zero only while the card is still below the fold and an animation is
+  // genuinely coming. Everywhere else the settled number is what renders.
+  const shown = willAnimate && !started ? 0 : counted
+  const filled = !willAnimate || started
 
   if (ready && !row) {
     /* No publishable bias at all. The section keeps its point — a bias always
