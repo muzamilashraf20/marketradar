@@ -1,16 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
 import { useLandingNews, timeAgo, stamp } from './useLandingNews'
 
 const isServer = typeof window === 'undefined'
 
-const canAnimate = () =>
-  !isServer &&
-  !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches &&
-  document.visibilityState === 'visible'
-
-/* How long each headline holds before the next slides in. Long enough to read a
-   headline and the one-line read under it without being rushed. */
-const DWELL_MS = 6000
+/* Seconds of travel per headline. Slow on purpose: the wire is there to show
+   the feed is alive, not to be chased across the panel. At 22s a card takes
+   most of half a minute to cross, which is readable at a glance and calm in
+   peripheral vision while the rest of the section is being read. */
+const SECONDS_PER_CARD = 22
 
 /* Impact is scored 1-10 by the engine. Only the top of that range gets the red
    treatment, so "high impact" keeps meaning something on a page where every
@@ -43,7 +39,7 @@ function ImpactMeter({ score, tone }) {
   )
 }
 
-function Slide({ a, active }) {
+function Slide({ a, clone }) {
   const tone = impactTone(a.impact)
   // Absolute in the prerendered HTML, relative once the browser is running.
   const age = isServer ? stamp(a.publishedAt) : timeAgo(a.publishedAt)
@@ -51,8 +47,8 @@ function Slide({ a, active }) {
   return (
     /* Off-screen slides leave the accessibility tree — otherwise a screen reader
        walks through headlines nobody can see. */
-    <li className="w-full shrink-0 px-3" aria-hidden={active ? undefined : 'true'}>
-      <article className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 sm:p-6 h-full flex flex-col">
+    <li className="w-[300px] sm:w-[360px] shrink-0 px-1.5" aria-hidden={clone ? 'true' : undefined}>
+      <article className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 sm:p-5 h-full flex flex-col">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border ${tone.chip}`}>
             {tone.label}
@@ -60,15 +56,15 @@ function Slide({ a, active }) {
           <ImpactMeter score={a.impact} tone={tone} />
         </div>
 
-        <h3 className="mt-4 text-[19px] sm:text-[22px] leading-[1.35] font-medium text-slate-100 max-w-[40ch]">
+        <h3 className="mt-3.5 text-[15px] sm:text-[16px] leading-[1.45] font-medium text-slate-100">
           {a.title}
         </h3>
 
         {a.oneliner && (
-          <p className="mt-3 text-[14.5px] leading-[1.65] text-cyan-300/80 max-w-[64ch]">{a.oneliner}</p>
+          <p className="mt-2.5 text-[13px] leading-[1.6] text-cyan-300/80">{a.oneliner}</p>
         )}
 
-        <div className="mt-auto pt-5 flex items-center gap-2 flex-wrap text-[11px] bf-t3">
+        <div className="mt-auto pt-4 flex items-center gap-2 flex-wrap text-[11px] bf-t3">
           {a.source && <span className="bf-pill bf-hairline px-2.5 py-1">{a.source}</span>}
           {a.category && <span className="bf-pill bf-hairline px-2.5 py-1">{a.category}</span>}
           {(a.marketTags || []).map(t => (
@@ -81,51 +77,39 @@ function Slide({ a, active }) {
   )
 }
 
-/* The news feed, live, one headline at a time.
+/* The news feed, live, moving.
 
    This was a crop of a screenshot — a card captured at 5120px came back at a
    fifth of native size, putting 14px interface text under 4px. Rendering it
    fixed the legibility and introduced a second problem: a two-column grid on a
    quiet day is one card beside an empty half.
 
-   A carousel answers both. One headline gets the full width at a size worth
-   reading, and the panel is the same height whether the feed returns one article
-   or four. It also does what the copy above it describes — headlines arriving
-   one after another through the session — rather than asserting it.
+   A slide-and-hold carousel fixed that and introduced a third. It sat still for
+   six seconds, jumped, then sat still again, so most of the time a panel headed
+   "Live news" was completely motionless — which reads as stalled, not live.
 
-   Every slide stays in the DOM, so all of them are in the static HTML. A visitor
-   with no JavaScript gets the first one and no motion. */
+   So the track moves continuously instead, slowly, and never lands on a frame.
+   The headlines are rendered twice; half the track is one full set, so the CSS
+   loops at -50% and the seam is invisible. Hover or focus pauses it.
+
+   Every headline is in the DOM once as real content and once as an aria-hidden
+   clone, so all of them are in the static HTML and a screen reader hears each
+   one exactly once. A visitor with no JavaScript gets the full set, still. */
 export default function NewsLive() {
   const { articles, ready } = useLandingNews()
-  const [index, setIndex] = useState(0)
-  const [animated] = useState(canAnimate)
-  const paused = useRef(false)
-
-  const count = ready ? articles.length : 0
-
-  useEffect(() => {
-    if (!animated || count < 2) return
-    const id = setInterval(() => {
-      if (!paused.current) setIndex(i => (i + 1) % count)
-    }, DWELL_MS)
-    return () => clearInterval(id)
-  }, [animated, count])
 
   /* Nothing publishable and nothing baked: render no panel rather than a header
      over an empty frame. Only reachable when the feed, the build-time bake and
      the cache are all empty at once. */
   if (ready && articles.length === 0) return null
 
-  const at = count ? index % count : 0
+  // Two copies make the loop seamless; the duration scales with the set so the
+  // cards travel at the same speed whether the feed returned two or four.
+  const track = ready ? [...articles, ...articles] : []
+  const duration = `${Math.max(2, articles.length) * SECONDS_PER_CARD}s`
 
   return (
-    <div
-      className="bf-card overflow-hidden"
-      onMouseEnter={() => { paused.current = true }}
-      onMouseLeave={() => { paused.current = false }}
-      onFocusCapture={() => { paused.current = true }}
-      onBlurCapture={() => { paused.current = false }}
-    >
+    <div className="bf-card overflow-hidden">
       <div className="flex items-baseline justify-between gap-3 flex-wrap px-4 sm:px-5 pt-4 pb-3.5 bf-hairline-b">
         <div>
           <h3 className="text-[13.5px] font-medium text-slate-100 tracking-tight">Live news</h3>
@@ -140,55 +124,37 @@ export default function NewsLive() {
         </p>
       </div>
 
-      {/* The track holds every slide side by side and moves by whole widths.
-          Transform only, so it costs no layout, and the slides stretch to the
-          tallest — the panel cannot change height as it advances. */}
-      <div className="overflow-hidden py-3">
+      <div className="bf-wire-mask overflow-hidden py-3">
         {ready ? (
-          <ul
-            className="flex items-stretch"
-            style={{
-              transform: `translateX(-${at * 100}%)`,
-              transition: animated ? 'transform 600ms cubic-bezier(0.16,1,0.3,1)' : 'none',
-            }}
-          >
-            {articles.map((a, i) => <Slide key={a.title} a={a} active={i === at} />)}
+          /* No padding on the track. translateX(-50%) is half the element's own
+             border-box width, so any padding here makes the halfway point miss
+             the start of the second copy — 6px of horizontal padding put a 6px
+             jump in the loop every cycle. The gutters live inside the cards. */
+          <ul className="bf-wire flex items-stretch w-max" style={{ '--dur': duration }}>
+            {track.map((a, i) => (
+              <Slide key={`${a.title}-${i}`} a={a} clone={i >= articles.length} />
+            ))}
           </ul>
         ) : (
-          <div className="px-3">
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 sm:p-6">
-              <div className="bf-skeleton h-4 w-28" />
-              <div className="bf-skeleton h-5 w-full mt-5" />
-              <div className="bf-skeleton h-5 w-3/4 mt-2.5" />
-              <div className="bf-skeleton h-3 w-1/2 mt-6" />
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="bf-hairline-t px-4 sm:px-5 py-3 flex items-center justify-between gap-4">
-        <p className="text-[10.5px] leading-relaxed bf-t3">
-          Impact scoring is a read on how much a headline matters to a forex trader on the
-          majors — it is not a forecast.
-        </p>
-
-        {count > 1 && (
-          <div className="flex items-center gap-1.5 shrink-0">
-            {articles.map((a, i) => (
-              <button
-                key={a.title}
-                type="button"
-                onClick={() => setIndex(i)}
-                aria-label={`Show headline ${i + 1} of ${count}`}
-                aria-current={i === at ? 'true' : undefined}
-                className={`h-1.5 rounded-full transition-all duration-300 ${
-                  i === at ? 'w-5 bg-cyan-400' : 'w-1.5 bg-slate-600 hover:bg-slate-500'
-                }`}
-              />
+          <ul className="flex items-stretch px-1.5">
+            {Array.from({ length: 3 }, (_, i) => (
+              <li key={i} className="w-[300px] sm:w-[360px] shrink-0 px-1.5">
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 sm:p-5">
+                  <div className="bf-skeleton h-4 w-24" style={{ animationDelay: `${i * 90}ms` }} />
+                  <div className="bf-skeleton h-4 w-full mt-4" style={{ animationDelay: `${i * 90}ms` }} />
+                  <div className="bf-skeleton h-4 w-3/4 mt-2" style={{ animationDelay: `${i * 90}ms` }} />
+                  <div className="bf-skeleton h-3 w-1/2 mt-5" style={{ animationDelay: `${i * 90}ms` }} />
+                </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
+
+      <p className="bf-hairline-t px-4 sm:px-5 py-3 text-[10.5px] leading-relaxed bf-t3">
+        Impact scoring is a read on how much a headline matters to a forex trader on the
+        majors — it is not a forecast.
+      </p>
     </div>
   )
 }

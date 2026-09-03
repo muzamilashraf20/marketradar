@@ -348,7 +348,32 @@
 .bf-js .bf-seg { animation: bf-seg-in 260ms ease-out both; animation-delay: var(--d, 0ms); }
 @keyframes bf-seg-in { from { opacity: 0; transform: scaleX(0.2); } to { opacity: 1; transform: none; } }
 
+
+/* The news wire, moving continuously rather than in steps.
+
+   A slide-and-hold carousel spends most of its time perfectly still, then jumps
+   — which reads as a thing that has stalled, not a thing that is live. This
+   translates the track at a constant rate instead, so the feed is always in
+   motion and never lands on a frame.
+
+   The track carries the headlines twice. Half of it is exactly one full set, so
+   translating to -50% puts the second copy where the first began and the loop
+   is seamless. Transform only: no layout, no repaint of the cards themselves. */
+.bf-wire { animation: bf-wire-run var(--dur, 60s) linear infinite; }
+.bf-wire:hover, .bf-wire:focus-within { animation-play-state: paused; }
+@keyframes bf-wire-run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* Edges softened so headlines arrive and leave rather than being clipped by a
+   hard border. */
+.bf-wire-mask {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .bf-js .bf-bar,
   .bf-js .bf-seg { animation: none; }
+  /* Stopped, and returned to the start so the first headlines are the ones on
+     screen rather than whatever the loop happened to be showing. */
+  .bf-wire { animation: none; transform: none; }
 }

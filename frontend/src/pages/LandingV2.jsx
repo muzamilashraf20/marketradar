@@ -34,8 +34,13 @@ export default function LandingV2() {
             bias cards, so "trading without a map" lands against one. */}
         <Inside />
         <Problem />
-        <CompassVsSignal />
+        {/* The card first, then the argument about it. Reading "a compass, not a
+            signal button" before seeing a bias asks the visitor to take the
+            distinction on trust; reading it straight after the GBP/USD card —
+            direction, conviction, the level that closes it — lands it against
+            something they have just looked at. */}
         <Direction />
+        <CompassVsSignal />
         <Noise />
         <PropFirmMode />
         <NoCall />
