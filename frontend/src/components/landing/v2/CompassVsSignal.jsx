@@ -1,4 +1,5 @@
 import { Section } from './Section'
+import { GUMROAD_URL } from './Plan'
 
 /* Phase 3 — the comparison. Typography only.
 
@@ -37,12 +38,43 @@ function Column({ col, muted }) {
   )
 }
 
+/* The comparison and the ask, in one section.
+
+   They were two, stacked, with the page's full 128px between them — so the
+   argument finished, the page went quiet, and then a separate block asked for
+   the money. Read as one, the columns are the reason and the line under them is
+   the ask, which is the order this has to be in.
+
+   The CTA keeps its own headline because it is doing a different job from the
+   comparison above it, but it sits inside the same section and behind a rule,
+   so it reads as the conclusion rather than as the next topic. */
 export default function CompassVsSignal() {
   return (
     <Section eyebrow="A compass, not a signal button" headline={<>Signals make you dependent.<br className="bf-br" /> A compass makes you sharp.</>}>
       <div className="mt-12 grid sm:grid-cols-2 gap-10 sm:gap-14 max-w-[52rem]">
         <Column col={LEFT} muted />
         <Column col={RIGHT} />
+      </div>
+
+      <div className="mt-14 sm:mt-16 pt-10 bf-hairline-t" data-reveal>
+        <h2 className="bf-h2 max-w-[20ch]">Trade with a direction, or trade without one.</h2>
+
+        <p className="bf-body mt-5 max-w-[40rem]">
+          Direction and invalidation for every major pair, on one screen.
+        </p>
+
+        {/* One CTA. The free Telegram offer is gone from the page; the channel
+            survives in the footer as a contact route, not as an offer. */}
+        <div className="mt-8">
+          <a
+            href={GUMROAD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bf-pill bf-lift inline-block px-6 py-3 text-[15px] font-medium bg-cyan-500 text-[#030712] hover:bg-cyan-400"
+          >
+            Get access
+          </a>
+        </div>
       </div>
     </Section>
   )

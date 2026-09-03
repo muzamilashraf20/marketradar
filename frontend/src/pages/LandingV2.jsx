@@ -14,7 +14,6 @@ import TrackRecord from '../components/landing/v2/TrackRecord'
 import Plan from '../components/landing/v2/Plan'
 import About from '../components/landing/v2/About'
 import Faq from '../components/landing/v2/Faq'
-import FinalCta from '../components/landing/v2/FinalCta'
 import Footer from '../components/landing/v2/Footer'
 
 export default function LandingV2() {
@@ -54,7 +53,6 @@ export default function LandingV2() {
             summing up what they have just been shown rather than asking them to
             accept the distinction before seeing any of it. */}
         <CompassVsSignal />
-        <FinalCta />
       </main>
       <Footer />
     </div>
