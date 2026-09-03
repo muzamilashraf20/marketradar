@@ -50,31 +50,6 @@ const API_BASE    = process.env.VITE_API_URL || 'https://marketradar-production.
 // falling back to an empty compass. Regenerated on every successful build.
 const SNAPSHOT    = path.resolve(__dirname, '.landing-snapshot.json');
 // How many biases get a card in the hero. Mirrors CARDS in useCompassData.js.
-const COMPASS_CARDS = 2;
-// Grade C and above; D excluded. Mirrors PUBLISHABLE_GRADES in useCompassData.js
-// — the two must stay in step or the static HTML and the client disagree about
-// what is publishable.
-const PUBLISHABLE_GRADES = new Set(['A', 'A-', 'B', 'C']);
-// Mirrors BANNED_IN_COPY in useCompassData.js. The thesis is model-generated and
-// unreviewed; on the landing page it is marketing copy, so one that trips a
-// banned term is not quoted. See the note there for why.
-const BANNED_IN_COPY =
-  /\bsignals?\b|\bsetups?\b|\bentry\b|\bentries\b|\bstop[- ]?loss\b|\btake[- ]?profit\b|\bwin rate\b|\bguarantee\w*|\bproven\b|\brisk[- ]free\b|\bodds\b|\bprobabilit\w+/i;
-/* Mirrors previewThesis() in useCompassData.js — the cut is made here rather
-   than with line-clamp so the rest of the read never reaches the HTML. */
-const PREVIEW_CHARS = 190;
-const previewThesis = (t) => {
-  if (!t) return null;
-  const clean = String(t).trim();
-  if (clean.length <= PREVIEW_CHARS) return clean;
-  const cut = clean.slice(0, PREVIEW_CHARS);
-  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
-  if (stop > PREVIEW_CHARS * 0.5) return cut.slice(0, stop + 1);
-  const space = cut.lastIndexOf(' ');
-  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…';
-};
-
-const publishableThesis = (t) => (t && !BANNED_IN_COPY.test(t) ? previewThesis(t) : null);
 
 // Non-blog routes for the sitemap — keep roughly in sync with the app.
 const STATIC_ROUTES = [
@@ -585,43 +560,6 @@ async function getJson(url, ms = 12000) {
   }
 }
 
-// Shaped exactly as LiveCompass expects, so the same code path renders on the
-// server and in the browser.
-//
-// The Grade B floor is applied HERE as well as in useCompassData.js. Filtering
-// only on the client would still bake a C or D into the static HTML, which is
-// what a crawler and a JavaScript-disabled visitor read. Keep the two in step.
-function shapeCompass(json) {
-  if (!json?.success || !Array.isArray(json.pairs) || !json.pairs.length) return null;
-  const rows = json.pairs
-    .filter(p => p.direction !== 'FLAT' && p.confidence != null && PUBLISHABLE_GRADES.has(p.grade))
-    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
-    // Not capped: the panel header states how many biases are live, and capping
-    // to the card count would make it under-report.
-    .map(p => ({
-      pair: p.pair,
-      direction: p.direction,
-      confidence: p.confidence,
-      grade: p.grade,
-      entryTiming: p.entryTiming,
-      thesis: publishableThesis(p.thesis),
-      // Never the live level — see the note in useCompassData.js.
-      hasInvalidation: p.hasInvalidation ?? p.invalidationLevel != null,
-      isHeadline: p.isHeadline,
-      updatedAt: p.updatedAt,
-    }));
-  // Engine freshness is taken across every live bias, not just the strong ones —
-  // a run that produced only weak reads still ran.
-  const lastRun = json.pairs.map(p => p.updatedAt).filter(Boolean).sort().pop() || null;
-  // An empty row set is a legitimate result, not a failure: the hero drops the
-  // compass. Returned rather than null so it is not mistaken for a failed fetch
-  // and quietly replaced with the previous build's snapshot.
-  // Every pair that did not get a card, including publishable ones outside the
-  // top two, so the chip row always accounts for the rest of the board.
-  const carded = new Set(rows.slice(0, COMPASS_CARDS).map(r => r.pair));
-  const alsoScoring = json.pairs.map(p => p.pair).filter(p => !carded.has(p));
-  return { rows, activeCount: rows.length, scanned: json.pairs.length, alsoScoring, lastRun };
-}
 
 function shapeEvents(json) {
   if (!Array.isArray(json)) return null;
@@ -634,74 +572,24 @@ function shapeEvents(json) {
   return take.length ? take.map(({ title, country, date, impact }) => ({ title, country, date, impact })) : null;
 }
 
-/* The four headlines the news section renders, screened the same way the client
-   screens them.
-
-   Two kinds of untrusted text arrive through this feed: the headline, written by
-   a wire service, and the one-line read under it, written by the model. Neither
-   is reviewed before it renders, so anything tripping the banned terms is
-   dropped rather than edited — the same rule the bias thesis follows. This
-   mirrors selectNews() in useLandingNews.js; the static HTML and the client have
-   to agree on what is publishable. */
-const NEWS_BANNED =
-  /\bsignals?\b|\bsetups?\b|\bstop[- ]?loss\b|\btake[- ]?profit\b|\bwin rate\b|\bguarantee\w*|\bproven\b|\brisk[- ]free\b|\bodds\b|\bprobabilit\w+|\bbuy now\b|\bsure thing\b/i;
-
-function shapeNews(json) {
-  if (!json?.success || !Array.isArray(json.articles)) return null;
-  /* Mirrors isRelevant()/rankNews() in useLandingNews.js — see the long note
-     there for why it takes two passes. The two have to agree or the static HTML
-     and the client render different headlines. */
-  const CORPORATE_CATEGORY =
-    /earnings|guidance|m&a|merger|acquisition|activis|buyback|dividend|ipo|corporate|governance|leadership|credit|product|investment/i;
-  const CURRENCY = /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY)$/i;
-  const TICKER = /^[A-Z]{1,5}$/;
-  const MACRO_CATEGORY =
-    /^(fx|forex|currenc|central bank|monetary|trade|geopolit|inflation|econom|rates?|yields?|commodit|fiscal|tariff|market sentiment|policy)/i;
-  const MACRO_TAG =
-    /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC|Rates?|Yields?|Inflation|CPI|NFP|Jobs|Labou?r|Growth|Recession|Tariffs?|Trade War|Equities|Volatility|Risk)\b/i;
-  const FX_TAG =
-    /^(USD|EUR|GBP|JPY|CHF|AUD|NZD|CAD|CNY|XAU|XAG|DXY|Gold|Silver|Oil|Crude|Brent|WTI|Fed|ECB|BOE|BOJ|SNB|RBA|RBNZ|BOC)\b/i;
-  const bareTag = t => String(t).trim().replace(/[↑↓→←]/g, '');
-  const isSingleName = a =>
-    CORPORATE_CATEGORY.test(a.category || '') ||
-    (a.marketTags || []).some(t => { const x = bareTag(t); return TICKER.test(x) && !CURRENCY.test(x); });
-  const isMacro = a =>
-    MACRO_CATEGORY.test(a.category || '') || (a.marketTags || []).some(t => MACRO_TAG.test(bareTag(t)));
-  const isFx = a => (a.marketTags || []).some(t => FX_TAG.test(bareTag(t)));
-
-  const clean = json.articles
-    .filter(a => a?.title && !NEWS_BANNED.test(a.title) && !NEWS_BANNED.test(a.oneliner || ''))
-    .filter(a => !isSingleName(a) && isMacro(a));
-  const rows = [...clean.filter(isFx), ...clean.filter(a => !isFx(a))]
-    .slice(0, 4)
-    .map(({ title, source, category, impact, oneliner, marketTags, publishedAt }) => ({
-      title, source, category, impact,
-      oneliner: oneliner || '',
-      marketTags: (marketTags || []).slice(0, 3),
-      publishedAt,
-    }));
-  return rows.length ? rows : null;
-}
 
 async function loadLiveData() {
-  let compass = null;
   let events = null;
   let calls = null;
-  let news = null;
   try {
-    const [c, e, k, n] = await Promise.allSettled([
-      getJson(`${API_BASE}/api/macro-compass`),
+    // The compass and the news feed are no longer baked. The landing page
+    // renders a sample for both — see components/landing/v2/demoData.js — so
+    // there is nothing to fetch here and nothing that can go stale between
+    // builds. It also takes the slowest call in the build out of the build.
+    //
+    // The closed-call record still is baked. Those are the engine's real past
+    // calls and they are the one thing on the page that has to be true.
+    const [e, k] = await Promise.allSettled([
       getJson(`${API_BASE}/api/calendar`),
       getJson(`${API_BASE}/api/bias-calls`),
-      // Slowest endpoint on the API: cold, it fetches five RSS feeds and scores
-      // anything unseen before it answers. 12s was not enough and the section
-      // silently baked empty.
-      getJson(`${API_BASE}/api/news?minImpact=5&limit=50`, 45000),
     ]);
-    if (c.status === 'fulfilled') compass = shapeCompass(c.value);
     if (e.status === 'fulfilled') events = shapeEvents(e.value);
     if (k.status === 'fulfilled' && k.value?.success && Array.isArray(k.value.calls)) calls = k.value.calls;
-    if (n.status === 'fulfilled') news = shapeNews(n.value);
   } catch { /* fall through to the snapshot */ }
 
   // Whatever came back gets banked; whatever did not falls back to the last
@@ -711,15 +599,13 @@ async function loadLiveData() {
   try { snap = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')); } catch { /* first build */ }
 
   const out = {
-    compass: compass || snap.compass || null,
     events: events || snap.events || null,
     calls: calls || snap.calls || null,
-    news: news || snap.news || null,
   };
-  if (compass || events || calls || news) {
+  if (events || calls) {
     try { fs.writeFileSync(SNAPSHOT, JSON.stringify(out, null, 2)); } catch { /* read-only CI fs */ }
   }
-  return { ...out, fresh: { compass: !!compass, events: !!events, calls: !!calls, news: !!news } };
+  return { ...out, fresh: { events: !!events, calls: !!calls } };
 }
 
 // JSON destined for an inline <script>. Escaping "<" is what stops a string in
@@ -803,9 +689,9 @@ async function prerenderLanding() {
   fs.writeFileSync(path.join(DIST, 'app.html'), raw);
 
   const mod = await import(pathToFileURL(SSR_ENTRY).href);
-  const { compass, events, calls, news, fresh } = await loadLiveData();
+  const { events, calls, fresh } = await loadLiveData();
 
-  const markup = mod.render({ compass, events, calls, news });
+  const markup = mod.render({ events, calls });
 
   let html = raw
     .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(LANDING_TITLE)}</title>`)
@@ -827,10 +713,8 @@ async function prerenderLanding() {
   // the browser's first render already has the same values the HTML was built
   // with, and never flashes a skeleton over real numbers.
   const data =
-    `<script>window.__BF_COMPASS__=${inlineJson(compass)};` +
-    `window.__BF_EVENTS__=${inlineJson(events)};` +
-    `window.__BF_CALLS__=${inlineJson(calls)};` +
-    `window.__BF_NEWS__=${inlineJson(news)};</script>`;
+    `<script>window.__BF_EVENTS__=${inlineJson(events)};` +
+    `window.__BF_CALLS__=${inlineJson(calls)};</script>`;
 
   const rootRe = /<div id="root">\s*<\/div>/i;
   if (!rootRe.test(html)) {
@@ -868,12 +752,9 @@ async function prerenderLanding() {
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
   console.log(`  ✓ / prerendered (${kb} kB)`);
-  const strong = compass?.rows?.length ?? 0;
-  console.log(`      bias data: ${fresh.compass ? 'live' : compass ? 'snapshot' : 'NONE'}` +
-              ` · biases baked: ${strong}${strong === 0 ? ' (compass hidden)' : ''}` +
+  console.log(`      bias + news: sample (not fetched)` +
               ` · events: ${fresh.events ? 'live' : events ? 'snapshot' : 'NONE'}` +
-              ` · closed calls baked: ${calls?.length ?? 0}` +
-              ` · news baked: ${news?.length ?? 0}`);
+              ` · closed calls baked: ${calls?.length ?? 0}`);
   console.log(`  ✓ /about prerendered (${(Buffer.byteLength(aboutHtml) / 1024).toFixed(1)} kB)`);
   console.log('  ✓ app.html (SPA shell for every non-root route)');
 }

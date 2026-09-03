@@ -1,6 +1,5 @@
-import { useLandingNews, timeAgo, stamp } from './useLandingNews'
+import { useLandingNews } from './useLandingNews'
 
-const isServer = typeof window === 'undefined'
 
 /* Seconds of travel per headline. Slow on purpose: the wire is there to show
    the feed is alive, not to be chased across the panel. At 22s a card takes
@@ -52,9 +51,6 @@ function ImpactMeter({ score, tone }) {
 
 function Slide({ a, clone }) {
   const tone = impactTone(a.impact)
-  // Absolute in the prerendered HTML, relative once the browser is running.
-  const age = isServer ? stamp(a.publishedAt) : timeAgo(a.publishedAt)
-
   return (
     /* Off-screen slides leave the accessibility tree — otherwise a screen reader
        walks through headlines nobody can see. */
@@ -81,8 +77,7 @@ function Slide({ a, clone }) {
           {(a.marketTags || []).map(t => (
             <span key={t} className="bf-mono bf-pill bf-hairline px-2.5 py-1 text-emerald-300/70">{t}</span>
           ))}
-          {age && <span className="ml-auto tabular-nums">{age}</span>}
-        </div>
+          </div>
       </article>
     </li>
   )
@@ -127,16 +122,15 @@ export default function NewsLive() {
     <div className="bf-card overflow-hidden">
       <div className="flex items-baseline justify-between gap-3 flex-wrap px-4 sm:px-5 pt-4 pb-3.5 bf-hairline-b">
         <div>
-          <h3 className="text-[13.5px] font-medium text-slate-100 tracking-tight">Live news</h3>
+          <h3 className="text-[13.5px] font-medium text-slate-100 tracking-tight">News, scored</h3>
           <p className="text-[11px] bf-t3 mt-0.5">Headlines scored for impact on the major forex pairs</p>
         </div>
-        <p className="text-[11px] bf-t3 flex items-center gap-2 shrink-0">
-          <span
-            className={`inline-block w-1.5 h-1.5 rounded-full ${ready ? 'bf-ping text-emerald-400 bg-emerald-400' : 'bg-slate-600'}`}
-            aria-hidden="true"
-          />
-          {ready ? 'Reading the wires' : 'Loading…'}
-        </p>
+        {/* Sample, and it says so. The wire moves like the real one and reads
+            like the real one; captioning it "reading the wires" would be
+            claiming these headlines just came off the feed. */}
+        <span className="bf-pill bf-hairline text-[9.5px] font-bold uppercase tracking-wider px-2 py-[3px] bf-t3 shrink-0">
+          Sample
+        </span>
       </div>
 
       <div className="bf-wire-mask overflow-hidden py-3">

@@ -1,35 +1,16 @@
 import BiasCard from './BiasCard'
 import { CARDS } from './useCompassData'
 
-const isServer = typeof window === 'undefined'
-
 const fmtPair = p => (p && p.length === 6 ? `${p.slice(0, 3)}/${p.slice(3)}` : p || '')
 
-/* The prerendered document is frozen at build time, so a relative age baked into
-   it ("17m ago") keeps claiming that days later to anyone without JavaScript.
-   The static render states the absolute time instead; the browser swaps in the
-   relative form on mount, where it is recomputed and stays true. */
-const stamp = iso =>
-  new Date(iso).toLocaleString('en-GB', {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
-  }).replace(',', '') + ' UTC'
-
-/* "engine last ran Xh ago" — driven by the real row timestamp, never a constant. */
-function timeAgo(iso) {
-  if (!iso) return null
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
-  if (!Number.isFinite(mins) || mins < 0) return null
-  if (mins < 60) return `${Math.max(1, mins)}m ago`
-  const hrs = Math.round(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.round(hrs / 24)}d ago`
-}
-
+/* The header used to carry an absolute-then-relative "engine last ran" stamp,
+   because the rows were a real engine run and a frozen relative time in
+   prerendered HTML would have kept claiming "17m ago" for days. The rows are a
+   sample now, so there is no run to date and nothing to keep honest — the whole
+   stamp came out rather than being pointed at a fabricated timestamp. */
 /* Presentational. The hero owns the data, because it has to know what state the
    panel is in before it lays the section out. */
-export default function LiveCompass({ rows, lastRun, ready, alsoScoring = [], changedPairs = [] }) {
-  // Absolute in the prerendered HTML, relative once the browser is running.
-  const ranAgo = lastRun ? (isServer ? stamp(lastRun) : timeAgo(lastRun)) : null
+export default function LiveCompass({ rows, ready, alsoScoring = [], changedPairs = [] }) {
   const shown = rows.slice(0, CARDS)
   const n = rows.length
   const empty = ready && n === 0
@@ -48,25 +29,16 @@ export default function LiveCompass({ rows, lastRun, ready, alsoScoring = [], ch
           <h2 className="text-[13.5px] font-medium text-slate-100 tracking-tight whitespace-nowrap">
             Macro compass
           </h2>
-          <p className="text-[11px] bf-t3 mt-0.5">Live from the app</p>
+          <p className="text-[11px] bf-t3 mt-0.5">A look at the dashboard</p>
         </div>
 
-        <p className="text-[11px] bf-t3 flex items-center gap-2 min-w-0">
-          <span
-            className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-              ready ? 'bf-ping text-emerald-400 bg-emerald-400' : 'bg-slate-600'
-            }`}
-            aria-hidden="true"
-          />
-          {ready ? (
-            <span className="truncate">
-              {n > 0 ? `${n} live ${n === 1 ? 'bias' : 'biases'}` : 'Engine live'}
-              {ranAgo ? ` · engine last ran ${ranAgo}` : ''}
-            </span>
-          ) : (
-            <span>Loading live bias data…</span>
-          )}
-        </p>
+        {/* Says sample, not live. These numbers are illustrative and the panel
+            has to say so on its face — captioning them as a recent engine run
+            would be inventing a claim about what the engine is saying now, and
+            a visitor deciding whether to pay would be deciding on it. */}
+        <span className="bf-pill bf-hairline text-[9.5px] font-bold uppercase tracking-wider px-2 py-[3px] bf-t3 shrink-0">
+          Sample
+        </span>
       </div>
 
       {empty ? (

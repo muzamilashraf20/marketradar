@@ -12,8 +12,8 @@ export default function Noise() {
         attached so you can disagree with it.
       </Lede>
 
-      {/* The real feed, four cards deep, landing in sequence. The crop this
-          replaces showed a single card at about a fifth of native size. */}
+      {/* A sample of the feed, four cards deep. The panel labels itself; the
+          copy above describes what the app does, which stays true either way. */}
       <div className="mt-10 sm:mt-12" data-reveal>
         <NewsLive />
       </div>

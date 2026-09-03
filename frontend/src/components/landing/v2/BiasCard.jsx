@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { Lock } from 'lucide-react'
-import { baked } from './useCompassData'
 
 /* One bias, rendered the way the dashboard's Macro Compass renders it.
 
@@ -26,6 +25,14 @@ const TIMING_STYLE = {
   LATE:     'bg-red-500/10 text-red-400 border-red-500/20',
 }
 
+// Levels arrive as raw floats from the ATR maths (0.7028257142857143). Round to
+// the pair's real quoting precision — the same convention the backend logs use.
+const fmtLevel = (pair, v) => {
+  if (v == null) return null
+  const dp = pair.includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
+  return Number(v).toFixed(dp)
+}
+
 const fmtPair = p => (p && p.length === 6 ? `${p.slice(0, 3)}/${p.slice(3)}` : p || '')
 
 const isServer = typeof window === 'undefined'
@@ -35,13 +42,19 @@ const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 /* The hero entrance holds these cards at opacity 0 for their first second. A
-   client arriving inside that window animates as part of the reveal; one
+   client rendering inside that window animates as part of the reveal; one
    arriving later would be resetting numbers already painted on screen, which
-   reads as a glitch rather than as data landing. */
+   reads as a glitch rather than as data landing. The rows are the same on the
+   server and in the browser now, so the only question left is timing. */
 const ENTRANCE_MS = 1100
 const shouldAnimate = () => {
+  if (typeof document === 'undefined') return false
   if (prefersReducedMotion()) return false
-  if (!baked()) return true
+  // requestAnimationFrame does not fire in a background tab, so starting the
+  // count-up there leaves it on its first frame — a conviction of 0 painted
+  // beside a grade of A-. The showcase card had the same fault; anything
+  // rendering the page headless saw it.
+  if (document.visibilityState !== 'visible') return false
   return typeof performance === 'undefined' || performance.now() < ENTRANCE_MS
 }
 
@@ -98,6 +111,7 @@ function Ring({ value, color, shown, filled, size = 54, stroke = 5 }) {
 export default function BiasCard({ row, justChanged }) {
   const gs = gradeStyle(row.grade)
   const isBuy = row.direction === 'BUY'
+  const level = fmtLevel(row.pair, row.invalidationLevel)
 
   const [animate] = useState(shouldAnimate)
   const shown = useCountUp(row.confidence, animate)
@@ -163,21 +177,19 @@ export default function BiasCard({ row, justChanged }) {
         </p>
       )}
 
-      {/* The invalidation level. The single most important element on the page:
-          it is the thing no signal service publishes — which is exactly why the
-          live number is not printed here. The card shows that the bias has one,
-          and the record further down shows the real levels from calls that have
-          already closed, where they prove the point without still being
-          tradeable. */}
-      {row.hasInvalidation && (
+      {/* The invalidation level, shown in full. It is the single most important
+          element on the page — the thing no signal service publishes — and on
+          sample data there is nothing to withhold: nobody can trade a level off
+          a pair that is not being quoted right now. Withholding it here only
+          hid the feature. */}
+      {level && (
         <div className="mt-auto pt-3">
           <div className="p-2 rounded-lg bg-rose-500/[0.06] border border-rose-500/20">
-            <p className="text-[10.5px] font-semibold text-rose-300 flex items-center gap-1.5">
-              <Lock size={10} strokeWidth={2.5} className="shrink-0" aria-hidden="true" />
-              Invalidation level set
+            <p className="text-[10.5px] font-semibold text-rose-300 bf-mono tabular-nums">
+              Invalidates at {level}
             </p>
             <p className="text-[9.5px] text-slate-400 leading-snug mt-0.5">
-              The price that closes this bias is in the app.
+              Cross it and the bias is closed.
             </p>
           </div>
         </div>
