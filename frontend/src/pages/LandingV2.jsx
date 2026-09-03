@@ -35,13 +35,7 @@ export default function LandingV2() {
             bias cards, so "trading without a map" lands against one. */}
         <Inside />
         <Problem />
-        {/* The card first, then the argument about it. Reading "a compass, not a
-            signal button" before seeing a bias asks the visitor to take the
-            distinction on trust; reading it straight after the GBP/USD card —
-            direction, conviction, the level that closes it — lands it against
-            something they have just looked at. */}
         <Direction />
-        <CompassVsSignal />
         {/* Where the Features nav link lands. It used to point at Direction,
             which showed one feature and left the rest to scrolling. */}
         <Features />
@@ -53,6 +47,13 @@ export default function LandingV2() {
         <Plan />
         <About />
         <Faq />
+        {/* The closing argument, immediately before the closing ask. It reads
+            better here than it did in the middle of the page: by this point the
+            visitor has seen the bias card, the twelve panels and every closed
+            call, so "signals make you dependent, a compass makes you sharp" is
+            summing up what they have just been shown rather than asking them to
+            accept the distinction before seeing any of it. */}
+        <CompassVsSignal />
         <FinalCta />
       </main>
       <Footer />

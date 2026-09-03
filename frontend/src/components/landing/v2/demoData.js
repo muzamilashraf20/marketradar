@@ -109,3 +109,32 @@ export const DEMO_NEWS = [
     marketTags: ['Oil↓', 'CAD↓'],
   },
 ]
+
+/* The event brief behind the "sometimes the answer is no call" section.
+
+   This is the engine's own recorded output for a real high-impact print — the
+   ISM Manufacturing PMI release it declined to call — kept as written rather
+   than reworded, because the whole point of the section is that the engine said
+   this. It is fixed content, so the panel carries the same SAMPLE label as the
+   others and claims no more than they do.
+
+   It replaces a 952px screenshot that the layout had to render at 460px wide.
+   Half the reasoning was unreadable at that size, and the reasoning is the only
+   reason the section works: anyone can claim restraint, and showing the argument
+   is what makes it land. */
+export const DEMO_BRIEF = {
+  event: 'ISM Manufacturing PMI',
+  currency: 'USD',
+  impact: 'High impact',
+  forecast: '55.2',
+  previous: '55.6',
+  verdict: 'mixed — insufficient directional edge into the print',
+  call: 'No directional call',
+  reasoning:
+    'ISM Manufacturing PMI for August 2026 is due at 14:00 UTC with a forecast of 55.2 against a prior print of 55.6, implying a modest expected pullback but still firmly expansionary territory. Leading indicators from this cycle are genuinely split — the July ISM Manufacturing beat strongly while ISM Services missed and Industrial Production decelerated — preventing any clean directional lean.',
+  indicatorsVerdict: 'mixed',
+  indicatorsLead:
+    'The data points both ways — some leads argue for a beat, others for a miss. This is a real split in the evidence, not missing data, so no directional call is made.',
+  indicatorsDetail:
+    'Two prints carry computable actual-versus-forecast surprises and they point in opposite directions: July ISM Manufacturing printed 55.6 against a 54.0 forecast, a clear beat, while ISM Services printed 54.1 against 54.5, a miss. The net computable surprise score is zero.',
+}

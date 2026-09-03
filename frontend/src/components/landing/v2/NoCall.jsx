@@ -1,4 +1,5 @@
-import { Section, Lede, Screenshot } from './Section'
+import { Section, Lede } from './Section'
+import EventBrief from './EventBrief'
 
 /* Section 7.
 
@@ -19,17 +20,11 @@ export default function NoCall() {
         direction. A bias you can&rsquo;t trust is worse than no bias.
       </Lede>
 
-      {/* 768px, down from 896px. At 896 the frame was 786px tall — taller than a
-          674px viewport, which is the thing this whole pass is removing. The
-          source is a 952px modal, so 768px is 0.81x: a downscale, still sharp,
-          and it closes on one screen. */}
-      <div className="mt-8 sm:mt-10 max-w-[460px]">
-        <Screenshot
-          src="/screens/08-no-call.png"
-          srcW={952} srcH={821}
-          crop={{ x: 0, y: 0, w: 98.3, h: 100 }}
-          alt="BiasForge event brief for a high-impact US economic calendar print, reporting to funded and prop firm traders that the macro evidence is split, and declining to publish a directional bias"
-        />
+      {/* The brief itself, rendered. It was the page's last screenshot: a
+          952px modal shown at 460px wide, which put the reasoning at half
+          size — and the reasoning is what the section rests on. */}
+      <div className="mt-8 sm:mt-10 max-w-[46rem]" data-reveal>
+        <EventBrief />
       </div>
     </Section>
   )
