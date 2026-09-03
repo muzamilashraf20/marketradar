@@ -42,7 +42,33 @@ export const baked = () =>
 const BANNED_IN_COPY =
   /\bsignals?\b|\bsetups?\b|\bentry\b|\bentries\b|\bstop[- ]?loss\b|\btake[- ]?profit\b|\bwin rate\b|\bguarantee\w*|\bproven\b|\brisk[- ]free\b|\bodds\b|\bprobabilit\w+/i
 
-export const publishableThesis = t => (t && !BANNED_IN_COPY.test(t) ? t : null)
+/* The opening of the reasoning, never the whole read.
+
+   line-clamp would have hidden the rest in CSS while leaving every word in the
+   DOM and in the static HTML, which is not withholding it — it is decorating it.
+   The cut happens here, at the first sentence boundary, so what the browser
+   never receives cannot be read out of the source.
+
+   One sentence is enough to show that the read is specific and that it is
+   written rather than generated from a template, which is what this preview is
+   for. The rest is the product. */
+const PREVIEW_CHARS = 190
+
+export const previewThesis = t => {
+  if (!t) return null
+  const clean = String(t).trim()
+  if (clean.length <= PREVIEW_CHARS) return clean
+  const cut = clean.slice(0, PREVIEW_CHARS)
+  // Prefer a sentence end, fall back to a word boundary; never cut mid-word.
+  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+  if (stop > PREVIEW_CHARS * 0.5) return cut.slice(0, stop + 1)
+  const space = cut.lastIndexOf(' ')
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+}
+
+export const publishableThesis = t =>
+  t && !BANNED_IN_COPY.test(t) ? previewThesis(t) : null
+
 
 /* Every publishable bias, highest conviction first. Deliberately NOT capped
    here: the header states how many biases are actually live, and capping at the
@@ -91,7 +117,13 @@ export function useCompassData() {
             grade: p.direction === 'FLAT' ? null : p.grade,
             entryTiming: p.entryTiming,
             thesis: publishableThesis(p.thesis),
-            invalidationLevel: p.invalidationLevel,
+            // Whether the bias HAS a level, never the level itself. That number
+            // is the product: it is the one thing a signal service does not
+            // publish and the whole page is built on saying we do. Giving it
+            // away live, to anyone, with no account, leaves nothing to buy.
+            // Closed calls keep their exact levels in the record below — those
+            // are proof, not something anyone can still trade.
+            hasInvalidation: p.invalidationLevel != null,
             isHeadline: p.isHeadline,
             updatedAt: p.updatedAt,
           }))

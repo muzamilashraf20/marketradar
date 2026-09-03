@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Lock } from 'lucide-react'
 import { useCompassData } from './useCompassData'
 
 const isServer = typeof window === 'undefined'
@@ -29,12 +30,6 @@ const TIMING_STYLE = {
   FRESH:    'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
   EXTENDED: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
   LATE:     'bg-red-500/10 text-red-400 border-red-500/20',
-}
-
-const fmtLevel = (pair, v) => {
-  if (v == null) return null
-  const dp = pair?.includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
-  return Number(v).toFixed(dp)
 }
 
 const fmtPair = p => (p && p.length === 6 ? `${p.slice(0, 3)}/${p.slice(3)}` : p || '')
@@ -151,7 +146,6 @@ export default function BiasShowcase() {
 
   const gs = gradeStyle(row.grade)
   const isBuy = row.direction === 'BUY'
-  const level = fmtLevel(row.pair, row.invalidationLevel)
 
   return (
     <div className="bf-card overflow-hidden shadow-[0_24px_70px_-30px_rgba(0,0,0,0.95)]" ref={ref}>
@@ -188,6 +182,9 @@ export default function BiasShowcase() {
           </div>
         </div>
 
+        {/* The opening of the reasoning, not all of it. The cut is made in
+            useCompassData before the text is ever sent, so the rest is not
+            sitting in the page source under a CSS clamp. */}
         {row.thesis && (
           <p className="mt-5 text-[14px] leading-[1.7] text-slate-300">{row.thesis}</p>
         )}
@@ -196,21 +193,35 @@ export default function BiasShowcase() {
 
             The ring is a class on this element rather than a box positioned over
             a photograph of it. That is the whole reason this section stopped
-            being a screenshot: the marker is attached to the thing it marks. */}
-        {level && (
+            being a screenshot: the marker is attached to the thing it marks.
+
+            The number itself is not printed. This section argues that every bias
+            carries the price that closes it, and it can make that argument
+            without handing today's level to anyone who loads the page — that
+            level is the product. The record further down carries the real levels
+            from calls that have already closed, where they prove the point and
+            are no longer tradeable. */}
+        {row.hasInvalidation && (
           <div className="mt-6 relative rounded-lg bg-rose-500/[0.06] border border-rose-500/20 ring-2 ring-cyan-400/70 ring-offset-2 ring-offset-[#0b1220] p-4">
-            <p className="text-[15px] font-semibold text-rose-300 bf-mono tabular-nums">
-              Invalidates at {level}
+            <p className="flex items-center gap-2 text-[15px] font-semibold text-rose-300">
+              <Lock size={14} strokeWidth={2.5} className="shrink-0" aria-hidden="true" />
+              This bias has an invalidation level
             </p>
-            <p className="text-[12.5px] text-slate-400 leading-snug mt-1">
-              A move {isBuy ? 'below' : 'above'} {level} closes this bias. It is not defended, and
-              it is not moved.
+            <p className="text-[12.5px] text-slate-400 leading-snug mt-1.5">
+              One price {isBuy ? 'below' : 'above'} the current read closes it. It is not defended
+              and it is not moved — and it is on the dashboard, not on this page.
             </p>
+            <a
+              href="/login"
+              className="bf-pill bf-lift bf-hairline mt-3.5 inline-block px-3.5 py-1.5 text-[12.5px] text-slate-200 hover:border-slate-600"
+            >
+              See the level
+            </a>
           </div>
         )}
       </div>
 
-      {level && (
+      {row.hasInvalidation && (
         <p className="bf-hairline-t px-5 py-3 flex items-center gap-2 text-[12px] text-cyan-400">
           <span className="inline-block w-6 h-px bg-cyan-400/70 shrink-0" aria-hidden="true" />
           The invalidation level — the price that closes this bias

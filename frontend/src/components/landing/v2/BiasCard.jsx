@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Lock } from 'lucide-react'
 import { baked } from './useCompassData'
 
 /* One bias, rendered the way the dashboard's Macro Compass renders it.
@@ -23,14 +24,6 @@ const TIMING_STYLE = {
   FRESH:    'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
   EXTENDED: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
   LATE:     'bg-red-500/10 text-red-400 border-red-500/20',
-}
-
-// Levels arrive as raw floats from the ATR maths (0.7028257142857143). Round to
-// the pair's real quoting precision — the same convention the backend logs use.
-const fmtLevel = (pair, v) => {
-  if (v == null) return null
-  const dp = pair.includes('JPY') ? 3 : pair === 'XAUUSD' ? 2 : 5
-  return Number(v).toFixed(dp)
 }
 
 const fmtPair = p => (p && p.length === 6 ? `${p.slice(0, 3)}/${p.slice(3)}` : p || '')
@@ -105,7 +98,6 @@ function Ring({ value, color, shown, filled, size = 54, stroke = 5 }) {
 export default function BiasCard({ row, justChanged }) {
   const gs = gradeStyle(row.grade)
   const isBuy = row.direction === 'BUY'
-  const level = fmtLevel(row.pair, row.invalidationLevel)
 
   const [animate] = useState(shouldAnimate)
   const shown = useCountUp(row.confidence, animate)
@@ -172,20 +164,25 @@ export default function BiasCard({ row, justChanged }) {
       )}
 
       {/* The invalidation level. The single most important element on the page:
-          it is the thing no signal service publishes, so it gets its own
-          container rather than being another line of body text. */}
-      {level && (
+          it is the thing no signal service publishes — which is exactly why the
+          live number is not printed here. The card shows that the bias has one,
+          and the record further down shows the real levels from calls that have
+          already closed, where they prove the point without still being
+          tradeable. */}
+      {row.hasInvalidation && (
         <div className="mt-auto pt-3">
           <div className="p-2 rounded-lg bg-rose-500/[0.06] border border-rose-500/20">
-            <p className="text-[10.5px] font-semibold text-rose-300">
-              Invalidates at {level}
+            <p className="text-[10.5px] font-semibold text-rose-300 flex items-center gap-1.5">
+              <Lock size={10} strokeWidth={2.5} className="shrink-0" aria-hidden="true" />
+              Invalidation level set
             </p>
             <p className="text-[9.5px] text-slate-400 leading-snug mt-0.5">
-              Cross it and the bias is closed.
+              The price that closes this bias is in the app.
             </p>
           </div>
         </div>
       )}
+
     </li>
   )
 }

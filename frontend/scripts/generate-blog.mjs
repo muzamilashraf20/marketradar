@@ -60,7 +60,21 @@ const PUBLISHABLE_GRADES = new Set(['A', 'A-', 'B', 'C']);
 // banned term is not quoted. See the note there for why.
 const BANNED_IN_COPY =
   /\bsignals?\b|\bsetups?\b|\bentry\b|\bentries\b|\bstop[- ]?loss\b|\btake[- ]?profit\b|\bwin rate\b|\bguarantee\w*|\bproven\b|\brisk[- ]free\b|\bodds\b|\bprobabilit\w+/i;
-const publishableThesis = t => (t && !BANNED_IN_COPY.test(t) ? t : null);
+/* Mirrors previewThesis() in useCompassData.js — the cut is made here rather
+   than with line-clamp so the rest of the read never reaches the HTML. */
+const PREVIEW_CHARS = 190;
+const previewThesis = (t) => {
+  if (!t) return null;
+  const clean = String(t).trim();
+  if (clean.length <= PREVIEW_CHARS) return clean;
+  const cut = clean.slice(0, PREVIEW_CHARS);
+  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+  if (stop > PREVIEW_CHARS * 0.5) return cut.slice(0, stop + 1);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…';
+};
+
+const publishableThesis = (t) => (t && !BANNED_IN_COPY.test(t) ? previewThesis(t) : null);
 
 // Non-blog routes for the sitemap — keep roughly in sync with the app.
 const STATIC_ROUTES = [
@@ -591,7 +605,8 @@ function shapeCompass(json) {
       grade: p.grade,
       entryTiming: p.entryTiming,
       thesis: publishableThesis(p.thesis),
-      invalidationLevel: p.invalidationLevel,
+      // Never the live level — see the note in useCompassData.js.
+      hasInvalidation: p.invalidationLevel != null,
       isHeadline: p.isHeadline,
       updatedAt: p.updatedAt,
     }));
