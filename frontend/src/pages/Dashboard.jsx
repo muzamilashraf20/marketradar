@@ -11,6 +11,7 @@ import { SkeletonRow } from '../components/common/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { Lock } from 'lucide-react'
 import MacroCompass from '../components/dashboard/MacroCompass'
+import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -63,8 +64,10 @@ export default function Dashboard() {
   const loadBiasHistory = async (days) => {
     setHistoryLoading(true)
     try {
-      // Performance endpoint returns the same history PLUS a real-market score per bias + summary stats
-      const res = await fetch(`${API_BASE}/api/bias-performance?days=${days}`)
+      // Performance endpoint returns the same history PLUS a real-market score per bias + summary stats.
+      // Signed-in only now — it publishes a win rate, which has no business being
+      // readable by anyone who curls the API.
+      const res = await authedFetch(`${API_BASE}/api/bias-performance?days=${days}`, { token: user?.token })
       const data = await res.json()
       setBiasHistory(Array.isArray(data.history) ? data.history : [])
       setBiasSummary(data.summary || null)
@@ -96,13 +99,17 @@ export default function Dashboard() {
     sub: '', pct: 0, hex: '#10b981', configured: false
   })
 
+  // Re-runs when the session lands. Today's Bias now returns a trimmed read to
+  // callers it cannot identify, and AuthContext resolves after first paint — a
+  // mount-only effect would fetch the public preview and keep it.
   useEffect(() => {
     fetchNews()
     fetchCalendar()
     fetchStrength()
     fetchTodayBias()
     loadPropRisk()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.token])
 
   const fetchNews = async () => {
     try {
@@ -172,7 +179,9 @@ export default function Dashboard() {
   const fetchTodayBias = async () => {
     try {
       setAiBiasLoading(true)
-      const res = await fetch(`${API_BASE}/api/today-bias`)
+      // Answers either way; the token is what gets the full read and the
+      // invalidation wording rather than the public preview.
+      const res = await authedFetch(`${API_BASE}/api/today-bias`, { token: user?.token })
       const data = await res.json()
       // Endpoint returns top-level direction/pair/confidence/tradeGrade/reasoning when a bias exists
       if (data.success && data.direction) {

@@ -606,7 +606,7 @@ function shapeCompass(json) {
       entryTiming: p.entryTiming,
       thesis: publishableThesis(p.thesis),
       // Never the live level — see the note in useCompassData.js.
-      hasInvalidation: p.invalidationLevel != null,
+      hasInvalidation: p.hasInvalidation ?? p.invalidationLevel != null,
       isHeadline: p.isHeadline,
       updatedAt: p.updatedAt,
     }));

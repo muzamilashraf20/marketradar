@@ -123,7 +123,10 @@ export function useCompassData() {
             // away live, to anyone, with no account, leaves nothing to buy.
             // Closed calls keep their exact levels in the record below — those
             // are proof, not something anyone can still trade.
-            hasInvalidation: p.invalidationLevel != null,
+            // The server sends this and withholds the level from callers it
+            // cannot identify. The fallback derives it for a signed-in caller,
+            // who still gets the number.
+            hasInvalidation: p.hasInvalidation ?? p.invalidationLevel != null,
             isHeadline: p.isHeadline,
             updatedAt: p.updatedAt,
           }))

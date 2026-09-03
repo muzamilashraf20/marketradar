@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw, Loader2, Compass, ChevronDown, AlertCircle, Clock } from 'lucide-react'
+import { useAuth } from '../../context/AuthContext'
+import { authedFetch } from '../../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -217,6 +219,10 @@ function PairCard({ p, expanded, onToggle }) {
 }
 
 export default function MacroCompass() {
+  // The compass endpoint answers signed-out callers too, with the levels stripped
+  // — that is what the landing page renders. In here we want the full rows, so
+  // the session goes with the request.
+  const { user } = useAuth()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -225,7 +231,9 @@ export default function MacroCompass() {
   const load = async () => {
     setLoading(true); setError('')
     try {
-      const res = await fetch(`${API_BASE}/api/macro-compass`)
+      // Without a token this returns the public shape — no invalidation levels,
+      // reasoning cut to a sentence — which is what the landing page gets.
+      const res = await authedFetch(`${API_BASE}/api/macro-compass`, { token: user?.token })
       const json = await res.json()
       if (!json.success) throw new Error(json.error || 'Failed to load')
       setData(json)
@@ -236,11 +244,16 @@ export default function MacroCompass() {
     }
   }
 
+  // Keyed on the token: AuthContext resolves the session after first paint, so a
+  // mount-only effect could fire the one request that matters before there is
+  // anything to authenticate it with, and the panel would sit on the public
+  // shape — no levels — until something else forced a reload.
   useEffect(() => {
     load()
     const t = setInterval(load, 5 * 60 * 1000)   // engine writes at most every 2h; 5min keeps it fresh cheaply
     return () => clearInterval(t)
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.token])
 
   const active = (data?.pairs || []).filter(p => p.direction !== 'FLAT')
   const flat = (data?.pairs || []).filter(p => p.direction === 'FLAT')

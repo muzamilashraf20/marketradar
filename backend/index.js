@@ -637,6 +637,76 @@ async function requireUser(req, res) {
   }
 }
 
+// Resolve the caller's session WITHOUT rejecting anonymous callers. Routes that
+// serve both the public site and the signed-in app use this to decide which
+// payload to send, rather than whether to answer at all.
+async function optionalUser(req) {
+  const authHeader = req.headers.authorization
+  if (!authHeader || !supabase) return null
+  try {
+    const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
+    return user || null
+  } catch { return null }
+}
+
+// ── What an anonymous caller may see of a LIVE bias ──────────────────────────
+//
+// The landing page needs real engine output to be worth anything, so these
+// routes stay open. What they must not hand over is the part people pay for.
+//
+// The invalidation level is exactly that: it is the one thing a signal service
+// does not publish, the whole product is built on saying we do, and it was
+// being served to anyone who typed the URL. The reasoning is the same — the
+// full macro read is the product, one sentence of it is the advert.
+//
+// Closed calls are deliberately NOT trimmed and /api/bias-calls stays fully
+// public: a level nobody can trade any more is evidence, not inventory. It is
+// what makes the locked panel on the landing page credible.
+const PUBLIC_THESIS_CHARS = 190
+function publicThesis(t) {
+  if (!t) return t
+  const clean = String(t).trim()
+  if (clean.length <= PUBLIC_THESIS_CHARS) return clean
+  const cut = clean.slice(0, PUBLIC_THESIS_CHARS)
+  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+  if (stop > PUBLIC_THESIS_CHARS * 0.5) return cut.slice(0, stop + 1)
+  const space = cut.lastIndexOf(' ')
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+}
+
+// A live bias row, minus the level and minus the full read. hasInvalidation is
+// kept so the client can still show that a level exists without being told it.
+function publicPair(p) {
+  if (!p || typeof p !== 'object') return p
+  const { invalidationLevel, invalidationText, ...rest } = p
+  return {
+    ...rest,
+    thesis: publicThesis(rest.thesis),
+    hasInvalidation: invalidationLevel != null,
+  }
+}
+
+// The Today's Bias payload. whatWouldFlipIt is the invalidation stated in prose,
+// and runnerUps names the engine's other picks — both are the paid view.
+function publicTodayBias(body) {
+  if (!body || typeof body !== 'object') return body
+  const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, ...rest } = body
+  return {
+    ...rest,
+    reasoning: publicThesis(rest.reasoning),
+    hasInvalidation: whatWouldFlipIt != null,
+    publicView: true,
+  }
+}
+
+// Swap res.json for a trimming version when the caller is anonymous, so every
+// exit path in the route — including its catch block — is covered by one line
+// at the top instead of a filter at each return.
+function trimUnlessSignedIn(res, trim) {
+  const send = res.json.bind(res)
+  res.json = payload => send(trim(payload))
+}
+
 // Newest recurring sale for this email. NEVER throws: a missing token or a
 // Gumroad outage resolves to { ok:false, sale:null } so callers degrade to the
 // instructions + cancellation-request path instead of a dead end.
@@ -2771,7 +2841,10 @@ async function notifyTodaysBiasChange(result, oldKey) {
 
 // Dashboard widget endpoint — serves cached AI bias; computes lazily only when stale (>45 min)
 // 💰 AI cost dashboard — today's Anthropic spend estimate, per feature
-app.get('/api/ai-costs', (req, res) => {
+app.get('/api/ai-costs', async (req, res) => {
+  // Our own Anthropic spend, per feature, per day. This is not a product
+  // surface and has no caller in the app — it was answering anyone who asked.
+  if (!await requireUser(req, res)) return
   res.json({ success: true, ...aiCosts, totalUSD: +aiCosts.totalUSD.toFixed(4) })
 })
 
@@ -2860,6 +2933,11 @@ async function scoreBias(row) {
 
 // 🎯 Bias performance — every bias scored vs real market + summary stats
 app.get('/api/bias-performance', async (req, res) => {
+  // Win rate, average pips, per-bias scoring. The landing page carries no
+  // performance claim by design; this endpoint was publishing one anyway, to
+  // anyone, unauthenticated. It backs the Bias History modal, which is behind
+  // a login, so it belongs behind one too.
+  if (!await requireUser(req, res)) return
   try {
     const days = Math.min(parseInt(req.query.days) || 7, 90)
     const cacheKey = `bias_performance_${days}`
@@ -2935,6 +3013,13 @@ app.get('/api/bias-performance', async (req, res) => {
 // never show a pair the engine has disabled, and the headline row is flagged rather than
 // re-derived on the client. Sorted strongest-conviction first.
 app.get('/api/macro-compass', async (req, res) => {
+  // Open, because the landing page's hero is this data and it has to render for
+  // a visitor with no account. Anonymous callers get the rows without the
+  // invalidation level and with the reasoning cut to a sentence.
+  if (!await optionalUser(req)) {
+    trimUnlessSignedIn(res, body =>
+      body?.pairs ? { ...body, pairs: body.pairs.map(publicPair), publicView: true } : body)
+  }
   try {
     if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
     const { data, error } = await supabase.from('bias_state_v2').select('*')
@@ -3142,6 +3227,9 @@ app.get('/api/bias-calls', async (req, res) => {
 })
 
 app.get('/api/today-bias', async (req, res) => {
+  // Same split as the compass. Five different exit paths return a bias here, so
+  // the trim goes on res.json rather than on each of them.
+  if (!await optionalUser(req)) trimUnlessSignedIn(res, publicTodayBias)
   // The client derives its own "stale" label from this rather than hardcoding a
   // number that can fall behind the engine's cadence.
   const staleAfterMins = TODAY_BIAS_STALE_AFTER_MIN
