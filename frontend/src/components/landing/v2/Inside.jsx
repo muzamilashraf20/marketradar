@@ -16,9 +16,8 @@ export default function Inside() {
   return (
     <Section eyebrow="The full picture" headline="Every input that moves a currency, in one place." wide>
       <Lede>
-        Every input behind a bias is also a page you can open and read for yourself — the economic
-        calendar, COT positioning, currency strength, and a trade journal that ties it all back to
-        what you actually did, with the{' '}
+        Price, positioning, the calendar, the wires and cross-asset flow are read together and
+        resolved into one directional call per pair — with the{' '}
         <Ref href="/blog">macro journal</Ref> covering how they fit together.
       </Lede>
 

@@ -23,7 +23,7 @@ export default function NoCall() {
           674px viewport, which is the thing this whole pass is removing. The
           source is a 952px modal, so 768px is 0.81x: a downscale, still sharp,
           and it closes on one screen. */}
-      <div className="mt-10 sm:mt-12 max-w-[520px]">
+      <div className="mt-8 sm:mt-10 max-w-[460px]">
         <Screenshot
           src="/screens/08-no-call.png"
           srcW={952} srcH={821}

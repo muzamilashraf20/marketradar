@@ -19,7 +19,7 @@ const COLUMNS = [
 /* Section 3 — the differentiating section, and the one given the most space. */
 export default function Direction() {
   return (
-    <Section id="features" eyebrow="Direction and invalidation" headline="Every bias comes with the level where it's wrong." wide>
+    <Section eyebrow="Direction and invalidation" headline="Every bias comes with the level where it's wrong." wide>
       <Lede>
         Being handed a buy price and a stop leaves you nothing to think
         about. A <Ref href="/blog/what-is-market-bias">macro bias</Ref> tells you which way the

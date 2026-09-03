@@ -4,6 +4,7 @@ import Nav from '../components/landing/v2/Nav'
 import Hero from '../components/landing/v2/Hero'
 import Problem from '../components/landing/v2/Problem'
 import CompassVsSignal from '../components/landing/v2/CompassVsSignal'
+import Features from '../components/landing/v2/Features'
 import Direction from '../components/landing/v2/Direction'
 import Noise from '../components/landing/v2/Noise'
 import PropFirmMode from '../components/landing/v2/PropFirmMode'
@@ -41,6 +42,9 @@ export default function LandingV2() {
             something they have just looked at. */}
         <Direction />
         <CompassVsSignal />
+        {/* Where the Features nav link lands. It used to point at Direction,
+            which showed one feature and left the rest to scrolling. */}
+        <Features />
         <Noise />
         <PropFirmMode />
         <NoCall />
