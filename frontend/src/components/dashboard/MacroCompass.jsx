@@ -83,13 +83,15 @@ function Gauge({ value, color, size = 56, stroke = 5 }) {
   )
 }
 
-function PairCard({ p, expanded, onToggle }) {
+function PairCard({ p, expanded, onToggle, marketClosed }) {
   const gs = gradeStyle(p.grade)
   const isBuy = p.direction === 'BUY'
   const isFlat = p.direction === 'FLAT'
   const scored = p.confidence != null
   const age = ageMinsOf(p.updatedAt)
-  const stale = age != null && age > STALE_AFTER_MIN
+  // Amber age = the engine went quiet unexpectedly. With the market shut it went quiet on
+  // schedule, so the timestamp is just a fact, not a warning.
+  const stale = !marketClosed && age != null && age > STALE_AFTER_MIN
   const level = fmtLevel(p.pair, p.invalidationLevel)
 
   return (
@@ -128,7 +130,7 @@ function PairCard({ p, expanded, onToggle }) {
                 Scoring pending
               </span>
             )}
-            {p.entryTiming && !isFlat && scored && (
+            {p.entryTiming && !isFlat && scored && !marketClosed && (
               <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${TIMING_STYLE[p.entryTiming] || TIMING_STYLE.FRESH}`}>
                 {p.entryTiming}
               </span>
@@ -139,7 +141,9 @@ function PairCard({ p, expanded, onToggle }) {
 
       {/* Age */}
       {p.updatedAt && !isFlat && (
-        <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>{timeAgo(p.updatedAt)}</p>
+        <p className={`text-[9.5px] mt-2 ${stale ? 'text-amber-400/80' : 'text-slate-600'}`}>
+          {marketClosed ? `${timeAgo(p.updatedAt)} · at the close` : timeAgo(p.updatedAt)}
+        </p>
       )}
 
       {/* A flat pair still needs to say something — otherwise the card reads as a loading failure.
@@ -265,7 +269,11 @@ export default function MacroCompass() {
     .filter(Boolean)
     .sort()
     .pop() || null
-  const engineStale = (ageMinsOf(lastRun) ?? 0) > STALE_AFTER_MIN
+  // A shut market is not a broken engine. Between Friday's close and Sunday's open the engine
+  // stops on purpose, so every one of those ~65 hours used to trip the "may not be running"
+  // alarm below and tell the trader his own product was down.
+  const marketClosed = !!data?.marketClosed
+  const engineStale = !marketClosed && (ageMinsOf(lastRun) ?? 0) > STALE_AFTER_MIN
   const unscored = active.filter(p => p.confidence == null).length
 
   return (
@@ -298,16 +306,28 @@ export default function MacroCompass() {
             <>
               <span className="text-slate-700">·</span>
               <span className={`normal-case tracking-normal ${engineStale ? 'text-amber-400' : ''}`}>
-                engine last ran {timeAgo(lastRun)}
+                {marketClosed ? `scored ${timeAgo(lastRun)}, before the close` : `engine last ran ${timeAgo(lastRun)}`}
               </span>
             </>
           )}
         </div>
       )}
 
+      {/* Closed market — its own line, in neutral chrome, because nothing here is wrong. The
+          rows below are a record of where the macro stood at the close, not a live read. */}
+      {data && !error && marketClosed && (
+        <div className="flex items-start gap-2 p-2.5 mb-3 rounded-xl bg-white/[0.03] border border-white/10">
+          <Clock size={13} className="text-slate-400 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-slate-400 leading-snug">
+            Market closed for the weekend — these are the biases as they stood at the close. Nothing
+            re-scores until Sydney opens on Sunday.
+          </p>
+        </div>
+      )}
+
       {/* Degraded banner — the panel is built on conviction, so say plainly when conviction is
           missing or the engine has gone quiet rather than rendering confident-looking empty rings. */}
-      {data && !error && (engineStale || unscored > 0) && (
+      {data && !error && !marketClosed && (engineStale || unscored > 0) && (
         <div className="flex items-start gap-2 p-2.5 mb-3 rounded-xl bg-amber-500/[0.06] border border-amber-500/15">
           <Clock size={13} className="text-amber-400 shrink-0 mt-0.5" />
           <p className="text-[11px] text-amber-200/90 leading-snug">
@@ -352,6 +372,7 @@ export default function MacroCompass() {
             <PairCard
               key={p.pair}
               p={p}
+              marketClosed={marketClosed}
               expanded={openPair === p.pair}
               onToggle={() => setOpenPair(openPair === p.pair ? null : p.pair)}
             />

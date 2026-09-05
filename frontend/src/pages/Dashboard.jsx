@@ -272,10 +272,19 @@ export default function Dashboard() {
         confidence: aiBias.confidence,
         grade: aiBias.grade,
         movePotential: aiBias.movePotential,
-        entryQuality: aiBias.entryQuality,
         generatedAt: aiBias.generatedAt,
         stale: aiBias.stale,
         selectionMethod: aiBias.selectionMethod,
+        // These four stopped at aiBias and never reached the card, which is why the
+        // closed-market branch below could never fire: on a Saturday the card read
+        // "Stale - Tap to refresh" and the refresh landed straight back on the
+        // market-closed branch of the endpoint. staleAfterMins was silently falling
+        // back to 180 for the same reason, and selectionReasoning had a whole render
+        // branch that could never run.
+        marketClosed: aiBias.marketClosed,
+        staleAfterMins: aiBias.staleAfterMins,
+        selectionReasoning: aiBias.selectionReasoning,
+        entryQuality: aiBias.entryQuality,
         ai: true,
       }
     : getBiasFromStrength()
@@ -372,7 +381,8 @@ export default function Dashboard() {
                   {strengthLoading ? '...' : todaysBias ? `${todaysBias.action} ${todaysBias.pair}` : 'No signal'}
                 </p>
                 <p className="text-[10px] text-slate-500 truncate">{
-                  todaysBias?.selectionMethod === 'v2' ? '🧭 Macro Compass'
+                  todaysBias?.marketClosed ? 'Market closed · last read'
+                    : todaysBias?.selectionMethod === 'v2' ? '🧭 Macro Compass'
                     : todaysBias?.selectionMethod === 'ai' ? '🤖 AI Selected Pair'
                     : 'Top Bias from Strength'
                 }</p>
@@ -400,12 +410,18 @@ export default function Dashboard() {
 
           {/* Today's Bias */}
           <div className={`rounded-xl p-3 sm:p-4 border ${
-            todaysBias?.action === 'SELL'
+            todaysBias?.marketClosed
+              ? 'bg-white/[0.03] border-white/10'
+              : todaysBias?.action === 'SELL'
               ? 'bg-red-500/10 border-red-500/20'
               : 'bg-emerald-500/10 border-emerald-500/20'
           }`}>
             <div className="flex items-center justify-between mb-2 sm:mb-3">
-              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">Today's Bias</span>
+              {/* A weekend bias is not today's bias. It is the last one the engine scored before
+                  the close, and naming it "Today's" is what made a frozen read look tradeable. */}
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium">
+                {todaysBias?.marketClosed ? 'Last Bias' : "Today's Bias"}
+              </span>
               {todaysBias?.selectionMethod === 'ai' && (
                 <span className="text-[9px] font-bold text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded">🤖 AI PICKED</span>
               )}
@@ -437,7 +453,9 @@ export default function Dashboard() {
             ) : todaysBias ? (
               <>
                 <p className={`text-xs sm:text-sm font-bold leading-none mb-1 truncate ${
-                  todaysBias.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
+                  todaysBias.marketClosed
+                    ? 'text-slate-300'
+                    : todaysBias.action === 'SELL' ? 'text-red-400' : 'text-emerald-400'
                 }`}>
                   {todaysBias.action} {todaysBias.pair}
                 </p>
@@ -446,10 +464,10 @@ export default function Dashboard() {
                     {todaysBias.confidence}% confidence{todaysBias.grade && todaysBias.grade !== '-' ? ` · Grade ${todaysBias.grade}` : ''}
                   </p>
                 ) : null}
-                {todaysBias.movePotential?.note ? (
+                {!todaysBias.marketClosed && todaysBias.movePotential?.note ? (
                   <p className="text-[10px] text-amber-400/90 font-medium mb-0.5 line-clamp-1">⚡ {todaysBias.movePotential.note}</p>
                 ) : null}
-                {todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
+                {!todaysBias.marketClosed && todaysBias.entryQuality && todaysBias.entryQuality !== 'N/A' ? (
                   <span className={`inline-block text-[9px] font-bold mb-0.5 ${todaysBias.entryQuality === 'FRESH' ? 'text-emerald-400' : todaysBias.entryQuality === 'EXTENDED' ? 'text-amber-400' : 'text-red-400'}`}>
                     {todaysBias.entryQuality === 'FRESH' ? '🟢 FRESH entry' : todaysBias.entryQuality === 'EXTENDED' ? '🟡 EXTENDED' : '🔴 LATE — wait pullback'}
                   </span>
@@ -466,7 +484,7 @@ export default function Dashboard() {
                        no control. */
                     <p className="mt-1 flex items-center gap-1 text-[10px] font-medium text-slate-400">
                       <Clock size={10} />
-                      Markets closed · last scored {biasGeneratedLabel}
+                      Market closed · last scored {biasGeneratedLabel}
                     </p>
                   ) : biasIsStale ? (
                     <button

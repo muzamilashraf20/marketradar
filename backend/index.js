@@ -3162,6 +3162,11 @@ app.get('/api/macro-compass', async (req, res) => {
       regime: active[0]?.regime || rows[0]?.regime || null,
       counts: { total: rows.length, active: active.length, flat: flatOut.length },
       pairs: [...activeOut, ...flatOut],
+      // The engine is idle BY DESIGN while the market is shut. Without this the panel reads a
+      // weekend as a dead cron and warns that the scoring engine may not be running — over the
+      // 65-odd hours between Friday's close and Sunday's open, which is most of a trader's
+      // downtime and every one of those hours was a false alarm.
+      marketClosed: isForexClosed(),
       updatedAt: new Date().toISOString(),
     })
   } catch (e) {
