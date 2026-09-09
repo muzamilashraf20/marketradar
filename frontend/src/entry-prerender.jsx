@@ -15,6 +15,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import LandingV2 from './pages/LandingV2'
 import AboutPage from './pages/About'
+import TermsPage from './pages/Terms'
+import PrivacyPage from './pages/Privacy'
+import RefundPage from './pages/Refund'
+import ChangelogPage from './pages/Changelog'
+import ContactPage from './pages/Contact'
 
 /* Re-exported so the build script generates the FAQPage and SoftwareApplication
    schemas from the very same values the page renders. Google penalises FAQ
@@ -48,6 +53,33 @@ export function renderAbout() {
   return renderToStaticMarkup(
     <MemoryRouter>
       <AboutPage />
+    </MemoryRouter>
+  )
+}
+
+/* The rest of the static routes, through the same pipeline. Left client-rendered,
+   each of these was served app.html — a 2 kB shell carrying the LANDING page's
+   title, description and canonical. Every one of them told Google it was a
+   duplicate of /, and Google believed it: /terms, /contact and /changelog sat in
+   "Discovered - currently not indexed", never crawled once.
+
+   All five are presentational. Contact holds form state, but useState renders
+   fine to a string and its fetch only runs on submit. Pricing is deliberately
+   absent — it reads AuthContext, which has no provider here. */
+const STATIC_PAGES = {
+  terms: TermsPage,
+  privacy: PrivacyPage,
+  refund: RefundPage,
+  changelog: ChangelogPage,
+  contact: ContactPage,
+}
+
+export function renderStatic(name) {
+  const Page = STATIC_PAGES[name]
+  if (!Page) throw new Error(`entry-prerender: no component registered for "${name}"`)
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      <Page />
     </MemoryRouter>
   )
 }

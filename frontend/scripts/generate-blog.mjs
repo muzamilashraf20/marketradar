@@ -784,6 +784,43 @@ ${posts.map(p => `- [${p.title}](${postUrl(p)}): ${p.description}`).join('\n')}
 
 /* --------------------- LANDING PRERENDER (build) -------------------- */
 
+/* Routes prerendered to real HTML with their own title, description and
+   canonical. Anything not listed here falls through to app.html — fine for the
+   authenticated app, wrong for a page meant to be found. /pricing stays off the
+   list for now: it reads AuthContext, which has no provider in the SSR pass. */
+const PRERENDER_PAGES = [
+  {
+    path: 'about',
+    title: 'About BiasForge | Macro Research for Forex Traders',
+    desc: 'BiasForge is an independent macro research tool for forex, prop firm and funded traders — one directional read per pair, with the invalidation level where it stops being valid.',
+  },
+  {
+    path: 'terms',
+    title: 'Terms of Service | BiasForge',
+    desc: 'The terms covering use of BiasForge — subscriptions, acceptable use, and the limits of what the product is. Educational macro research, not financial advice.',
+  },
+  {
+    path: 'privacy',
+    title: 'Privacy Policy | BiasForge',
+    desc: 'What BiasForge collects, why it collects it, and what happens to it — accounts, payments and analytics, in plain language.',
+  },
+  {
+    path: 'refund',
+    title: 'Refund Policy | BiasForge',
+    desc: 'How refunds work on a BiasForge subscription: what qualifies, the window you have, and how to ask for one.',
+  },
+  {
+    path: 'changelog',
+    title: 'Changelog | BiasForge',
+    desc: 'What shipped and when — every meaningful change to the bias engine, the dashboard and the prop firm tools.',
+  },
+  {
+    path: 'contact',
+    title: 'Contact BiasForge',
+    desc: 'Questions about your account, billing, or a bug you have hit. Built by one funded trader, and answered by the same one.',
+  },
+];
+
 const LANDING_TITLE = 'Macro Bias for Forex & Prop Firm Traders | BiasForge';
 const LANDING_DESC  =
   "Directional macro bias for every major forex pair, with the invalidation level where it's wrong. Built for prop firm and funded traders.";
@@ -936,7 +973,15 @@ async function prerenderLanding({ events, calls, fresh }) {
   // filesystem before rewrites, so / is served this prerendered index.html
   // while /pricing, /dashboard and the rest rewrite to app.html — which means
   // no app route ever ships a flash of landing copy it then throws away.
-  fs.writeFileSync(path.join(DIST, 'app.html'), raw);
+  // app.html is the shell every non-prerendered route falls back to, so it must
+  // not carry the landing page's identity. A canonical pointing at / served on
+  // /pricing and every app route is a duplicate-of-homepage signal, and no
+  // canonical at all is strictly better than a wrong one — the SPA sets its own
+  // title on mount. `raw` itself is left alone: the prerenders below rewrite
+  // that canonical rather than drop it.
+  fs.writeFileSync(path.join(DIST, 'app.html'), raw
+    .replace(/[ \t]*<link\s+rel=["']canonical["'][^>]*>\s*\n?/i, '')
+    .replace(/[ \t]*<meta\s+property=["']og:url["'][^>]*>\s*\n?/i, ''));
 
   const mod = await import(pathToFileURL(SSR_ENTRY).href);
 
@@ -974,37 +1019,39 @@ async function prerenderLanding({ events, calls, fresh }) {
 
   fs.writeFileSync(shell, html);
 
-  // ── /about, same pipeline ──
-  // Vercel checks the filesystem before rewrites, so dist/about/index.html is
-  // served directly and the SPA route never runs for a cold visit.
-  const aboutTitle = 'About BiasForge | Macro Research for Forex Traders';
-  const aboutDesc =
-    'BiasForge is an independent macro research tool for forex, prop firm and funded traders — one directional read per pair, with the invalidation level where it stops being valid.';
+  // ── the static routes, same pipeline ──
+  // Vercel checks the filesystem before rewrites, so dist/<path>/index.html is
+  // served directly and the SPA route never runs for a cold visit. Every page
+  // not in this list falls back to app.html, which is why the list matters: a
+  // route serving the shell has no content and no identity of its own.
+  for (const p of PRERENDER_PAGES) {
+    let html = raw
+      .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(p.title)}</title>`)
+      .replace(
+        /<link\s+rel=["']canonical["']\s+href=["'][^"']*["']\s*\/?>/i,
+        () => `<link rel="canonical" href="${SITE_URL}/${p.path}" />`
+      );
+    html = setMeta(html, 'name', 'description', p.desc);
+    html = setMeta(html, 'property', 'og:title', p.title);
+    html = setMeta(html, 'property', 'og:description', p.desc);
+    html = setMeta(html, 'property', 'og:url', `${SITE_URL}/${p.path}`);
+    html = setMeta(html, 'name', 'twitter:title', p.title);
+    html = setMeta(html, 'name', 'twitter:description', p.desc);
 
-  let aboutHtml = raw
-    .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${esc(aboutTitle)}</title>`)
-    .replace(
-      /<link\s+rel=["']canonical["']\s+href=["'][^"']*["']\s*\/?>/i,
-      () => `<link rel="canonical" href="${SITE_URL}/about" />`
-    );
-  aboutHtml = setMeta(aboutHtml, 'name', 'description', aboutDesc);
-  aboutHtml = setMeta(aboutHtml, 'property', 'og:title', aboutTitle);
-  aboutHtml = setMeta(aboutHtml, 'property', 'og:description', aboutDesc);
-  aboutHtml = setMeta(aboutHtml, 'property', 'og:url', `${SITE_URL}/about`);
-  aboutHtml = setMeta(aboutHtml, 'name', 'twitter:title', aboutTitle);
-  aboutHtml = setMeta(aboutHtml, 'name', 'twitter:description', aboutDesc);
-  aboutHtml = aboutHtml.replace(rootRe, `<div id="root">${mod.renderAbout()}</div>`);
+    const markup = p.path === 'about' ? mod.renderAbout() : mod.renderStatic(p.path);
+    html = html.replace(rootRe, `<div id="root">${markup}</div>`);
 
-  const aboutDir = path.join(DIST, 'about');
-  fs.mkdirSync(aboutDir, { recursive: true });
-  fs.writeFileSync(path.join(aboutDir, 'index.html'), aboutHtml);
+    const dir = path.join(DIST, p.path);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'index.html'), html);
+    console.log(`  ✓ /${p.path} prerendered (${(Buffer.byteLength(html) / 1024).toFixed(1)} kB)`);
+  }
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
   console.log(`  ✓ / prerendered (${kb} kB)`);
   console.log(`      bias + news: sample (not fetched)` +
               ` · events: ${fresh.events ? 'live' : events ? 'snapshot' : 'NONE'}` +
               ` · closed calls baked: ${calls?.length ?? 0}`);
-  console.log(`  ✓ /about prerendered (${(Buffer.byteLength(aboutHtml) / 1024).toFixed(1)} kB)`);
   console.log('  ✓ app.html (SPA shell for every non-root route)');
 }
 
