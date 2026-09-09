@@ -17,6 +17,7 @@ const COLUMNS = [
     links: [
       { label: 'About BiasForge', href: '/about' },
       { label: 'Macro journal', href: '/blog' },
+      { label: 'High-impact news this week', href: '/this-week-in-forex' },
       { label: 'What is market bias?', href: '/blog/what-is-market-bias' },
       { label: 'Prop firm risk management', href: '/blog/prop-firm-risk-management' },
       { label: 'Changelog', href: '/changelog' },
