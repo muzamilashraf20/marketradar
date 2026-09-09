@@ -5996,6 +5996,31 @@ app.get('/api/v2/shadow/yields', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e?.message }) }
 })
 
+// ============================================
+// 🔁 DAILY SITE REBUILD (Vercel deploy hook)
+// ============================================
+// /this-week-in-forex builds its event list from /api/calendar at BUILD time, so
+// that page is only ever as fresh as the last deploy. Without this, a page whose
+// title says "this week" sits on last month's calendar until someone remembers
+// to push. One POST a day moves the window on its own.
+//
+// Off unless VERCEL_DEPLOY_HOOK is set in Railway — no hook, no cron, no noise.
+// Create it in Vercel: Project → Settings → Git → Deploy Hooks (branch: main).
+const DEPLOY_HOOK = process.env.VERCEL_DEPLOY_HOOK || ''
+const REBUILD_HOUR_UTC = Number(process.env.SITE_REBUILD_HOUR_UTC ?? 6)
+let lastRebuildDay = null
+
+async function triggerSiteRebuild(reason) {
+  if (!DEPLOY_HOOK) return
+  try {
+    const r = await fetch(DEPLOY_HOOK, { method: 'POST' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    console.log(`🔁 Site rebuild triggered (${reason})`)
+  } catch (e) {
+    console.error(`⚠️ Site rebuild trigger failed (${reason}): ${e?.message}`)
+  }
+}
+
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
   loadSubscribers()
@@ -6018,6 +6043,22 @@ app.listen(5000, () => {
   setTimeout(() => { sweepReleaseActuals().catch(e => console.error('release-actuals boot sweep error:', e?.message)) }, 2 * 60 * 1000)
   setInterval(() => { sweepReleaseActuals().catch(e => console.error('release-actuals sweep error:', e?.message)) }, 15 * 60 * 1000)
   console.log(`🔎 Release-actuals sweeper (15min, ${Object.keys(SEARCHED_SERIES).join('/')}, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
+  // Daily site rebuild. Har 30min check karo ki rebuild hour aa gaya ya nahi —
+  // ek fixed 24h interval har restart pe khisak jaata hai, ye din ke hisaab se
+  // guard karta hai. Guard memory mein hai, to ek restart usi hour ke andar
+  // zyada se zyada ek extra deploy trigger kar sakta hai; wo harmless hai.
+  if (DEPLOY_HOOK) {
+    setInterval(() => {
+      const now = new Date()
+      const day = now.toISOString().slice(0, 10)
+      if (now.getUTCHours() !== REBUILD_HOUR_UTC || lastRebuildDay === day) return
+      lastRebuildDay = day
+      triggerSiteRebuild('daily calendar refresh')
+    }, 30 * 60 * 1000)
+    console.log(`🔁 Daily site rebuild (${String(REBUILD_HOUR_UTC).padStart(2, '0')}:00 UTC → Vercel deploy hook)`)
+  } else {
+    console.log('🔁 Site rebuild cron off — set VERCEL_DEPLOY_HOOK to enable')
+  }
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.

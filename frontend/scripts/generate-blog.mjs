@@ -52,17 +52,24 @@ const SNAPSHOT    = path.resolve(__dirname, '.landing-snapshot.json');
 // How many biases get a card in the hero. Mirrors CARDS in useCompassData.js.
 
 // Non-blog routes for the sitemap — keep roughly in sync with the app.
+//
+// `lastmod` is the date the page actually last changed; bump it when you edit
+// the page. `null` means the build fills it in, and only two routes earn that:
+// / rebakes its data every build, and /blog follows its newest post. Stamping
+// today's date on all ten was telling Google the refund policy changes daily,
+// and a sitemap that visibly lies about lastmod gets its lastmod discounted
+// everywhere — including on the pages where it is true.
 const STATIC_ROUTES = [
-  { loc: '/',          changefreq: 'daily',   priority: '1.0' },
-  { loc: '/pricing',   changefreq: 'weekly',  priority: '0.9' },
-  { loc: '/about',     changefreq: 'monthly', priority: '0.7' },
-  { loc: '/blog',      changefreq: 'daily',   priority: '0.8' },
-  { loc: '/changelog', changefreq: 'weekly',  priority: '0.6' },
-  { loc: '/contact',   changefreq: 'monthly', priority: '0.5' },
-  { loc: '/login',     changefreq: 'monthly', priority: '0.4' },
-  { loc: '/terms',     changefreq: 'yearly',  priority: '0.3' },
-  { loc: '/privacy',   changefreq: 'yearly',  priority: '0.3' },
-  { loc: '/refund',    changefreq: 'yearly',  priority: '0.3' },
+  { loc: '/',          changefreq: 'daily',   priority: '1.0', lastmod: null },
+  { loc: '/pricing',   changefreq: 'weekly',  priority: '0.9', lastmod: '2026-09-01' },
+  { loc: '/about',     changefreq: 'monthly', priority: '0.7', lastmod: '2026-09-01' },
+  { loc: '/blog',      changefreq: 'daily',   priority: '0.8', lastmod: null },
+  { loc: '/changelog', changefreq: 'weekly',  priority: '0.6', lastmod: '2026-07-22' },
+  { loc: '/contact',   changefreq: 'monthly', priority: '0.5', lastmod: '2026-09-02' },
+  { loc: '/login',     changefreq: 'monthly', priority: '0.4', lastmod: '2026-07-07' },
+  { loc: '/terms',     changefreq: 'yearly',  priority: '0.3', lastmod: '2026-07-27' },
+  { loc: '/privacy',   changefreq: 'yearly',  priority: '0.3', lastmod: '2026-07-27' },
+  { loc: '/refund',    changefreq: 'yearly',  priority: '0.3', lastmod: '2026-05-31' },
 ];
 
 /* ----------------------------- HELPERS ----------------------------- */
@@ -217,6 +224,9 @@ hr{border:0;border-top:1px solid var(--border);margin:44px 0}
 .ev-k{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--muted);padding-top:4px}
 .ev-row.compass .ev-k{color:var(--emerald)}
+.ev-figs{list-style:none;margin:0 0 15px;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.ev-figs li{font-family:var(--mono);font-size:12px;line-height:1.45;color:var(--text);
+  background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:4px 9px}
 @media (max-width:560px){
   .ev{padding:17px 16px}
   .ev-row{grid-template-columns:1fr;gap:2px}
@@ -325,20 +335,238 @@ addEventListener('scroll',u,{passive:true});u();})();
 </script>
 </body></html>`;
 
+/* --------------------- AUTO EVENT BLOCK (live calendar) ------------------- */
+/* A post carrying `autoEvents: true` builds its event block from the live
+   calendar at build time instead of from hand-written frontmatter. That is the
+   whole point of it: the page cannot drift out of date between manual edits,
+   because there are no manual edits.
+
+   Two things here are deliberately NOT generated:
+
+   - The facts. Release names, dates, times, forecast and previous come straight
+     off /api/calendar. Nothing in this file writes a number.
+   - The prose. Each release family carries evergreen copy written once, below.
+     CPI behaves the same way every month; only the figures change, and those
+     come from the feed. No model runs at build time, so this page cannot invent
+     a date, a consensus, or a central bank meeting that is not happening.
+
+   Feed limitation worth knowing: ForexFactory publishes roughly a week ahead,
+   so the back half of a ten-day window is usually empty, and by Friday the feed
+   has little left in it at all. Releases known months ahead — a Fed or a BOJ
+   meeting — go in `pinnedEvents:` frontmatter and merge in by date. A pin
+   expires on its own date exactly like a feed row, so a forgotten one drops off
+   the page instead of going stale in public. */
+
+const AUTO_EVENT_DAYS = 10;
+const ET = 'America/New_York';
+const DAY_MS = 86400000;
+
+const REGION = {
+  USD: 'US', EUR: 'Euro area', GBP: 'UK', JPY: 'Japan', AUD: 'Australia',
+  CAD: 'Canada', CHF: 'Swiss', NZD: 'New Zealand', CNY: 'China',
+};
+
+/* Release families. First match wins, so these run specific to general, and the
+   last entry is the catch-all. `label` gets appended to the region to title the
+   card: "US inflation (CPI)". */
+const EVENT_KB = [
+  {
+    family: 'jobs',
+    re: /(non-?farm|payroll|employment change|unemployment (rate|claims)|average hourly|claimant count|jobless|jobs report|adp)/i,
+    label: 'jobs data',
+    what: 'The labour market read. Employment is half of the dual mandate most major central banks work to, which makes it a direct input into the rate path — and the rate path is what prices a currency.',
+    watch: 'The deviation from consensus matters more than the headline count, and the unemployment rate can override the jobs figure entirely when the two disagree. Wage growth inside the report is the inflation link, so a soft headline with hot earnings is not the dovish print it looks like.',
+    compass: 'This moves the dollar, gold and the indices together rather than one pair in isolation. Let the first spike resolve, then work from the reaction high or low it prints. That extreme is the invalidation: if price reclaims it, the read taken off the release is wrong and the position is done.',
+  },
+  {
+    family: 'cpi',
+    re: /\bcpi\b|consumer price|inflation rate|core inflation|\brpi\b|\bhicp\b/i,
+    label: 'inflation (CPI)',
+    what: 'The headline inflation print. Of everything on the calendar, this is the release that most reliably repositions rate expectations.',
+    watch: 'Core is the number that moves policy — the headline carries food and energy noise the central bank looks through. Month-on-month tells you the current run rate; year-on-year tells you the trend, and the two can point opposite ways in the same release. The surprise against forecast is the move, not the level.',
+    compass: 'A hot print pushes the rate path higher and typically bids the currency while pressuring gold; a cool one does the reverse. Both are conditional, not predictions. Size for a two-way spike, then take direction from where price settles once the first minute is over — and mark that settle level, because losing it means the read has failed.',
+  },
+  {
+    family: 'ppi',
+    re: /\bppi\b|producer price|factory gate/i,
+    label: 'producer prices (PPI)',
+    what: 'Inflation measured at the factory gate rather than the till. It feeds into consumer prices with a lag, and it usually lands just ahead of CPI.',
+    watch: 'Treat it as the warm-up act. It rarely repositions a currency on its own, but a big surprise shifts how the market frames the CPI print that follows, and several PPI components feed directly into the inflation gauge the central bank actually targets.',
+    compass: 'Context rather than a standalone read. A bias built on PPI alone is invalidated the moment CPI disagrees with it, which is an argument for smaller size into it — not a tighter stop.',
+  },
+  {
+    family: 'rate',
+    re: /(rate decision|rate statement|federal funds|main refinancing|official bank rate|policy rate|cash rate|overnight rate|interest rate|monetary policy|press conference|fomc|\bmpc\b|rate vote|policy report|deposit facility)/i,
+    label: 'rate decision',
+    what: 'The central bank sets policy and — the part that actually matters — signals what it expects to do next.',
+    watch: 'The decision itself is usually the smaller half of the move, because it is normally priced in well ahead. What repositions the currency is the statement language, any shift in the projected path, and the press conference, which regularly moves price further than the release did.',
+    compass: 'Rate expectations are the dominant driver of currency pricing, so this resets the working read on the whole currency, not just one pair. Mark the range price held going in. The side that breaks and holds is the read; a move back inside that range says it is wrong.',
+  },
+  {
+    family: 'gdp',
+    re: /\bgdp\b|gross domestic/i,
+    label: 'GDP',
+    what: 'The broadest measure of output. Backward-looking by design — it describes a quarter that has already finished.',
+    watch: 'Because it is old news by the time it prints, it moves markets mainly when it misses badly enough to change the growth story, or when a revision rewrites what the market thought it knew. The composition matters: consumption-led growth reads very differently from inventory-led growth.',
+    compass: 'A slower burn than CPI or a rate decision. It shapes the medium-term read on a currency rather than handing you a level to work from in the next hour, and a strong number inside a weakening trend is more often a fade than a reversal.',
+  },
+  {
+    family: 'retail',
+    re: /retail sales|consumer spending/i,
+    label: 'retail sales',
+    what: 'The monthly read on consumer demand — the single largest component of most developed economies.',
+    watch: 'The control group, which strips out autos, fuel and building materials, is the number economists actually track, and it often diverges from the headline. Revisions to the prior month can be large enough to matter more than the new print.',
+    compass: 'Feeds the growth half of the story rather than the inflation half, so it moves a currency less than CPI and more than a survey. Useful as confirmation of a read you already hold; thin as the sole basis for one.',
+  },
+  {
+    family: 'pmi',
+    re: /\bpmi\b|\bism\b|purchasing managers|business activity|manufacturing index/i,
+    label: 'PMI survey',
+    what: 'A survey of purchasing managers, and one of the earliest reads on where an economy is heading rather than where it has been.',
+    watch: 'The 50 line separates expansion from contraction. Inside the report, the employment and prices-paid components often move markets more than the headline index does, because those are the two channels that touch policy.',
+    compass: 'Directionally supportive or corrective rather than decisive on its own. Best used to set up how you read the hard data that follows it, not as a reason to hold a position through that data.',
+  },
+  {
+    family: 'sentiment',
+    re: /(consumer (sentiment|confidence)|\bzew\b|\bifo\b|sentix|business confidence|\btankan\b)/i,
+    label: 'confidence survey',
+    what: 'A sentiment read: how households or businesses say they feel about conditions ahead.',
+    watch: 'Soft data, so it moves price less than a hard release. The inflation-expectations component inside these surveys is the exception — central banks watch it closely, and a jump there can carry more weight than the headline index.',
+    compass: 'Rarely worth taking a position into. Treat it as texture around a read that already has a level behind it.',
+  },
+  {
+    family: 'other',
+    re: /.*/,
+    label: 'high-impact release',
+    what: 'A release the calendar flags as high impact for this currency.',
+    watch: 'The deviation from consensus is what moves price — the market has already priced the forecast. Check the forecast and previous below, and confirm the exact slot on the live calendar before you take size into it.',
+    compass: 'Know the time, size for the spike, and have the level that tells you the read has failed before the number prints — not after.',
+  },
+];
+
+const kbFor = (title) => EVENT_KB.find(k => k.re.test(String(title || ''))) || EVENT_KB[EVENT_KB.length - 1];
+
+// Everything on this page is stamped in ET, because that is the clock the US
+// calendar runs on and the one this audience already has on their charts.
+const etParts = (iso) => {
+  const d = new Date(iso);
+  return {
+    day:  d.toLocaleDateString('en-US', { timeZone: ET, weekday: 'long', month: 'short', day: 'numeric' }),
+    time: d.toLocaleTimeString('en-US', { timeZone: ET, hour: 'numeric', minute: '2-digit' }),
+    key:  d.toLocaleDateString('en-CA', { timeZone: ET }),   // YYYY-MM-DD, for bucketing
+  };
+};
+
+// The feed writes "-" for a figure it does not have. Printing "forecast -" is
+// worse than printing nothing at all.
+const figures = (e) => [
+  e.forecast && e.forecast !== '-' ? `forecast ${e.forecast}` : '',
+  e.previous && e.previous !== '-' ? `previous ${e.previous}` : '',
+].filter(Boolean).join(' · ');
+
+/* The window label — "September 9-19, 2026". */
+function autoRangeLabel(days = AUTO_EVENT_DAYS) {
+  const a = new Date(), b = new Date(Date.now() + days * DAY_MS);
+  const p = (d, o) => d.toLocaleDateString('en-US', { timeZone: ET, ...o });
+  const year = p(b, { year: 'numeric' });
+  return p(a, { month: 'numeric' }) === p(b, { month: 'numeric' })
+    ? `${p(a, { month: 'long' })} ${p(a, { day: 'numeric' })}–${p(b, { day: 'numeric' })}, ${year}`
+    : `${p(a, { month: 'long', day: 'numeric' })} – ${p(b, { month: 'long', day: 'numeric' })}, ${year}`;
+}
+
+/* Feed rows + pins, into the event array `renderEvents` already knows how to draw. */
+function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
+  const now = Date.now(), until = now + days * DAY_MS;
+  const future = (t) => Number.isFinite(t) && t > now && t <= until;
+
+  const rows = (Array.isArray(calendar) ? calendar : [])
+    .filter(e => e?.title && e?.date && e.impact === 'High')
+    .filter(e => future(new Date(e.date).getTime()))
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  // One release is often four rows in the feed — US CPI arrives as CPI m/m, CPI
+  // y/y, Core CPI m/m and Core CPI y/y stamped at the same minute. Four cards
+  // for one print is exactly what makes a generated page read like a scraper.
+  // Bucket by currency + ET day + family so each print gets one card carrying
+  // all of its figures.
+  const buckets = new Map();
+  for (const e of rows) {
+    const kb = kbFor(e.title);
+    const id = `${e.country}|${etParts(e.date).key}|${kb.family}`;
+    if (!buckets.has(id)) buckets.set(id, { kb, country: e.country, rows: [] });
+    buckets.get(id).rows.push(e);
+  }
+
+  const fromFeed = [...buckets.values()].map(({ kb, country, rows }) => {
+    const first = etParts(rows[0].date);
+    const spread = new Set(rows.map(r => etParts(r.date).time)).size > 1;
+    return {
+      _at: new Date(rows[0].date).getTime(),
+      name: `${REGION[country] || country} ${kb.label}`,
+      when: `${first.day} — ${first.time} ET${spread ? ', with follow-ons after' : ''}`,
+      impact: 'high',
+      lines: rows.map(r => {
+        const fig = figures(r);
+        return `${spread ? etParts(r.date).time + ' — ' : ''}${r.title}${fig ? ` (${fig})` : ''}`;
+      }),
+      what: kb.what, watch: kb.watch, compass: kb.compass,
+    };
+  });
+
+  // A pin only needs `name` and `date`; anything else it carries overrides the
+  // family copy matched off its name.
+  const fromPins = (Array.isArray(pinned) ? pinned : [])
+    .filter(p => p?.name && p?.date && future(new Date(p.date).getTime()))
+    .map(p => {
+      const kb = kbFor(p.name), at = etParts(p.date);
+      return {
+        _at: new Date(p.date).getTime(),
+        name: p.name,
+        when: p.when || `${at.day} — ${at.time} ET`,
+        impact: p.impact || 'high',
+        lines: Array.isArray(p.lines) ? p.lines : [],
+        what: p.what || kb.what, watch: p.watch || kb.watch, compass: p.compass || kb.compass,
+      };
+    });
+
+  return [...fromFeed, ...fromPins].sort((a, b) => a._at - b._at);
+}
+
 /* ------------------------------ RENDER ----------------------------- */
-// Renders the `events:` frontmatter array into the article, swapped in wherever
-// the markdown contains an <!-- EVENTS --> marker. Weekly refresh = edit the
-// array in frontmatter; the prose around it stays evergreen.
+// Renders a post's event array into the article, swapped in wherever the
+// markdown contains an <!-- EVENTS --> marker. The prose around it stays
+// evergreen either way. Where the array comes from depends on the post:
+// `autoEvents: true` builds it from the live calendar at build time, otherwise
+// it is the hand-written `events:` frontmatter.
 function renderEvents(post) {
   const events = Array.isArray(post.events) ? post.events : [];
-  if (!events.length) return '';
+  // An auto page can legitimately come up empty — the feed runs about a week
+  // ahead, so a Friday build sees very little. Say that plainly and point at the
+  // live calendar. A silent gap where the events used to be reads as broken.
+  if (!events.length) {
+    if (!post.autoEvents) return '';
+    return `
+<section class="events">
+  <p class="events-head"><b>${esc(post._range)}</b> — high-impact releases, all times ET</p>
+  <div class="ev">
+    <div class="ev-top"><span class="ev-name">Nothing high-impact scheduled yet</span></div>
+    <p class="ev-row"><span class="ev-k">Note</span><span>The calendar publishes about a week ahead, so the next window has not filled in yet. This page refreshes daily — the releases appear here as they are scheduled. The <a href="/calendar">live economic calendar</a> in-app is always the source of truth.</span></p>
+  </div>
+</section>`;
+  }
 
   const row = (k, v, cls = '') =>
     v ? `<p class="ev-row ${cls}"><span class="ev-k">${k}</span><span>${esc(v)}</span></p>` : '';
 
+  // The window label is computed for an auto post and hand-written for the rest,
+  // so a stale `weekOf:` can never outlive the events it was describing.
+  const head = post.autoEvents
+    ? `<b>${esc(post._range)}</b> — high-impact releases, all times ET`
+    : post.weekOf ? `Week of <b>${esc(post.weekOf)}</b> — all times ET` : '';
+
   return `
 <section class="events">
-  ${post.weekOf ? `<p class="events-head">Week of <b>${esc(post.weekOf)}</b> — all times ET</p>` : ''}
+  ${head ? `<p class="events-head">${head}</p>` : ''}
   ${events.map(e => {
     const impact = String(e.impact || 'high').toLowerCase();
     return `
@@ -348,6 +576,9 @@ function renderEvents(post) {
       <span class="ev-tag ${impact}">${esc(impact === 'backdrop' ? 'backdrop' : impact + ' impact')}</span>
     </div>
     ${e.when ? `<p class="ev-when">${esc(e.when)}</p>` : ''}
+    ${Array.isArray(e.lines) && e.lines.length
+      ? `<ul class="ev-figs">${e.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`
+      : ''}
     ${row('What', e.what)}
     ${row('Watch', e.watch)}
     ${row('Compass', e.compass, 'compass')}
@@ -506,8 +737,17 @@ ${jsonld({
 /* ------------------------------ SITEMAP ---------------------------- */
 function renderSitemap(posts) {
   const today = new Date().toISOString().slice(0, 10);
+  // The listing shows publish dates, so that is what its lastmod tracks. Using
+  // `updated` here would have the daily auto-page rebuild claim the index
+  // changed every day, which is the exact habit this block exists to stop.
+  const newestPost = posts.length ? posts[0].date : today;
   const urls = [
-    ...STATIC_ROUTES.map(r => ({ loc: SITE_URL + r.loc, lastmod: today, changefreq: r.changefreq, priority: r.priority })),
+    ...STATIC_ROUTES.map(r => ({
+      loc: SITE_URL + r.loc,
+      lastmod: r.lastmod || (r.loc === '/blog' ? newestPost : today),
+      changefreq: r.changefreq,
+      priority: r.priority,
+    })),
     // Update-in-place pages refresh weekly and sit at the root — crawl them harder.
     ...posts.map(p => ({
       loc: postUrl(p),
@@ -576,6 +816,7 @@ function shapeEvents(json) {
 async function loadLiveData() {
   let events = null;
   let calls = null;
+  let calendarRaw = null;
   try {
     // The compass and the news feed are no longer baked. The landing page
     // renders a sample for both — see components/landing/v2/demoData.js — so
@@ -588,7 +829,12 @@ async function loadLiveData() {
       getJson(`${API_BASE}/api/calendar`),
       getJson(`${API_BASE}/api/bias-calls`),
     ]);
-    if (e.status === 'fulfilled') events = shapeEvents(e.value);
+    if (e.status === 'fulfilled') {
+      // Kept whole as well as shaped: the hero wants three rows, the weekly page
+      // wants the window. One fetch, two consumers.
+      calendarRaw = Array.isArray(e.value) ? e.value : null;
+      events = shapeEvents(e.value);
+    }
     if (k.status === 'fulfilled' && k.value?.success && Array.isArray(k.value.calls)) calls = k.value.calls;
   } catch { /* fall through to the snapshot */ }
 
@@ -601,11 +847,15 @@ async function loadLiveData() {
   const out = {
     events: events || snap.events || null,
     calls: calls || snap.calls || null,
+    // Banking the calendar is safe in a way banking a price is not: the weekly
+    // page only ever renders events still in the future, so a snapshot from a
+    // failed build degrades to fewer cards — never to wrong ones.
+    calendarRaw: calendarRaw || snap.calendarRaw || null,
   };
-  if (events || calls) {
+  if (events || calls || calendarRaw) {
     try { fs.writeFileSync(SNAPSHOT, JSON.stringify(out, null, 2)); } catch { /* read-only CI fs */ }
   }
-  return { ...out, fresh: { events: !!events, calls: !!calls } };
+  return { ...out, fresh: { events: !!events, calls: !!calls, calendar: !!calendarRaw } };
 }
 
 // JSON destined for an inline <script>. Escaping "<" is what stops a string in
@@ -669,7 +919,7 @@ function setMeta(html, attr, name, content) {
   return html.replace('</head>', `  <meta ${attr}="${name}" content="${escAttr(content)}" />\n  </head>`);
 }
 
-async function prerenderLanding() {
+async function prerenderLanding({ events, calls, fresh }) {
   const shell = path.join(DIST, 'index.html');
   if (!fs.existsSync(shell)) {
     console.error('  ✗ dist/index.html not found — run `vite build` first.');
@@ -689,7 +939,6 @@ async function prerenderLanding() {
   fs.writeFileSync(path.join(DIST, 'app.html'), raw);
 
   const mod = await import(pathToFileURL(SSR_ENTRY).href);
-  const { events, calls, fresh } = await loadLiveData();
 
   const markup = mod.render({ events, calls });
 
@@ -790,7 +1039,30 @@ async function run() {
     console.error('  ✗ dist/ not found — run `vite build` first.');
     process.exit(1);
   }
+  // One fetch per build. The landing hero wants three rows out of it; the auto
+  // pages want the whole window.
+  const live = await loadLiveData();
   const posts = loadPosts();
+
+  // Pages flagged `autoEvents:` take their event list from that calendar rather
+  // than from frontmatter, which is what stops them ageing between edits. The
+  // `updated` stamp is set from the build for the same reason: the window really
+  // does move every day, so the date is earned rather than asserted.
+  const buildDay = new Date().toISOString().slice(0, 10);
+  for (const p of posts) {
+    if (!p.autoEvents) continue;
+    // Number.isFinite, not `||`: a deliberate 0 is a valid window and must not
+    // be silently promoted back to the default.
+    const n = Number(p.autoEventDays);
+    const days = Number.isFinite(n) && n >= 0 ? n : AUTO_EVENT_DAYS;
+    p.events = buildAutoEvents(live.calendarRaw, p.pinnedEvents, days);
+    p._range = autoRangeLabel(days);
+    p.updated = buildDay;
+    const src = live.fresh.calendar ? 'live' : live.calendarRaw ? 'snapshot' : 'NONE';
+    console.log(`  · ${p.slug}: ${p.events.length} event(s), ${days}d window, calendar ${src}`);
+    if (!p.events.length) console.warn(`  ! ${p.slug} has an empty window — page will render the placeholder`);
+  }
+
   fs.mkdirSync(OUT_BLOG, { recursive: true });
 
   for (const p of posts) {
@@ -810,7 +1082,7 @@ async function run() {
   console.log(`  ✓ /blog (index), sitemap.xml, llms.txt`);
 
   console.log('› Prerendering the landing page…');
-  await prerenderLanding();
+  await prerenderLanding(live);
 
   console.log(`› Done — ${posts.length} post(s).`);
 }
