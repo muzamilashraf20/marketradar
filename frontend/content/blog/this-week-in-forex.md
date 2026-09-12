@@ -40,7 +40,7 @@ faq:
     a: "Daily, automatically. The release list, times, forecast and previous figures are rebuilt each day from the live economic calendar rather than rewritten by hand each week, so the window above always starts from today. It is one page that refreshes at the same address, not a new article every week."
 ---
 
-If you trade a funded or challenge account, the fastest way to lose it is a news-day spike you never saw coming. Not a bad read — an ambush. You are in a clean setup, price rips forty pips against you in seconds, and only afterwards do you check what printed at that exact minute. Every high-impact release in the days ahead is below, with the consensus figures, what to watch on each one, and where the bias breaks. This is a map, not a prediction. Nothing here tells you to buy or sell anything.
+If you trade a funded or challenge account, the fastest way to lose it is a news-day spike you never saw coming. Not a bad read — an ambush. You are in a clean setup, price rips forty pips against you in seconds, and only afterwards do you check what printed at that exact minute. Every high-impact release on the calendar is below, with its consensus figures, what to watch on the print, and where a bias built on it breaks. This is a map, not a prediction. Nothing here tells you to buy or sell anything.
 
 ## How high-impact events actually move price
 
@@ -50,7 +50,7 @@ That is why a strong print can sell off and a weak one can rally. Your job aroun
 
 <!-- EVENTS -->
 
-The window above runs ten days out. The economic calendar publishes roughly a week ahead, so the back half fills in as releases get scheduled — check back and the later dates will have appeared.
+The window above runs ten days out. The economic calendar only publishes about a week ahead, so the far half fills in as releases get scheduled — and over a weekend, before the coming week is posted, the block shows the releases that have just printed instead.
 
 ## How to use this
 

@@ -474,15 +474,49 @@ function autoRangeLabel(days = AUTO_EVENT_DAYS) {
     : `${p(a, { month: 'long', day: 'numeric' })} – ${p(b, { month: 'long', day: 'numeric' })}, ${year}`;
 }
 
-/* Feed rows + pins, into the event array `renderEvents` already knows how to draw. */
+/* Label for a recap block: the span the events themselves cover. */
+function recapRangeLabel(events) {
+  if (!events.length) return autoRangeLabel();
+  const p = (ms, o) => new Date(ms).toLocaleDateString('en-US', { timeZone: ET, ...o });
+  const a = events[0]._at, b = events[events.length - 1]._at;
+  const year = p(b, { year: 'numeric' });
+  return p(a, { month: 'numeric' }) === p(b, { month: 'numeric' })
+    ? `${p(a, { month: 'long' })} ${p(a, { day: 'numeric' })}–${p(b, { day: 'numeric' })}, ${year}`
+    : `${p(a, { month: 'long', day: 'numeric' })} – ${p(b, { month: 'long', day: 'numeric' })}, ${year}`;
+}
+
+/* Feed rows + pins, into the event array `renderEvents` already knows how to draw.
+   Returns a mode alongside them, because this page has two honest states.
+
+   The vendor feed carries the CURRENT week and nothing else — ForexFactory's
+   nextweek.json has been a 404 for as long as this has been wired, and the FMP
+   source that would reach further is down. So from Friday evening through
+   Sunday the forward window is genuinely empty, every single week. That is
+   roughly two days in seven, on the page we most want found.
+
+   Rather than publish a shrug, an empty forward window falls back to the week
+   that just finished: same releases, same figures, described as what they are.
+   Someone searching this on a Saturday is planning the week ahead, and what
+   just printed is exactly the context they carry into it. */
 function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
   const now = Date.now(), until = now + days * DAY_MS;
   const future = (t) => Number.isFinite(t) && t > now && t <= until;
 
-  const rows = (Array.isArray(calendar) ? calendar : [])
-    .filter(e => e?.title && e?.date && e.impact === 'High')
+  const high = (Array.isArray(calendar) ? calendar : [])
+    .filter(e => e?.title && e?.date && e.impact === 'High');
+
+  let mode = 'upcoming';
+  let rows = high
     .filter(e => future(new Date(e.date).getTime()))
     .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  if (!rows.length) {
+    mode = 'recap';
+    const since = now - 7 * DAY_MS;
+    rows = high
+      .filter(e => { const t = new Date(e.date).getTime(); return t <= now && t > since; })
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
 
   // One release is often four rows in the feed — US CPI arrives as CPI m/m, CPI
   // y/y, Core CPI m/m and Core CPI y/y stamped at the same minute. Four cards
@@ -509,7 +543,11 @@ function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
         const fig = figures(r);
         return `${spread ? etParts(r.date).time + ' — ' : ''}${r.title}${fig ? ` (${fig})` : ''}`;
       }),
-      what: kb.what, watch: kb.watch, compass: kb.compass,
+      // `what` describes the release and reads the same either way. `watch`
+      // and `compass` tell you how to trade into it, which is the wrong tense
+      // for something that has already printed.
+      what: kb.what,
+      ...(mode === 'recap' ? {} : { watch: kb.watch, compass: kb.compass }),
     };
   });
 
@@ -529,7 +567,7 @@ function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
       };
     });
 
-  return [...fromFeed, ...fromPins].sort((a, b) => a._at - b._at);
+  return { mode, events: [...fromFeed, ...fromPins].sort((a, b) => a._at - b._at) };
 }
 
 /* ------------------------------ RENDER ----------------------------- */
@@ -561,12 +599,20 @@ function renderEvents(post) {
   // The window label is computed for an auto post and hand-written for the rest,
   // so a stale `weekOf:` can never outlive the events it was describing.
   const head = post.autoEvents
-    ? `<b>${esc(post._range)}</b> — high-impact releases, all times ET`
+    ? (post._mode === 'recap'
+        ? `<b>${esc(post._range)}</b> — already released, all times ET`
+        : `<b>${esc(post._range)}</b> — high-impact releases, all times ET`)
     : post.weekOf ? `Week of <b>${esc(post.weekOf)}</b> — all times ET` : '';
+
+  const recapNote = post._mode === 'recap' ? `
+  <div class="ev">
+    <div class="ev-top"><span class="ev-name">Next week&#39;s schedule is not out yet</span></div>
+    <p class="ev-row"><span class="ev-k">Note</span><span>The economic calendar publishes the coming week over the weekend, so the releases below are the ones that have just printed rather than the ones ahead — the context you carry into next week. This page rebuilds daily, so the forward schedule appears here as soon as it is out, and the <a href="/calendar">live calendar</a> in-app carries the actual figures.</span></p>
+  </div>` : '';
 
   return `
 <section class="events">
-  ${head ? `<p class="events-head">${head}</p>` : ''}
+  ${head ? `<p class="events-head">${head}</p>` : ''}${recapNote}
   ${events.map(e => {
     const impact = String(e.impact || 'high').toLowerCase();
     return `
@@ -712,11 +758,17 @@ ${jsonld({
   })),
 })}`;
 
+  // One date per card, so it has to be the one that means something. A post
+  // that has been refreshed says so; one that has not shows when it went up.
+  const cardDate = (p) => (p.updated && p.updated !== p.date)
+    ? `Updated ${fmtDate(p.updated)}`
+    : fmtDate(p.date);
+
   const list = posts.length ? `
 <ul class="post-list">
   ${posts.map(p => `
   <li>
-    <p class="meta">${p.category ? `<span>${esc(p.category)}</span>` : ''}<span class="muted">${fmtDate(p.date)}</span><span class="muted">${p.readMins} min</span></p>
+    <p class="meta">${p.category ? `<span>${esc(p.category)}</span>` : ''}<span class="muted">${cardDate(p)}</span><span class="muted">${p.readMins} min</span></p>
     <h2><a href="${postUrl(p)}">${esc(p.title)}</a></h2>
     <p>${esc(p.description)}</p>
   </li>`).join('')}
@@ -737,10 +789,9 @@ ${jsonld({
 /* ------------------------------ SITEMAP ---------------------------- */
 function renderSitemap(posts) {
   const today = new Date().toISOString().slice(0, 10);
-  // The listing shows publish dates, so that is what its lastmod tracks. Using
-  // `updated` here would have the daily auto-page rebuild claim the index
-  // changed every day, which is the exact habit this block exists to stop.
-  const newestPost = posts.length ? posts[0].date : today;
+  // The listing prints each post's refresh date where it has one, so the index
+  // really does change when one moves — and posts is sorted by that same date.
+  const newestPost = posts.length ? (posts[0].updated || posts[0].date) : today;
   const urls = [
     ...STATIC_ROUTES.map(r => ({
       loc: SITE_URL + r.loc,
@@ -1102,13 +1153,22 @@ async function run() {
     // be silently promoted back to the default.
     const n = Number(p.autoEventDays);
     const days = Number.isFinite(n) && n >= 0 ? n : AUTO_EVENT_DAYS;
-    p.events = buildAutoEvents(live.calendarRaw, p.pinnedEvents, days);
-    p._range = autoRangeLabel(days);
+    const built = buildAutoEvents(live.calendarRaw, p.pinnedEvents, days);
+    p.events = built.events;
+    p._mode = built.mode;
+    // A recap covers the week behind it, so it must not wear the label of the
+    // window ahead.
+    p._range = built.mode === 'recap' ? recapRangeLabel(built.events) : autoRangeLabel(days);
     p.updated = buildDay;
     const src = live.fresh.calendar ? 'live' : live.calendarRaw ? 'snapshot' : 'NONE';
-    console.log(`  · ${p.slug}: ${p.events.length} event(s), ${days}d window, calendar ${src}`);
-    if (!p.events.length) console.warn(`  ! ${p.slug} has an empty window — page will render the placeholder`);
+    console.log(`  · ${p.slug}: ${p.events.length} event(s), ${built.mode}, ${days}d window, calendar ${src}`);
+    if (!p.events.length) console.warn(`  ! ${p.slug} has nothing on either side — page will render the placeholder`);
   }
+
+  // Sorted by the date each card displays, not by publish date — loadPosts()
+  // cannot do this, because the auto pages only get their `updated` stamp above.
+  const shownDate = (p) => p.updated || p.date;
+  posts.sort((a, b) => (shownDate(a) < shownDate(b) ? 1 : -1));
 
   fs.mkdirSync(OUT_BLOG, { recursive: true });
 
