@@ -394,9 +394,19 @@ app.post('/api/email/subscribe', async (req, res) => {
 app.get('/api/email/unsubscribe', async (req, res) => {
   const { email } = req.query
   if (!email) return res.status(400).send('Email required')
+  const addr = decodeURIComponent(email).toLowerCase().trim()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return res.status(400).send('Email required')
   try {
-    await supabase.from('email_subscribers').update({ active: false }).eq('email', decodeURIComponent(email).toLowerCase().trim())
-    const sub = emailSubscribers.find(s => s.email === decodeURIComponent(email).toLowerCase().trim())
+    // Update first; insert an opted-out row only when there was nothing to update.
+    // Product emails go to signups who were never alert subscribers, and a bare
+    // update on a missing row records nothing — the page would say "Unsubscribed"
+    // and the next send would go out anyway. The inserted row is active:false, so
+    // it can only ever keep someone off a list, never put them on one.
+    const { data: updated } = await supabase.from('email_subscribers').update({ active: false }).eq('email', addr).select('email')
+    if (!updated || !updated.length) {
+      await supabase.from('email_subscribers').insert({ email: addr, active: false, preferences: { news: false, calendar: false }, subscribed_at: new Date().toISOString() })
+    }
+    const sub = emailSubscribers.find(s => s.email === addr)
     if (sub) sub.active = false
     res.send('<html><body style="background:#030712;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><h2>✅ Unsubscribed</h2><p style="color:#94a3b8;">No more BiasForge alerts.</p><a href="https://www.biasforge.co" style="color:#06b6d4;">Back to BiasForge</a></div></body></html>')
   } catch (e) { res.status(500).send('Failed') }

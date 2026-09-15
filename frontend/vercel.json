@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/email/:path*", "destination": "https://marketradar-production.up.railway.app/api/email/:path*" },
     { "source": "/(.*)", "destination": "/app.html" }
   ]
 }
