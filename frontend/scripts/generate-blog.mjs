@@ -520,18 +520,25 @@ function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
 
   // One release is often four rows in the feed — US CPI arrives as CPI m/m, CPI
   // y/y, Core CPI m/m and Core CPI y/y stamped at the same minute. Four cards
-  // for one print is exactly what makes a generated page read like a scraper.
-  // Bucket by currency + ET day + family so each print gets one card carrying
-  // all of its figures.
-  const buckets = new Map();
+  // for one print is exactly what makes a generated page read like a scraper,
+  // so rows of the same currency and family that land close together share a
+  // card carrying all of their figures.
+  //
+  // "Close together" is a time window, not a calendar day. Bucketing by ET day
+  // split the BOJ in two: its decision lands at 10:30 PM ET and its press
+  // conference at 1:30 AM, either side of midnight, so one event printed as
+  // two cards on two days. A decision and its press conference are always
+  // within a few hours; the next release of the same family is days away.
+  const SAME_RELEASE_MS = 6 * 60 * 60 * 1000;
+  const buckets = [];
   for (const e of rows) {
-    const kb = kbFor(e.title);
-    const id = `${e.country}|${etParts(e.date).key}|${kb.family}`;
-    if (!buckets.has(id)) buckets.set(id, { kb, country: e.country, rows: [] });
-    buckets.get(id).rows.push(e);
+    const kb = kbFor(e.title), t = new Date(e.date).getTime();
+    const b = buckets.find(x => x.country === e.country && x.kb.family === kb.family && t - x.start <= SAME_RELEASE_MS);
+    if (b) b.rows.push(e);
+    else buckets.push({ kb, country: e.country, start: t, rows: [e] });
   }
 
-  const fromFeed = [...buckets.values()].map(({ kb, country, rows }) => {
+  const fromFeed = buckets.map(({ kb, country, rows }) => {
     const first = etParts(rows[0].date);
     const spread = new Set(rows.map(r => etParts(r.date).time)).size > 1;
     return {
