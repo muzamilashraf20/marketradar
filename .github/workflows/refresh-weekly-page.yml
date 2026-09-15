@@ -1,0 +1,50 @@
+# Keeps /this-week-in-forex current without anyone pushing a commit.
+#
+# The page builds from the live calendar at deploy time. Every six hours this
+# fingerprints what the page would show; when that moves — a new day, a release
+# passing, a forecast revised, next week's schedule publishing — it commits the
+# fingerprint, and the commit triggers the Vercel deploy that rebuilds the page.
+# Runs where nothing changed commit nothing.
+#
+# Run it by hand from the Actions tab ("Run workflow") after changing the page.
+
+name: Refresh weekly forex page
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-weekly-page
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fingerprint the calendar
+        run: node .github/scripts/calendar-fingerprint.mjs
+
+      - name: Commit if the page would change
+        run: |
+          if git diff --quiet -- frontend/content/.calendar-state.json && git ls-files --error-unmatch frontend/content/.calendar-state.json >/dev/null 2>&1; then
+            echo "Calendar unchanged — nothing to deploy."
+            exit 0
+          fi
+          summary=$(node -p "require('./frontend/content/.calendar-state.json').summary")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/content/.calendar-state.json
+          git commit -m "chore(calendar): refresh weekly page — ${summary}"
+          git push
