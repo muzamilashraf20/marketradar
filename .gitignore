@@ -69,6 +69,8 @@ pnpm-debug.log*
 # ===========================
 # v2 engine draft/scaffold — live version lives in backend/biasEngineV2/
 bias-engine-v2/
+# sample renders from backend/scripts/renderCards.js
+backend/scripts/out/
 
 # ===========================
 # MISC
