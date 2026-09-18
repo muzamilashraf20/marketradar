@@ -1,7 +1,8 @@
 // Generates social post drafts with sample facts and prints them with their guardrail flags.
 //   node backend/scripts/testGenerate.js <contentType>
 //
-// Calls Anthropic (real tokens, ~1-2 calls per run) and nothing else: no DB, no posting.
+// Calls Anthropic (real tokens: a Sonnet draft call plus a Haiku fact check, doubled if the retry
+// fires) and nothing else: no DB, no posting.
 // Reads ANTHROPIC_API_KEY from backend/.env, the same variable index.js uses.
 
 import dotenv from 'dotenv'
@@ -84,6 +85,7 @@ result.variants.forEach((v, i) => {
   console.log(`\n[${i}] shape: ${v.shape} | ${v.text.length} chars`)
   console.log(`    ${v.text.replace(/\n/g, '\n    ')}`)
   console.log(`    flags: ${v.flags.length ? v.flags.map(f => `${f.level}:${f.code}`).join(', ') : 'none'}`)
+  console.log(`    fact check: ${v.factcheck?.status ?? 'n/a'}${v.factcheck?.issue ? ` — ${v.factcheck.issue}` : ''}`)
 })
 const idx = result.chosen ? result.variants.indexOf(result.chosen) : -1
 console.log(`\nchosen: ${idx >= 0 ? `[${idx}] ${result.chosen.shape}` : 'none'} | failed: ${result.failed}`)

@@ -1,8 +1,10 @@
 // Social post draft generator: FACTS -> Claude -> 3 variants -> guardrails -> best clean variant.
 //
 // Nothing here posts. The caller gets every variant with its flags, plus the one worth using
-// (or failed: true). Two layers keep bad copy out: the system prompt tells the model the rules,
-// and validateSocialPost checks every variant anyway, because the prompt alone is not a guarantee.
+// (or failed: true). Three layers keep bad copy out: the system prompt tells the model the rules,
+// validateSocialPost checks every variant anyway because the prompt alone is not a guarantee, and
+// a Haiku fact check catches wrong attribution ("German PMIs" when the facts say eurozone) that
+// no regex can see.
 //
 // The model only ever sees the facts it needs for the content type. A bias card's invalidation
 // level is never sent to it, so it cannot leak what it was never told. The full facts still go to
@@ -12,6 +14,10 @@ import { BANNED_PHRASES, validateSocialPost } from './guardrails.js'
 
 const MODEL = 'claude-sonnet-4-6'
 const MAX_TOKENS = 1500
+const FACTCHECK_MODEL = 'claude-haiku-4-5-20251001'
+const FACTCHECK_MAX_TOKENS = 800 // the per-entity evidence lines ran to ~370 tokens on a 3-event preview
+// Posts built from opinion and notes only; there is nothing to check them against.
+const NO_FACT_TYPES = new Set(['trader_pain', 'contrarian'])
 
 export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'trader_pain', 'contrarian', 'build_log']
 
@@ -28,6 +34,11 @@ FACTS ONLY
 - NEVER invent numbers, win rates, accuracy figures, user counts, testimonials, quotes or outcomes.
 - Use ONLY values present in the FACTS json. Every pair, number, time, date and result you write must come from FACTS. If FACTS does not contain it, do not say it.
 - NEVER invent personal history. Do not write "I passed", "I blew my account", "my eval" or any first-person event as if it happened, unless FACTS or NOTES describe that exact event. A confession/story shape without a real story in FACTS or NOTES is written about a pattern traders share ("you", "most of us", "the trader who..."), not as something that happened to the writer.
+
+GROUNDING
+- Every country, currency, data series and instrument you name must appear in the FACTS json. If the facts say "eurozone PMIs" do not write "German PMIs". If the facts say "German 2Y yield" do not generalise it to "German data" or attach it to a different country.
+- If you are unsure which entity a driver refers to, describe it the way the facts describe it, or leave it out. A vaguer post is better than a wrong one.
+- Do not combine two separate data points into one claim.
 
 PAID DETAILS NEVER APPEAR
 - NEVER mention or imply an invalidation level, a stop, a stop loss, a target, a take profit, an entry price, SL or TP.
@@ -176,6 +187,99 @@ async function generateVariants(anthropic, trackAI, user) {
   return null
 }
 
+// Second opinion on attribution. The regex guardrails check rules; they cannot tell that "German
+// PMIs" is wrong when the facts say eurozone PMIs. A cheap Haiku pass compares each variant
+// against the same facts the writer saw.
+const FACTCHECK_SYSTEM = `You check social media drafts for a forex and gold macro analysis company against the source FACTS they were written from. You are strict about attribution and relaxed about wording.`
+
+function factCheckPrompt(facts, texts) {
+  return `FACTS:
+${JSON.stringify(facts)}
+
+DRAFTS:
+${texts.map((t, i) => `[${i}] ${t}`).join('\n')}
+
+For each draft, answer whether every factual claim in it (country, currency, data series, direction, instrument, number, time) is directly supported by the FACTS.
+
+Method: for each draft, go through every named country or region, currency, data series, instrument and direction. Find where the FACTS mention it and compare the qualifiers word by word. The claim is supported only if the FACTS attach the same qualifier to the same thing.
+- A region and a country inside it are different entities. A series in one country is not the same series in another.
+- Different maturities, series or directions are different claims: "2Y" is not "10Y", "CPI" is not "PCE", "UK" is not "eurozone", "net long" is not "net short".
+- A qualifier that sits on one item in the FACTS cannot be moved to another item in the draft.
+
+- Wording differences are fine. Wrong or invented attribution is not: naming a different country, currency, data series or instrument than the FACTS do, or stating something the FACTS do not contain.
+- Combining two separate facts into one claim the FACTS do not make is not grounded.
+- Simple conclusions that follow directly from the FACTS are grounded (for example, that two events share a time, or that an event moves pairs in its own currency).
+- Opinion, tone and framing ("the rate gap is doing the work") are not factual claims; do not flag them.
+- If a draft is not grounded, give the issue in one short line naming the wrong claim and what the FACTS say instead.
+
+Before deciding, fill "evidence" for the draft: one short string per named country or region, currency, data series or instrument, in the form "draft phrase => exact FACTS phrase => SAME" or "draft phrase => exact FACTS phrase => DIFFERENT", or "draft phrase => none" when the FACTS do not mention it.
+- Copy the FACTS phrase with its own qualifier.
+- SAME only if both sides name the same country or region, the same series and the same direction. Otherwise DIFFERENT, even if the words look similar. "Canadian jobs data => weak North American jobs data" would be DIFFERENT: a region is not one country in it.
+- Keep each string under 14 words.
+If any evidence string is DIFFERENT or "=> none", grounded is false.
+
+Output ONLY minified JSON, no preamble, no code fences:
+{"checks":[{"i":0,"evidence":["draft phrase => facts phrase => SAME"],"grounded":true,"issue":null}]}
+One entry per draft, in order.`
+}
+
+// Haiku sometimes drops the final closing brace, so a few closers are tried before giving up.
+function parseLooseJson(raw) {
+  const s = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
+  const start = s.indexOf('{')
+  if (start === -1) return null
+  const body = s.slice(start)
+  for (const tail of ['', '}', ']}', '}]}']) {
+    try { return JSON.parse(body + tail) } catch {}
+  }
+  return null
+}
+
+// The per-entity SAME/DIFFERENT lines decide, not only the overall verdict: Haiku has written
+// "German PMIs slipped => soft eurozone PMIs" and still answered grounded: true.
+function parseChecks(raw, n) {
+  const obj = parseLooseJson(raw)
+  if (!Array.isArray(obj?.checks)) return null
+  const out = new Array(n).fill(null)
+  for (const c of obj.checks) {
+    const i = Number(c?.i)
+    if (!Number.isInteger(i) || i < 0 || i >= n || typeof c.grounded !== 'boolean') continue
+    const bad = (Array.isArray(c.evidence) ? c.evidence : [])
+      .map(String)
+      .filter(e => /=>\s*DIFFERENT\s*$/i.test(e) || /=>\s*none\s*$/i.test(e))
+    if (c.grounded && !bad.length) out[i] = { grounded: true, issue: null }
+    else out[i] = { grounded: false, issue: String(c.issue || '').trim() || `not supported by the facts: ${bad.join('; ')}` }
+  }
+  return out
+}
+
+// Returns one { grounded, issue } per text (null where the checker gave no answer), or null if the
+// check could not run. Never throws: an API hiccup here must not block a draft.
+async function factCheck(anthropic, trackAI, facts, texts) {
+  try {
+    const m = await anthropic.messages.create({
+      model: FACTCHECK_MODEL,
+      max_tokens: FACTCHECK_MAX_TOKENS,
+      temperature: 0, // a checker should give the same answer every time
+      system: FACTCHECK_SYSTEM,
+      messages: [{ role: 'user', content: factCheckPrompt(facts, texts) }],
+    })
+    if (typeof trackAI === 'function') {
+      try { trackAI('social-factcheck', FACTCHECK_MODEL, m.usage) } catch {}
+    }
+    const checks = parseChecks((m.content || []).filter(b => b.type === 'text').map(b => b.text).join(''), texts.length)
+    if (!checks) {
+      console.warn(m.stop_reason === 'max_tokens'
+        ? `[social] fact check hit max_tokens (${FACTCHECK_MAX_TOKENS}) before finishing; continuing without it`
+        : '[social] fact check returned unparseable JSON; continuing without it')
+    }
+    return checks
+  } catch (e) {
+    console.warn(`[social] fact check failed; continuing without it: ${e?.message || e}`)
+    return null
+  }
+}
+
 const hardCount = v => v.flags.filter(f => f.level === 'hard').length
 const softCount = v => v.flags.filter(f => f.level === 'soft').length
 
@@ -198,13 +302,34 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   const past = Array.isArray(pastTexts) ? pastTexts.filter(t => typeof t === 'string' && t.trim()) : []
   const safeFacts = facts && typeof facts === 'object' ? facts : {}
   const check = { platform, contentType, facts: safeFacts, pastTexts: past }
-  const withFlags = vs => vs.map(v => ({ ...v, flags: validateSocialPost(v.text, check).flags }))
+  // The checker sees the same trimmed facts the writer saw, so it cannot "ground" a claim in a
+  // field (like invalidation) that was deliberately kept out of the prompt.
+  const modelFacts = TASKS[contentType].facts(safeFacts)
+  const doFactCheck = !NO_FACT_TYPES.has(contentType) && Object.keys(modelFacts).length > 0
+
+  // Each variant gets factcheck: { status: grounded | ungrounded | skipped | unavailable, issue }.
+  // Only 'ungrounded' adds a flag; a check that could not run never blocks the draft.
+  const withFlags = async vs => {
+    const checks = doFactCheck ? await factCheck(anthropic, trackAI, modelFacts, vs.map(v => v.text)) : null
+    return vs.map((v, i) => {
+      const flags = [...validateSocialPost(v.text, check).flags]
+      let factcheck
+      if (!doFactCheck) factcheck = { status: 'skipped', issue: null }
+      else if (!checks || !checks[i]) factcheck = { status: 'unavailable', issue: null }
+      else if (checks[i].grounded) factcheck = { status: 'grounded', issue: null }
+      else {
+        factcheck = { status: 'ungrounded', issue: checks[i].issue }
+        flags.push({ level: 'hard', code: 'ungrounded', msg: checks[i].issue })
+      }
+      return { ...v, flags, factcheck }
+    })
+  }
 
   const user = buildUserMessage({ contentType, platform, facts: safeFacts, notes, pastTexts: past })
   const first = await generateVariants(anthropic, trackAI, user)
   if (!first) return { variants: [], chosen: null, failed: true }
 
-  let variants = withFlags(first)
+  let variants = await withFlags(first)
   let chosen = choose(variants)
   if (chosen) return { variants, chosen, failed: false }
 
@@ -214,7 +339,7 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   const second = await generateVariants(anthropic, trackAI, retryUser)
   if (!second) return { variants, chosen: null, failed: true }
 
-  variants = withFlags(second)
+  variants = await withFlags(second)
   chosen = choose(variants)
   return { variants, chosen, failed: !chosen }
 }
