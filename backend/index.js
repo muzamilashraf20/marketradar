@@ -6,6 +6,8 @@ import {
   expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import { withBudget } from './lib/withBudget.js'
+import { generateDraft } from './social/generator.js'
+import { validateSocialPost } from './social/guardrails.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -220,17 +222,65 @@ async function loadTelegramSubscribers() {
 // ============================================
 // 📱 TELEGRAM HELPERS
 // ============================================
-async function sendTG(chatId, text) {
+// Returns the sent Message object on success (always truthy, so `if (await sendTG(...))` callers
+// behave exactly as when this returned true) and false on failure. `extra` is merged into the
+// request body, e.g. { reply_markup } for inline buttons.
+async function sendTG(chatId, text, extra = {}) {
   if (!TG_API) return false
   try {
     const res = await fetch(`${TG_API}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra }),
     })
     const d = await res.json()
     if (!d.ok) { console.error(`❌ TG fail ${chatId}:`, d.description); return false }
-    return true
+    return d.result || true
   } catch (e) { console.error(`❌ TG error ${chatId}:`, e.message); return false }
+}
+
+// Cut Telegram HTML to `max` characters without leaving a broken tag or entity, then close any
+// tags left open. A malformed caption makes Telegram reject the whole message.
+function truncateTGHtml(html, max) {
+  const s = String(html ?? '')
+  if (s.length <= max) return s
+  let cut = s.slice(0, max - 12)                 // room for the ellipsis and closing tags
+  cut = cut.replace(/<[^>]*$/, '').replace(/&[a-zA-Z0-9#]*$/, '')
+  const open = []
+  for (const m of cut.matchAll(/<(\/?)([a-z]+)[^>]*>/gi)) {
+    const tag = m[2].toLowerCase()
+    if (m[1]) { const i = open.lastIndexOf(tag); if (i !== -1) open.splice(i, 1) } else open.push(tag)
+  }
+  return `${cut}…${open.reverse().map(t => `</${t}>`).join('')}`
+}
+
+// Photo upload via multipart (Node 18+ fetch/FormData/Blob). Returns the message_id, or null.
+async function sendTGPhoto(chatId, buffer, caption, extra = {}) {
+  if (!TG_API) return null
+  try {
+    const fd = new FormData()
+    fd.append('chat_id', String(chatId))
+    fd.append('photo', new Blob([buffer], { type: 'image/png' }), 'card.png')
+    fd.append('caption', truncateTGHtml(caption, 1024))
+    fd.append('parse_mode', 'HTML')
+    for (const [k, v] of Object.entries(extra)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v))
+    const res = await fetch(`${TG_API}/sendPhoto`, { method: 'POST', body: fd })
+    const d = await res.json()
+    if (!d.ok) { console.error(`❌ TG photo fail ${chatId}:`, d.description); return null }
+    return d.result?.message_id ?? null
+  } catch (e) { console.error(`❌ TG photo error ${chatId}:`, e.message); return null }
+}
+
+// Any other Bot API method. Returns the result, or null on failure (logged, never thrown).
+async function tgCall(method, body) {
+  if (!TG_API) return null
+  try {
+    const res = await fetch(`${TG_API}/${method}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const d = await res.json()
+    if (!d.ok) { console.error(`❌ TG ${method} fail:`, d.description); return null }
+    return d.result
+  } catch (e) { console.error(`❌ TG ${method} error:`, e.message); return null }
 }
 // UNUSED since the /api/strength push was removed — its only caller was the strength route, and
 // strength is viewer-only, not a bias source. Kept (with lastBiasKey) rather than deleted; the v2
@@ -295,6 +345,16 @@ async function pollTelegram() {
 
     for (const update of data.result) {
       tgOffset = update.update_id + 1
+      // Inline-button taps on social drafts. Handled and finished here so a callback can never fall
+      // through to the command handler below; a throw is contained so polling keeps running.
+      if (update.callback_query) {
+        try { await handleSocialCallback(update.callback_query) }
+        catch (e) {
+          console.error(`❌ [social] callback error: ${e?.message || e}`)
+          await tgCall('answerCallbackQuery', { callback_query_id: update.callback_query.id, text: 'Something went wrong — check the logs' })
+        }
+        continue
+      }
       const msg = update.message
       if (!msg?.text) continue
       const chatId = msg.chat.id
@@ -357,6 +417,296 @@ async function pollTelegram() {
     }
   } catch (e) { /* silent retry */ }
 }
+
+// ============================================
+// 📝 SOCIAL DRAFTS — generate, card, admin approval over Telegram
+// ============================================
+// Flow: createDraftAndNotify → social_queue row (status 'draft') → admin DM with buttons →
+// handleSocialCallback sets 'approved' / 'skipped' or regenerates. NOTHING here publishes: 'approved'
+// is only a state, waiting for a publisher that does not exist yet.
+//
+// Authority: the buttons act only for the numeric TG_ADMIN_CHAT_ID (v2AdminChat). Unset means nobody
+// can approve anything — fail closed.
+const SOCIAL_BUCKET = 'social-media'
+const SOCIAL_LAYOUT_KEY = 'social_layout_idx'
+const SOCIAL_MAX_REGENS = 3
+const SOCIAL_CARD_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+const SOCIAL_PILLARS = {
+  bias_card: 'daily_bias', event_preview: 'calendar', weekly_scorecard: 'accountability',
+  macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
+}
+
+// Texts that have gone (or are about to go) out in the last 30 days, any platform. The duplicate and
+// same-opener guardrails compare against these.
+async function socialPastTexts() {
+  const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
+  const { data, error } = await supabase.from('social_queue').select('text')
+    .in('status', ['approved', 'publishing', 'published']).gt('created_at', since)
+    .order('created_at', { ascending: false }).limit(200)
+  if (error) { console.error(`⚠️ [social] pastTexts load failed: ${error.message}`); return [] }
+  return (data || []).map(r => r.text).filter(Boolean)
+}
+
+// The engine's reasoning is a paragraph; the card has room for one driver. First sentence it is.
+const firstSentence = s => (String(s || '').match(/^.*?[.!?](?=\s|$)/) || [String(s || '')])[0].trim()
+
+// Card data per kind. bias_card gets exactly the five fields the renderer reads — invalidation stays out.
+function socialCardData(contentType, facts) {
+  if (contentType === 'bias_card') {
+    return { pair: facts.pair, direction: facts.direction, confidence: facts.confidence, grade: facts.grade, driver: facts.driver || firstSentence(facts.reasoning) }
+  }
+  if (contentType === 'event_preview') return { events: facts.events, dateLabel: facts.dateLabel }
+  if (contentType === 'weekly_scorecard') return { rows: facts.rows, rangeLabel: facts.rangeLabel }
+  return null
+}
+
+// Render → upload → public URL. Any failure returns null and the draft goes out text-only: a card is
+// nice to have, a missing one must not cost the draft. The renderer is imported lazily so a broken
+// native resvg binary can only break cards, never the backend's boot.
+async function socialRenderAndUpload(contentType, facts) {
+  try {
+    const { renderCard, LAYOUT_COUNTS } = await import('./social/renderer.js')
+    const idx = Number(await v2LoadSnapshot(SOCIAL_LAYOUT_KEY)) || 0
+    v2SaveSnapshot(SOCIAL_LAYOUT_KEY, idx + 1)
+    const png = await renderCard(contentType, socialCardData(contentType, facts), idx % (LAYOUT_COUNTS[contentType] || 1))
+    const path = `cards/${contentType}-${Date.now()}.png`
+    const { error } = await supabase.storage.from(SOCIAL_BUCKET).upload(path, png, { contentType: 'image/png', upsert: false })
+    if (error) throw new Error(`upload: ${error.message}`)
+    const { data } = supabase.storage.from(SOCIAL_BUCKET).getPublicUrl(path)
+    return { png, path, url: data?.publicUrl || null }
+  } catch (e) {
+    console.error(`⚠️ [social] card for ${contentType} failed, continuing text-only: ${e?.message || e}`)
+    return null
+  }
+}
+
+// The source values the draft was written from, so the draft can be checked against them on one screen.
+function socialFactsBlock(contentType, facts = {}) {
+  const lines = []
+  if (contentType === 'bias_card') {
+    lines.push(`${esc(facts.pair)} · ${esc(facts.direction)} · conf ${esc(facts.confidence)} · grade ${esc(facts.grade)}`)
+    const driver = facts.driver || facts.reasoning
+    if (driver) lines.push(`<i>${esc(String(driver).slice(0, 400))}</i>`)
+  } else if (contentType === 'event_preview') {
+    if (facts.dateLabel) lines.push(esc(facts.dateLabel))
+    for (const e of (facts.events || []).slice(0, 6)) {
+      const nums = [e.forecast && `f ${e.forecast}`, e.previous && `p ${e.previous}`].filter(Boolean).join(', ')
+      lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}${e.impact ? ` [${esc(e.impact)}]` : ''}${nums ? ` (${esc(nums)})` : ''}`)
+    }
+  } else if (contentType === 'weekly_scorecard') {
+    if (facts.rangeLabel) lines.push(esc(facts.rangeLabel))
+    for (const r of (facts.rows || []).slice(0, 7)) lines.push(`• ${esc(r.date)} ${esc(r.pair)} ${esc(r.direction)} → ${esc(r.outcome)}`)
+  } else {
+    const keys = Object.keys(facts)
+    if (keys.length) lines.push(`<code>${esc(JSON.stringify(facts).slice(0, 500))}</code>`)
+  }
+  return lines.length ? lines.join('\n') : '<i>none</i>'
+}
+
+// The whole admin DM, rebuilt from the row every time so edits after a button tap stay consistent.
+function socialDraftMessage(row, statusLine = '') {
+  const ref = row.source_ref || {}
+  const chosen = ref.chosen || {}
+  const soft = (chosen.flags || []).filter(f => f.level === 'soft').map(f => f.code)
+  const parts = [
+    `📝 <b>${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
+    esc(row.text),
+    `<b>FACTS</b>\n${socialFactsBlock(row.content_type, ref.facts)}`,
+    [soft.length ? `⚠️ soft: ${esc(soft.join(', '))}` : null,
+      chosen.factcheck?.status ? `🔎 fact check: ${esc(chosen.factcheck.status)}` : null,
+      `${String(row.text || '').length} chars · regen ${esc(row.regen_count || 0)}/${SOCIAL_MAX_REGENS}`].filter(Boolean).join('\n'),
+  ]
+  if (statusLine) parts.push(statusLine)
+  return parts.join('\n\n')
+}
+
+const socialKeyboard = id => ({
+  inline_keyboard: [
+    [{ text: '✅ Approve', callback_data: `sq:ap:${id}` }],
+    [{ text: '🔄 Regenerate', callback_data: `sq:rg:${id}` }, { text: '⏭ Skip', callback_data: `sq:sk:${id}` }],
+    [{ text: '✏️ Open Studio', url: `https://biasforge.co/studio?draft=${id}` }],
+  ],
+})
+
+// Generate → guardrails/fact-check (inside generateDraft) → card → social_queue row → admin DM.
+// Returns the inserted row, or null when every variant was blocked (the admin is told why).
+async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, notes = '', sourceRef = {}, regenCount = 0 }) {
+  const admin = v2AdminChat()
+  if (!admin) throw new Error('TG_ADMIN_CHAT_ID is not set — drafts need an admin to approve them')
+
+  const pastTexts = await socialPastTexts()
+  const draft = await generateDraft({ contentType, platform, facts, notes, pastTexts, anthropic, trackAI })
+  if (draft.failed || !draft.chosen) {
+    const reasons = [...new Set(draft.variants.flatMap(v => v.flags.filter(f => f.level === 'hard').map(f => `${f.code}: ${f.msg}`)))]
+    await sendTG(admin, `🚫 <b>Draft blocked</b> · ${esc(contentType)}\n\n${reasons.length ? reasons.slice(0, 8).map(r => `• ${esc(r)}`).join('\n') : 'model reply could not be parsed'}`)
+    console.warn(`⚠️ [social] ${contentType} draft blocked: ${reasons.join(' | ') || 'unparseable'}`)
+    return null
+  }
+
+  const card = SOCIAL_CARD_TYPES.has(contentType) ? await socialRenderAndUpload(contentType, facts) : null
+  const { chosen } = draft
+  const { data: row, error } = await supabase.from('social_queue').insert({
+    platform,
+    content_type: contentType,
+    pillar: SOCIAL_PILLARS[contentType] || null,
+    text: chosen.text,
+    image_path: card?.path || null,
+    image_url: card?.url || null,
+    source_ref: {
+      ...sourceRef,
+      facts,
+      notes: notes || null,
+      chosen: { shape: chosen.shape, flags: chosen.flags, factcheck: chosen.factcheck },
+      alternatives: draft.variants.filter(v => v !== chosen).map(v => ({ shape: v.shape, text: v.text, flags: v.flags, factcheck: v.factcheck })),
+    },
+    status: 'draft',
+    regen_count: regenCount,
+  }).select().single()
+  if (error) throw new Error(`social_queue insert failed: ${error.message}`)
+
+  const text = socialDraftMessage(row)
+  const reply_markup = socialKeyboard(row.id)
+  let messageId = card?.png ? await sendTGPhoto(admin, card.png, text, { reply_markup }) : null
+  if (!messageId) messageId = (await sendTG(admin, text, { reply_markup }))?.message_id ?? null
+  if (messageId) {
+    await supabase.from('social_queue').update({ tg_message_id: messageId, updated_at: new Date().toISOString() }).eq('id', row.id)
+    row.tg_message_id = messageId
+  } else console.error(`⚠️ [social] draft #${row.id} saved but the admin DM failed`)
+  console.log(`📝 [social] draft #${row.id} ${contentType} → admin (${card ? 'card' : 'text'})`)
+  return row
+}
+
+// Take the buttons off the DM and append what happened, so a stale message can't be tapped again.
+async function socialFinishMessage(cq, row, statusLine) {
+  const chat_id = cq.message?.chat?.id
+  const message_id = cq.message?.message_id
+  if (!chat_id || !message_id) return
+  await tgCall('editMessageReplyMarkup', { chat_id, message_id, reply_markup: { inline_keyboard: [] } })
+  const body = socialDraftMessage(row, statusLine)
+  if (cq.message.photo) await tgCall('editMessageCaption', { chat_id, message_id, caption: truncateTGHtml(body, 1024), parse_mode: 'HTML' })
+  else await tgCall('editMessageText', { chat_id, message_id, text: body, parse_mode: 'HTML', disable_web_page_preview: true })
+}
+
+// Move a draft on, only if it is still a draft. The status filter makes a double tap (or two
+// overlapping polls seeing the same update) a no-op the second time. Returns the updated row or null.
+async function socialTransition(id, status) {
+  const { data, error } = await supabase.from('social_queue')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id).eq('status', 'draft').select().maybeSingle()
+  if (error) throw new Error(`social_queue update #${id} → ${status}: ${error.message}`)
+  return data
+}
+
+async function handleSocialCallback(cq) {
+  const answer = (text, alert = false) => tgCall('answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: alert })
+
+  // Only the admin's own Telegram account may act. This check is the whole access control.
+  const admin = v2AdminChat()
+  if (!admin || String(cq.from?.id) !== String(admin)) {
+    console.warn(`⚠️ [social] callback from non-admin ${cq.from?.id} ignored`)
+    return answer('Not allowed')
+  }
+
+  const m = /^sq:(ap|rg|sk):(\d+)$/.exec(String(cq.data || ''))
+  if (!m) return answer('Unknown action')
+  const [, action, idStr] = m
+  const id = Number(idStr)
+
+  const { data: row, error } = await supabase.from('social_queue').select('*').eq('id', id).maybeSingle()
+  if (error) throw new Error(`social_queue load #${id}: ${error.message}`)
+  if (!row) return answer('Draft not found')
+  if (row.status !== 'draft') {
+    await answer(`Already ${row.status}`)
+    return socialFinishMessage(cq, row, `ℹ️ Already ${esc(row.status)}`)
+  }
+
+  if (action === 'ap') {
+    // Re-check the CURRENT text: it may have been edited in Studio since the draft was made.
+    const { flags } = validateSocialPost(row.text, {
+      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(),
+    })
+    const hard = flags.filter(f => f.level === 'hard')
+    if (hard.length) return answer(`Not approved — ${hard.map(f => `${f.code}: ${f.msg}`).join('; ')}`.slice(0, 200), true)
+    const done = await socialTransition(id, 'approved')
+    if (!done) return answer('Already handled')
+    await answer('Approved')
+    return socialFinishMessage(cq, done, '✅ Approved — will publish once the publisher is live')
+  }
+
+  if (action === 'sk') {
+    const done = await socialTransition(id, 'skipped')
+    if (!done) return answer('Already handled')
+    await answer('Skipped')
+    return socialFinishMessage(cq, done, '⏭ Skipped')
+  }
+
+  // rg
+  const next = (row.regen_count || 0) + 1
+  if (next > SOCIAL_MAX_REGENS) return answer(`Regen limit reached (${SOCIAL_MAX_REGENS})`, true)
+  const done = await socialTransition(id, 'skipped')
+  if (!done) return answer('Already handled')
+  await answer('Regenerating…')
+  await socialFinishMessage(cq, done, `🔄 Regenerating (${next}/${SOCIAL_MAX_REGENS}) — new draft coming`)
+  // Not awaited: a generation takes 10–20s and polling must not stall for every other bot user.
+  const { facts = {}, notes = '', chosen, alternatives, ...rest } = row.source_ref || {}
+  createDraftAndNotify({
+    contentType: row.content_type, platform: row.platform, facts, notes: notes || '',
+    sourceRef: { ...rest, regenerated_from: row.id }, regenCount: next,
+  }).catch(async e => {
+    console.error(`❌ [social] regen of #${row.id} failed: ${e?.message || e}`)
+    await sendTG(admin, `❌ Regenerate of #${esc(row.id)} failed: ${esc(e?.message || e)}`)
+  })
+}
+
+// Admin = a confirmed Supabase account whose email is in ADMIN_EMAILS (comma list). Unset → nobody.
+// email_confirmed_at matters: without it anyone could sign up with the admin's address unverified.
+function isAdmin(user) {
+  const list = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  return !!(user?.email && user.email_confirmed_at && list.includes(user.email.toLowerCase()))
+}
+
+// TEMPORARY manual trigger for testing the approval flow. Real triggers (bias publish, calendar) replace
+// this in the next step. Admin-only; generation takes ~10–20s, so the response is slow by design.
+app.post('/api/admin/social/test-draft', async (req, res) => {
+  const user = await requireUser(req, res)
+  if (!user) return
+  if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+
+  const { contentType, notes = '' } = req.body || {}
+  try {
+    let facts = {}
+    let sourceRef = { trigger: 'manual-test' }
+    if (contentType === 'bias_card') {
+      const { data: b, error } = await supabase.from('bias_history')
+        .select('id,pair,direction,confidence,trade_grade,reasoning,invalidation,generated_at')
+        .eq('engine', 'v2').order('generated_at', { ascending: false }).limit(1).maybeSingle()
+      if (error) throw new Error(`bias_history: ${error.message}`)
+      if (!b) return res.status(400).json({ error: 'No v2 bias_history row yet' })
+      facts = { pair: b.pair, direction: b.direction, confidence: b.confidence, grade: b.trade_grade, reasoning: b.reasoning, driver: firstSentence(b.reasoning), invalidation: b.invalidation || null }
+      sourceRef = { ...sourceRef, bias_history_id: b.id, generated_at: b.generated_at }
+    } else if (contentType === 'event_preview') {
+      const today = new Date().toISOString().slice(0, 10)
+      const cal = await getEconomicCalendar()
+      const events = (cal || [])
+        .filter(e => String(e.time).slice(0, 10) === today && /high/i.test(String(e.impact)))
+        .sort((a, b) => new Date(a.time) - new Date(b.time))
+        .slice(0, 4)
+        .map(e => ({ time: new Date(e.time).toISOString().slice(11, 16), currency: e.country, title: e.event, forecast: e.forecast || '', previous: e.previous || '', impact: e.impact }))
+      if (!events.length) return res.status(400).json({ error: 'No high-impact events on the calendar today (UTC)' })
+      facts = { events, dateLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
+    } else if (contentType === 'trader_pain' || contentType === 'contrarian') {
+      // notes-only content types
+    } else {
+      return res.status(400).json({ error: 'test-draft supports bias_card, event_preview, trader_pain, contrarian' })
+    }
+    const row = await createDraftAndNotify({ contentType, facts, notes, sourceRef })
+    if (!row) return res.status(422).json({ error: 'Every variant was blocked by the guardrails — see the admin Telegram DM' })
+    res.json({ success: true, row })
+  } catch (e) {
+    console.error(`❌ [social] test-draft ${contentType}: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'test-draft failed' })
+  }
+})
 
 // ============================================
 // 📧 EMAIL TEMPLATE
