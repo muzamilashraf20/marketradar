@@ -1,8 +1,23 @@
 {
   "day": "2026-09-18",
-  "mode": "upcoming",
-  "summary": "1 high-impact release row(s) ahead",
+  "mode": "recap",
+  "summary": "recap of 16 row(s), next week not yet published",
   "releases": [
-    "2026-09-18T05:30:00.000Z|JPY|BOJ Press Conference|-|-"
+    "2026-09-14T12:30:00.000Z|CAD|CPI m/m|-0.1%|0.5%",
+    "2026-09-14T12:30:00.000Z|CAD|Median CPI y/y|2.0%|2.0%",
+    "2026-09-14T12:30:00.000Z|CAD|Trimmed CPI y/y|1.9%|1.9%",
+    "2026-09-15T06:00:00.000Z|GBP|Claimant Count Change|8.3K|-11.0K",
+    "2026-09-16T06:00:00.000Z|GBP|CPI y/y|3.1%|2.9%",
+    "2026-09-16T18:00:00.000Z|USD|Federal Funds Rate|4.00%|3.75%",
+    "2026-09-16T18:00:00.000Z|USD|FOMC Economic Projections|-|-",
+    "2026-09-16T18:00:00.000Z|USD|FOMC Statement|-|-",
+    "2026-09-16T18:30:00.000Z|USD|FOMC Press Conference|-|-",
+    "2026-09-16T22:45:00.000Z|NZD|GDP q/q|0.1%|0.8%",
+    "2026-09-17T11:00:00.000Z|GBP|Monetary Policy Summary|-|-",
+    "2026-09-17T11:00:00.000Z|GBP|MPC Official Bank Rate Votes|3-0-6|3-0-6",
+    "2026-09-17T11:00:00.000Z|GBP|Official Bank Rate|3.75%|3.75%",
+    "2026-09-18T02:54:00.000Z|JPY|BOJ Policy Rate|<1.25%|<1.00%",
+    "2026-09-18T02:54:00.000Z|JPY|Monetary Policy Statement|-|-",
+    "2026-09-18T06:30:00.000Z|JPY|BOJ Press Conference|-|-"
   ]
 }
