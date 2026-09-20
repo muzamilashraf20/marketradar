@@ -24,6 +24,7 @@
     "rss-parser": "^3.13.0",
     "satori": "^0.33.4",
     "satori-html": "^0.3.2",
+    "twitter-api-v2": "^1.29.1",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

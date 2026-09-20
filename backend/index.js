@@ -8,6 +8,7 @@ import {
 import { withBudget } from './lib/withBudget.js'
 import { generateDraft } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
+import { publishToX } from './social/xPublisher.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -438,11 +439,14 @@ const SOCIAL_PILLARS = {
 
 // Texts that have gone (or are about to go) out in the last 30 days, any platform. The duplicate and
 // same-opener guardrails compare against these.
-async function socialPastTexts() {
+// excludeId keeps a row from being compared against itself: once the publisher claims a row it is
+// 'publishing', so without this every post would look like a duplicate of itself.
+async function socialPastTexts(excludeId = null) {
   const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
-  const { data, error } = await supabase.from('social_queue').select('text')
+  let qy = supabase.from('social_queue').select('text')
     .in('status', ['approved', 'publishing', 'published']).gt('created_at', since)
-    .order('created_at', { ascending: false }).limit(200)
+  if (excludeId != null) qy = qy.neq('id', excludeId)
+  const { data, error } = await qy.order('created_at', { ascending: false }).limit(200)
   if (error) { console.error(`⚠️ [social] pastTexts load failed: ${error.message}`); return [] }
   return (data || []).map(r => r.text).filter(Boolean)
 }
@@ -623,14 +627,18 @@ async function handleSocialCallback(cq) {
   if (action === 'ap') {
     // Re-check the CURRENT text: it may have been edited in Studio since the draft was made.
     const { flags } = validateSocialPost(row.text, {
-      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(),
+      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
     })
     const hard = flags.filter(f => f.level === 'hard')
     if (hard.length) return answer(`Not approved — ${hard.map(f => `${f.code}: ${f.msg}`).join('; ')}`.slice(0, 200), true)
     const done = await socialTransition(id, 'approved')
     if (!done) return answer('Already handled')
     await answer('Approved')
-    return socialFinishMessage(cq, done, '✅ Approved — will publish once the publisher is live')
+    await socialFinishMessage(cq, done, '✅ Approved — queued to publish')
+    // Don't wait up to 5 minutes for the next tick. Not awaited: the callback should finish now,
+    // and the queue reports its own outcome by DM. With autopilot off this only logs.
+    processSocialQueue().catch(e => console.error(`❌ [social] post-approve publish run failed: ${e?.message || e}`))
+    return
   }
 
   if (action === 'sk') {
@@ -705,6 +713,149 @@ app.post('/api/admin/social/test-draft', async (req, res) => {
   } catch (e) {
     console.error(`❌ [social] test-draft ${contentType}: ${e?.message || e}`)
     res.status(500).json({ error: e?.message || 'test-draft failed' })
+  }
+})
+
+// ============================================
+// 🚀 SOCIAL PUBLISHER — approved rows → X
+// ============================================
+// One post per run, claimed atomically, paced, re-checked, then posted. Everything here is built so
+// the two expensive mistakes cannot happen: posting twice, and posting something that should never
+// have gone out. A failed row stays failed — no automatic retry, because a retry that silently
+// double-posts is worse than a post that did not go out.
+const X_PROFILE = 'MuzamilAshraf_1'
+const SOCIAL_CAP_DM_KEY = 'social_cap_dm_date'
+const socialAutopilotOn = () => process.env.SOCIAL_AUTOPILOT === 'on'
+const xDailyCap = () => Number(process.env.X_DAILY_CAP) || 5
+const xMinGapMin = () => Number(process.env.X_MIN_GAP_MIN) || 90
+
+// Put a claimed row back in the queue for later. Used by the pacing checks, which run AFTER the
+// claim: the row must not be left stuck in 'publishing'.
+async function socialRelease(id, whenISO, why) {
+  const { error } = await supabase.from('social_queue')
+    .update({ status: 'approved', scheduled_for: whenISO, updated_at: new Date().toISOString() }).eq('id', id)
+  if (error) console.error(`❌ [social] release #${id} failed: ${error.message}`)
+  else console.log(`⏸️ [social] #${id} held until ${whenISO} — ${why}`)
+}
+
+async function socialFail(id, message) {
+  const { error } = await supabase.from('social_queue')
+    .update({ status: 'failed', error: String(message).slice(0, 1000), updated_at: new Date().toISOString() }).eq('id', id)
+  if (error) console.error(`❌ [social] marking #${id} failed also failed: ${error.message}`)
+  const admin = v2AdminChat()
+  if (admin) await sendTG(admin, `❌ <b>Post failed</b> · #${esc(id)}\n\n${esc(String(message).slice(0, 600))}\n\nRetry: <code>POST /api/admin/social/queue/${esc(id)}/retry</code>`)
+}
+
+async function processSocialQueue() {
+  try {
+    // Kill switch first — before any select that could lead to a post.
+    if (!socialAutopilotOn()) {
+      const { count, error } = await supabase.from('social_queue')
+        .select('id', { count: 'exact', head: true }).eq('platform', 'x').eq('status', 'approved')
+      if (error) console.error(`❌ [social] queue count failed: ${error.message}`)
+      console.log(`📭 [social] autopilot OFF — ${count ?? 0} approved rows waiting`)
+      return
+    }
+
+    const nowISO = new Date().toISOString()
+    const { data: due, error: dueErr } = await supabase.from('social_queue').select('id')
+      .eq('platform', 'x').eq('status', 'approved').lte('scheduled_for', nowISO)
+      .order('scheduled_for', { ascending: true }).order('id', { ascending: true }).limit(1)
+    if (dueErr) { console.error(`❌ [social] queue read failed: ${dueErr.message}`); return }
+    if (!due?.length) return
+
+    // Atomic claim. The status filter means only one run can take a row: whoever updates it first
+    // gets the row back, everyone else gets nothing and walks away. This is what stops a double post.
+    const { data: row, error: claimErr } = await supabase.from('social_queue')
+      .update({ status: 'publishing', updated_at: new Date().toISOString() })
+      .eq('id', due[0].id).eq('status', 'approved').select().maybeSingle()
+    if (claimErr) { console.error(`❌ [social] claim #${due[0].id} failed: ${claimErr.message}`); return }
+    if (!row) { console.log(`↩️ [social] #${due[0].id} already claimed by another run`); return }
+
+    try {
+      // (a) Daily cap, UTC day.
+      const dayStart = `${nowISO.slice(0, 10)}T00:00:00.000Z`
+      const { count: postedToday, error: capErr } = await supabase.from('social_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('platform', 'x').eq('status', 'published').gte('published_at', dayStart)
+      if (capErr) throw new Error(`daily cap check failed: ${capErr.message}`)
+      if ((postedToday ?? 0) >= xDailyCap()) {
+        const t = new Date(Date.now() + 24 * 3600 * 1000)
+        const tomorrow = `${t.toISOString().slice(0, 10)}T06:30:00.000Z`
+        await socialRelease(row.id, tomorrow, `daily cap ${postedToday}/${xDailyCap()} reached`)
+        const today = nowISO.slice(0, 10)
+        if ((await v2LoadSnapshot(SOCIAL_CAP_DM_KEY)) !== today) {   // one DM per day, not per run
+          v2SaveSnapshot(SOCIAL_CAP_DM_KEY, today)
+          const admin = v2AdminChat()
+          if (admin) await sendTG(admin, `📵 <b>Daily X cap reached</b> (${esc(postedToday)}/${esc(xDailyCap())})\n\nRemaining approved posts are held until 06:30 UTC tomorrow.`)
+        }
+        return
+      }
+
+      // (b) Minimum gap since the last post.
+      const { data: last, error: lastErr } = await supabase.from('social_queue').select('published_at')
+        .eq('platform', 'x').eq('status', 'published').not('published_at', 'is', null)
+        .order('published_at', { ascending: false }).limit(1).maybeSingle()
+      if (lastErr) throw new Error(`gap check failed: ${lastErr.message}`)
+      if (last?.published_at) {
+        const gapMs = xMinGapMin() * 60 * 1000
+        const sinceMs = Date.now() - new Date(last.published_at).getTime()
+        if (sinceMs < gapMs) {
+          const nextAt = new Date(new Date(last.published_at).getTime() + gapMs).toISOString()
+          await socialRelease(row.id, nextAt, `only ${Math.round(sinceMs / 60000)}min since the last post (min ${xMinGapMin()})`)
+          return
+        }
+      }
+
+      // Last line of defence: the text may have been edited after approval.
+      const { flags } = validateSocialPost(row.text, {
+        platform: 'x', contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
+      })
+      const hard = flags.filter(f => f.level === 'hard')
+      if (hard.length) {
+        const why = `blocked by guardrails at publish time — ${hard.map(f => `${f.code}: ${f.msg}`).join('; ')}`
+        console.error(`🚫 [social] #${row.id} ${why}`)
+        await socialFail(row.id, why)
+        return
+      }
+
+      const { id: externalId } = await publishToX({ text: row.text, imageUrl: row.image_url || null })
+      const url = `https://x.com/${X_PROFILE}/status/${externalId}`
+      const { error: doneErr } = await supabase.from('social_queue')
+        .update({ status: 'published', external_id: String(externalId), published_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() })
+        .eq('id', row.id)
+      // The post is already public here. If this write fails the row stays 'publishing', which no
+      // run will pick up again — deliberately, since re-posting would duplicate it.
+      if (doneErr) console.error(`🚨 [social] #${row.id} POSTED (${url}) but the row update failed: ${doneErr.message} — fix by hand`)
+      else console.log(`🚀 [social] #${row.id} published → ${url}`)
+      const admin = v2AdminChat()
+      if (admin) await sendTG(admin, `🚀 <b>Posted to X</b> · #${esc(row.id)} ${esc(row.content_type)}\n\n${esc(row.text)}\n\n${esc(url)}`)
+    } catch (e) {
+      console.error(`❌ [social] publish #${row.id} failed: ${e?.message || e}`)
+      await socialFail(row.id, e?.message || String(e))
+    }
+  } catch (e) {
+    // Never let the interval die.
+    console.error(`❌ [social] queue run error: ${e?.message || e}`)
+  }
+}
+
+// Put a failed row back in the queue by hand. Only 'failed' rows: a row stuck in 'publishing' may
+// already be public on X, so re-queueing it could post twice — that one needs eyes on it first.
+app.post('/api/admin/social/queue/:id/retry', async (req, res) => {
+  const user = await requireUser(req, res)
+  if (!user) return
+  if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+  try {
+    const { data, error } = await supabase.from('social_queue')
+      .update({ status: 'approved', error: null, scheduled_for: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', Number(req.params.id)).eq('status', 'failed').select().maybeSingle()
+    if (error) throw new Error(error.message)
+    if (!data) return res.status(409).json({ error: 'No failed row with that id (already retried, or still publishing)' })
+    res.json({ success: true, row: data })
+  } catch (e) {
+    console.error(`❌ [social] retry #${req.params.id}: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'retry failed' })
   }
 })
 
@@ -6421,6 +6572,11 @@ app.listen(5000, () => {
   }
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
+  // Social publisher. A Railway restart resets the interval, so the first tick comes 60s after boot
+  // and covers anything that fell due while the process was down. One post per run, paced inside.
+  setTimeout(() => { processSocialQueue().catch(e => console.error(`❌ [social] boot run error: ${e?.message}`)) }, 60 * 1000)
+  setInterval(() => { processSocialQueue().catch(e => console.error(`❌ [social] run error: ${e?.message}`)) }, 5 * 60 * 1000)
+  console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X' : 'OFF — logs only'}, cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min)`)
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
   if (process.env.V2_SHADOW_CRON === 'on') {
     const mins = V2_CYCLE_MIN
