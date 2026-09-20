@@ -9,6 +9,7 @@
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { generateDraft } from '../social/generator.js'
 
 const src = readFileSync(fileURLToPath(new URL('../index.js', import.meta.url)), 'utf8')
 const cutOut = (from, to) => {
@@ -39,6 +40,7 @@ let logs = []
 let draftImpl = args => ({ id: 900 + drafts.length, content_type: args.contentType, status: 'draft' })
 let calendar = []
 let nextQueueId = 1
+let newsCache = null
 
 class FakeDate extends Date {
   constructor(...a) { if (a.length === 0) super(NOW.getTime()); else super(...a) }
@@ -84,14 +86,19 @@ function build() {
   const app = { get: () => {} }
   const requireUser = async () => null
   const isAdmin = () => false
+  const getCached = key => (key === 'latest_news' ? newsCache : null)
+  const matchMoverSrv = text => (/tariff|trump/i.test(text) ? { id: 'trump', name: 'Donald Trump', assets: ['USD', 'Gold', 'S&P500'] } : null)
+  const NEWS_ALERT_IMPACT_MIN = 8
   console.log = (...a) => { logs.push(a.join(' ')) }
   console.error = (...a) => { logs.push(a.join(' ')) }
   const mod = new Function(
     'supabase', 'createDraftAndNotify', 'v2LoadSnapshot', 'v2SaveSnapshot', 'sendTG', 'v2AdminChat', 'esc',
     'getEconomicCalendar', 'SOCIAL_PILLARS', 'utcDay', 'app', 'requireUser', 'isAdmin', 'Date',
-    `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, SOCIAL_FALLBACK_UTC_MIN }`,
+    'getCached', 'matchMoverSrv', 'NEWS_ALERT_IMPACT_MIN',
+    `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, pickNewsReaction, SOCIAL_FALLBACK_UTC_MIN, NEWS_REACTION_DELAY_MIN }`,
   )(supabase, createDraftAndNotify, v2LoadSnapshot, v2SaveSnapshot, sendTG, v2AdminChat, esc,
-    getEconomicCalendar, SOCIAL_PILLARS, utcDay, app, requireUser, isAdmin, FakeDate)
+    getEconomicCalendar, SOCIAL_PILLARS, utcDay, app, requireUser, isAdmin, FakeDate,
+    getCached, matchMoverSrv, NEWS_ALERT_IMPACT_MIN)
   return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR } }
 }
 
@@ -99,7 +106,13 @@ const iso = d => new Date(d).toISOString()
 const day = (dateStr, time = '07:00') => { NOW = new Date(`${dateStr}T${time}:00.000Z`) }
 const qrow = over => { const r = { id: nextQueueId++, platform: 'x', content_type: 'event_preview', status: 'draft', created_at: iso(NOW), ...over }; queue.push(r); return r }
 const hist = over => { history.push({ id: history.length + 1, engine: 'v2', pair: 'EURUSD', direction: 'Bearish', generated_at: iso(NOW), performance: null, ...over }) }
-function reset() { queue = []; history = []; snap = {}; drafts = []; dms = []; logs = []; calendar = []; nextQueueId = 1; draftImpl = args => ({ id: 900 + drafts.length, content_type: args.contentType, status: 'draft' }) }
+function reset() { queue = []; history = []; snap = {}; drafts = []; dms = []; logs = []; calendar = []; newsCache = null; nextQueueId = 1; draftImpl = args => ({ id: 900 + drafts.length, content_type: args.contentType, status: 'draft' }) }
+// minutesAgo is relative to the pinned NOW, so "24 minutes old" means exactly that.
+const news = (over = {}) => ({
+  source: 'Reuters', title: 'Fed holds rates, signals no cuts before December', summary: 'The Federal Reserve left rates unchanged.',
+  url: 'https://example.com/a', publishedAt: iso(new Date(NOW.getTime() - (over.minutesAgo ?? 40) * 60000)),
+  impact: 9, category: 'Central Bank', bias: 'bearish', marketTags: ['USD↑', 'Gold↓'], oneliner: 'Dollar firm on the hold.', ...over,
+})
 const biasResult = over => ({ engine: 'v2', pair: 'EURUSD', direction: 'Bearish', confidence: 72, tradeGrade: 'B', reasoning: 'Rate gap widening. Specs long euro.', bias: { levels: { invalidation: '1.0850' } }, ...over })
 const run = async fn => { const m = build(); try { return await fn(m) } finally { m.restore() } }
 
@@ -229,6 +242,104 @@ const run = async fn => { const m = build(); try { return await fn(m) } finally 
   hist({ reasoning: 'Yields drifting lower.' })
   await run(m => m.runSocialPlanner())
   check('new UTC day resets planner state', drafts.length === 1 && snap.social_planner_state.date === '2026-09-22' && snap.social_planner_state.done.biasWindow === true, JSON.stringify(snap.social_planner_state))
+}
+
+// ── news_reaction ─────────────────────────────────────────────────────────────
+{
+  // Too fresh: we post the reaction, not the headline.
+  for (const minutesAgo of [0, 5, 24]) {
+    reset(); day('2026-09-22', '09:00')
+    newsCache = [news({ minutesAgo })]
+    await run(m => m.runSocialPlanner())
+    check(`news ${minutesAgo}min old → no news_reaction (falls through to rotation)`,
+      drafts.length === 1 && drafts[0].contentType !== 'news_reaction' && !snap.social_planner_state.done.newsReaction, JSON.stringify(drafts.map(d => d.contentType)))
+  }
+
+  // Qualifying item.
+  reset(); day('2026-09-22', '09:00')
+  newsCache = [news({ minutesAgo: 40 })]
+  hist({ pair: 'EURUSD', direction: 'Bearish', reasoning: 'Rate gap favours the dollar.' })
+  await run(m => m.runSocialPlanner())
+  check('qualifying news → news_reaction draft', drafts.length === 1 && drafts[0].contentType === 'news_reaction' && drafts[0].pillar === 'macro_news', JSON.stringify(drafts.map(d => d.contentType)))
+  const nf = drafts[0].facts
+  check('facts carry headline, source, publishedAt, impact, instruments',
+    nf.headline.startsWith('Fed holds rates') && nf.source === 'Reuters' && nf.impactScore === 9 && JSON.stringify(nf.instruments) === JSON.stringify(['USD↑', 'Gold↓']) && !!nf.publishedAt, JSON.stringify(nf))
+  check('facts carry today\'s v2 bias context', nf.biasPair === 'EURUSD' && nf.biasDirection === 'Bearish' && /Rate gap/.test(nf.biasReasoning), JSON.stringify(nf))
+  check('news_reaction marks both the slot and the daily news flag', snap.social_planner_state.done.newsReaction === true && snap.social_planner_state.done.biasWindow === true, JSON.stringify(snap.social_planner_state))
+
+  // Second qualifying item the same day.
+  queue = []; drafts = []; snap.social_planner_state.done.biasWindow = false
+  newsCache = [news({ minutesAgo: 35, title: 'ECB signals another cut', marketTags: ['EUR↓'] })]
+  await run(m => m.runSocialPlanner())
+  check('second qualifying item the same day → no second news_reaction', drafts.length === 1 && drafts[0].contentType !== 'news_reaction', JSON.stringify(drafts.map(d => d.contentType)))
+
+  // Below the impact threshold (alerts use >= 8).
+  for (const impact of [7, 5, 0]) {
+    reset(); day('2026-09-22', '09:00')
+    newsCache = [news({ minutesAgo: 40, impact })]
+    await run(m => m.runSocialPlanner())
+    check(`impact ${impact} → no news_reaction`, drafts[0].contentType !== 'news_reaction', drafts[0]?.contentType)
+  }
+
+  // Older than the window.
+  reset(); day('2026-09-22', '09:00')
+  newsCache = [news({ minutesAgo: 120 })]
+  await run(m => m.runSocialPlanner())
+  check('news older than 90min → no news_reaction', drafts[0].contentType !== 'news_reaction', drafts[0]?.contentType)
+
+  // Slot already filled by the bias card.
+  reset(); day('2026-09-22', '09:00')
+  qrow({ content_type: 'bias_card', status: 'draft' })
+  newsCache = [news({ minutesAgo: 40 })]
+  await run(m => m.runSocialPlanner())
+  check('bias card already filled the slot → no news draft at all', drafts.length === 0, JSON.stringify(drafts))
+
+  // Priority: event_preview outranks news_reaction.
+  reset(); day('2026-09-22', '09:00')
+  calendar = [{ event: 'CPI y/y', country: 'USD', time: '2026-09-22T12:30:00.000Z', impact: 'High' }]
+  newsCache = [news({ minutesAgo: 40 })]
+  await run(m => m.runSocialPlanner())
+  check('event_preview outranks news_reaction', drafts.length === 1 && drafts[0].contentType === 'event_preview', drafts[0]?.contentType)
+
+  // Priority: news_reaction outranks the rotation, and does not consume a rotation turn.
+  reset(); day('2026-09-22', '09:00')
+  newsCache = [news({ minutesAgo: 40 })]
+  await run(m => m.runSocialPlanner())
+  check('news_reaction outranks the rotation', drafts[0].contentType === 'news_reaction' && (snap.social_rotation ?? 0) === 0, `${drafts[0].contentType} idx=${snap.social_rotation}`)
+
+  // Highest impact wins, then the freshest.
+  reset(); day('2026-09-22', '09:00')
+  newsCache = [news({ minutesAgo: 30, impact: 8, title: 'Lower impact' }), news({ minutesAgo: 60, impact: 10, title: 'Bigger story' })]
+  await run(m => m.runSocialPlanner())
+  check('highest impact item is chosen', drafts[0].facts.headline === 'Bigger story', drafts[0].facts.headline)
+
+  // Empty or missing cache is simply no news post.
+  for (const cache of [null, [], undefined]) {
+    reset(); day('2026-09-22', '09:00')
+    newsCache = cache
+    await run(m => m.runSocialPlanner())
+    check(`news cache ${JSON.stringify(cache) ?? 'undefined'} → rotation, no crash`, drafts.length === 1 && drafts[0].contentType !== 'news_reaction', JSON.stringify(drafts.map(d => d.contentType)))
+  }
+
+  // Instruments fall back to the market-mover match when the scorer gave no tags.
+  reset(); day('2026-09-22', '09:00')
+  newsCache = [news({ minutesAgo: 40, title: 'Trump announces new tariffs', marketTags: [] })]
+  await run(m => m.runSocialPlanner())
+  check('instruments fall back to the mover assets', JSON.stringify(drafts[0].facts.instruments) === JSON.stringify(['USD', 'Gold', 'S&P500']), JSON.stringify(drafts[0].facts.instruments))
+}
+
+// ── The outlet name never reaches the writer ──────────────────────────────────
+{
+  // The post must not name the publication that carried the story. The facts row keeps `source`
+  // for context, but the generator's whitelist must withhold it from the prompt.
+  const calls = []
+  const fake = { messages: { create: async p => { calls.push(p); return { content: [{ type: 'text', text: JSON.stringify({ variants: [{ shape: 'one-liner', text: 'Dollar firm after the hold. Positioning was already leaning that way.' }] }) }], usage: {} } } } }
+  const facts = { headline: 'Fed holds rates', source: 'Reuters', publishedAt: '2026-09-22T08:00:00.000Z', impactScore: 9, instruments: ['USD↑'], marketTags: ['USD↑'], oneliner: 'Dollar firm.', biasPair: 'EURUSD', biasDirection: 'Bearish', biasReasoning: 'Rate gap.' }
+  await generateDraft({ contentType: 'news_reaction', facts, anthropic: fake })
+  const prompt = calls[0].messages[0].content
+  check('generator never sends the outlet name', !prompt.includes('Reuters') && !/"source"/.test(prompt), prompt.slice(prompt.indexOf('FACTS'), prompt.indexOf('FACTS') + 300))
+  check('generator does send headline, instruments and bias context', prompt.includes('Fed holds rates') && prompt.includes('USD↑') && prompt.includes('EURUSD'), prompt.slice(0, 200))
+  check('news_reaction gets the fact check (2 model calls)', calls.length === 2 && calls[1].model.includes('haiku'), calls.map(c => c.model).join(','))
 }
 
 // ── Saturday scorecard ────────────────────────────────────────────────────────

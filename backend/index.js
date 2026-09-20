@@ -434,7 +434,7 @@ const SOCIAL_MAX_REGENS = 3
 const SOCIAL_CARD_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
 const SOCIAL_PILLARS = {
   bias_card: 'daily_bias', event_preview: 'calendar', weekly_scorecard: 'accountability',
-  macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
+  macro_insight: 'education', news_reaction: 'macro_news', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
 }
 
 // Texts that have gone (or are about to go) out in the last 30 days, any platform. The duplicate and
@@ -737,6 +737,12 @@ const SOCIAL_PLANNER_KEY = 'social_planner_state'
 const SOCIAL_ROTATION_KEY = 'social_rotation'
 const SOCIAL_ROTATION = ['macro_insight', 'trader_pain', 'contrarian']
 const SOCIAL_PLANNER_MAX_ATTEMPTS = 3   // a blocked generation retries, but does not retry all day
+// We post the market's REACTION, not the headline. Everyone already has the headline, and a post
+// written in the first minutes says nothing an aggregator could not say. Waiting lets the move
+// happen so the post can be about what changed.
+const NEWS_REACTION_DELAY_MIN = 25
+// Past this, the reaction is no longer a reaction.
+const NEWS_REACTION_WINDOW_MIN = 90
 const SOCIAL_LIVE_STATUSES = ['draft', 'approved', 'publishing', 'published']
 
 // utcDay() is defined further down with the Today's Bias lock; reused here rather than duplicated.
@@ -805,6 +811,42 @@ async function socialTodayEvents() {
   }
 }
 
+// The best news item to react to right now, or null. Reads the cache the news feed already fills —
+// it never triggers a fetch of its own, so a quiet cache simply means no news post today.
+function pickNewsReaction() {
+  const items = getCached('latest_news')
+  if (!Array.isArray(items) || !items.length) return null
+  const now = Date.now()
+  return items
+    .filter(a => (a.impact ?? 0) >= NEWS_ALERT_IMPACT_MIN && a.publishedAt)
+    .map(a => ({ a, ageMin: (now - new Date(a.publishedAt).getTime()) / 60000 }))
+    .filter(({ ageMin }) => Number.isFinite(ageMin) && ageMin >= NEWS_REACTION_DELAY_MIN && ageMin <= NEWS_REACTION_WINDOW_MIN)
+    .sort((x, y) => (y.a.impact - x.a.impact) || (x.ageMin - y.ageMin))
+    .map(({ a }) => a)[0] || null
+}
+
+// What the writer gets about the event, plus today's bias if there is one. Instruments come from the
+// scorer's marketTags, falling back to the market-mover match — never invented here.
+async function newsReactionFacts(item) {
+  const mover = matchMoverSrv(`${item.title} ${item.summary || ''}`)
+  const instruments = (item.marketTags?.length ? item.marketTags : mover?.assets || []).slice(0, 4)
+  const facts = {
+    headline: item.title,
+    source: item.source || null,            // stored for context, NOT sent to the writer
+    publishedAt: item.publishedAt,
+    impactScore: item.impact,
+    instruments,
+    marketTags: item.marketTags || [],
+    oneliner: item.oneliner || '',
+  }
+  try {
+    const { data: b } = await supabase.from('bias_history').select('pair,direction,reasoning')
+      .eq('engine', 'v2').gte('generated_at', utcDayStart()).order('generated_at', { ascending: false }).limit(1).maybeSingle()
+    if (b) Object.assign(facts, { biasPair: b.pair, biasDirection: b.direction, biasReasoning: b.reasoning })
+  } catch (e) { console.warn(`⚠️ [social] bias context for news reaction unavailable: ${e?.message}`) }
+  return facts
+}
+
 // performance jsonb is written by the /api/bias-performance scorer: status 'final' carries a
 // correct true/false verdict once the 24h window closes, 'live' is still running.
 function scorecardOutcome(perf) {
@@ -841,7 +883,7 @@ async function runSocialPlanner() {
     const mins = utcMinutes(now)
 
     let state = await v2LoadSnapshot(SOCIAL_PLANNER_KEY)
-    if (!state || state.date !== day) state = { date: day, done: { biasWindow: false, saturday: false }, attempts: 0 }
+    if (!state || state.date !== day) state = { date: day, done: { biasWindow: false, saturday: false, newsReaction: false }, attempts: 0 }
     const save = () => v2SaveSnapshot(SOCIAL_PLANNER_KEY, state)
 
     if (dow === 0) return                                   // Sunday: nothing goes out
@@ -883,11 +925,23 @@ async function runSocialPlanner() {
     }
     state.attempts = (state.attempts || 0) + 1; save()
 
+    // Priority for the day's single slot, highest first:
+    //   1. bias_card      — the engine's own call, drafted by enqueueBiasCardDraft, replaces a
+    //                       planner draft that has not gone out yet
+    //   2. event_preview  — a dated, scheduled reason to post
+    //   3. news_reaction  — something that actually moved, at most one a day so the account reads
+    //                       as an analyst rather than a headline aggregator
+    //   4. rotation       — macro_insight / trader_pain / contrarian, the evergreen filler
     const events = await socialTodayEvents()
+    const news = state.done.newsReaction ? null : pickNewsReaction()
     let row = null
     if (events.length) {
       const facts = { events, dateLabel: now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
       row = await createDraftAndNotify({ contentType: 'event_preview', pillar: 'calendar', facts, sourceRef: { trigger: 'planner' } })
+    } else if (news) {
+      const facts = await newsReactionFacts(news)
+      row = await createDraftAndNotify({ contentType: 'news_reaction', pillar: 'macro_news', facts, sourceRef: { trigger: 'planner', newsUrl: news.url || null } })
+      if (row) { state.done.newsReaction = true; save() }   // one a day, whatever else happens later
     } else {
       const idx = Number(await v2LoadSnapshot(SOCIAL_ROTATION_KEY)) || 0
       const contentType = SOCIAL_ROTATION[idx % SOCIAL_ROTATION.length]
@@ -1242,13 +1296,17 @@ function tgMoverAlert(articles) {
   return `🚨 <b>MARKET MOVER ALERT</b> 🚨\n\n${items}\n\n🔗 <a href="https://www.biasforge.co/market-movers">Open MarketMovers Radar</a>`
 }
 
+// The bar for "worth interrupting someone over". Named so the social planner uses the SAME bar as
+// the subscriber alerts instead of a second number that can drift away from this one.
+const NEWS_ALERT_IMPACT_MIN = 8
+
 async function checkAndSendNewsAlerts() {
   const eSubs = emailSubscribers.filter(s => s.active && s.preferences?.news !== false)
   const tSubs = telegramSubscribers.filter(s => s.active && s.preferences?.news !== false)
   try {
     const cached = getCached('latest_news')
     if (!cached) return
-    const hi = cached.filter(a => a.impact >= 8 && !sentNewsAlerts.has(a.title))
+    const hi = cached.filter(a => a.impact >= NEWS_ALERT_IMPACT_MIN && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
 
     // ⚡ CATALYST CLASSIFICATION: Tier 1 (refresh only) vs Tier 2 (market-shaker → full re-pick)

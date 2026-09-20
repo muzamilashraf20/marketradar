@@ -19,7 +19,7 @@ const FACTCHECK_MAX_TOKENS = 800 // the per-entity evidence lines ran to ~370 to
 // Posts built from opinion and notes only; there is nothing to check them against.
 const NO_FACT_TYPES = new Set(['trader_pain', 'contrarian'])
 
-export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'trader_pain', 'contrarian', 'build_log']
+export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'news_reaction', 'trader_pain', 'contrarian', 'build_log']
 
 const SYSTEM_PROMPT = `You write social media posts for BiasForge (biasforge.co), a daily macro bias tool for funded and prop-firm forex and gold traders. You write as a trader talking to other traders.
 
@@ -108,6 +108,20 @@ const TASKS = {
     brief: `Write one evergreen macro idea explained simply, for example why real yields move gold or why rate differentials drive a currency pair.
 - Educational. No call on any pair and no direction for today.
 - FACTS is context for what is topical right now. Use it only if it helps; the idea must still make sense next month.`,
+  },
+  news_reaction: {
+    // `source` is deliberately NOT sent to the writer. The post must not name the outlet that
+    // carried the story, and the surest way to keep a name out of the copy is to withhold it.
+    facts: f => ({
+      ...pick(f, ['headline', 'instruments', 'marketTags', 'oneliner', 'impactScore', 'publishedAt']),
+      ...(f.biasPair ? { todaysBias: pick(f, ['biasPair', 'biasDirection', 'biasReasoning']) } : {}),
+    }),
+    brief: `Write a reaction to a macro event that has just moved markets.
+- This is a reaction, NOT a news report. State what happened in half a sentence at most; the reader has already seen the headline.
+- Spend the rest of the post on what it means for positioning, or what it confirms or breaks in the macro picture.
+- NEVER predict the next move and never name a price target. Do not say what will happen — say what changed.
+- Never name or tag an account, a publication, an analyst, a news outlet or a competitor. Attribute to the data and the event itself, not to a person or a brand.
+- Name only the countries, central banks, data series and instruments that appear in FACTS.`,
   },
   trader_pain: {
     facts: () => ({}),
