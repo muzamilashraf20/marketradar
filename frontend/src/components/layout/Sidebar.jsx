@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCleanMode } from '../../hooks/useCleanMode'
+import { authedFetch } from '../../lib/authFetch'
 import {
   LayoutDashboard, TrendingUp, Newspaper, Calendar,
   ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
   Settings, LogOut, Activity, X, ChevronRight, BarChart2,
-  Lock
+  Lock, Megaphone
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -23,11 +24,28 @@ const NAV_ITEMS = [
   { label: 'Trade Journal',     icon: BookOpen,        path: '/journal',    pro: true },
 ]
 
+// Appended only for the admin. whoami never 401s, so an ordinary user just gets admin:false here
+// and the item is never rendered for them.
+const ADMIN_ITEM = { label: 'Content Studio', icon: Megaphone, path: '/studio', pro: false }
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+
 export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, isPro, isActualPro, trialExpired, planLoaded, logout } = useAuth()
   const cleanMode = useCleanMode()
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    authedFetch(`${API_BASE}/api/admin/whoami`)
+      .then(r => r.json())
+      .then(d => { if (alive && d?.admin) setIsAdmin(true) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [user?.id])
+
+  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS
 
   const handleLogout = () => {
     logout()
@@ -88,7 +106,7 @@ export default function Sidebar({ onClose }) {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {NAV_ITEMS.map((item) => {
+        {navItems.map((item) => {
           const Icon = item.icon
           const isActive = location.pathname === item.path
           const isLocked = trialExpired ? !isActualPro : (item.pro && !isPro)

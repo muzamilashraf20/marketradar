@@ -25,6 +25,7 @@ import Playbooks from './pages/Playbooks'
 import SettingsPage from './pages/Settings'
 import CurrencyStrength from './pages/CurrencyStrength'
 import TradeJournal from './pages/TradeJournal'
+import ContentStudio from './pages/ContentStudio'
 import NotFound from './pages/NotFound'
 import ProtectedRoute from './components/common/ProtectedRoute'
 import ProGate from './components/common/ProGate'
@@ -66,6 +67,8 @@ export default function App() {
         <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
         <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+        {/* Admin only — the page itself checks whoami and redirects anyone else to /dashboard */}
+        <Route path="/studio" element={<ProtectedRoute><ContentStudio /></ProtectedRoute>} />
 
         {/* Protected Routes — PRO only */}
         <Route path="/strength" element={<ProtectedRoute><ProGate title="Currency Strength" subtitle="Real-time currency strength meter"><CurrencyStrength /></ProGate></ProtectedRoute>} />

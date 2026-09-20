@@ -601,6 +601,33 @@ async function socialTransition(id, status) {
   return data
 }
 
+// Approve / skip, shared by the Telegram buttons and the Studio page so the two can never drift.
+// Returns { ok } or { ok: false, code, reason } where code doubles as the HTTP status.
+async function socialApproveById(id) {
+  const { data: row, error } = await supabase.from('social_queue').select('*').eq('id', id).maybeSingle()
+  if (error) throw new Error(`social_queue load #${id}: ${error.message}`)
+  if (!row) return { ok: false, code: 404, reason: 'Draft not found' }
+  if (row.status !== 'draft') return { ok: false, code: 409, reason: `Already ${row.status}`, row }
+  // The text may have been edited since the draft was made, here or in Studio.
+  const { flags } = validateSocialPost(row.text, {
+    platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
+  })
+  const hard = flags.filter(f => f.level === 'hard')
+  if (hard.length) return { ok: false, code: 422, reason: hard.map(f => `${f.code}: ${f.msg}`).join('; '), flags, row }
+  const done = await socialTransition(id, 'approved')
+  if (!done) return { ok: false, code: 409, reason: 'Already handled' }
+  // Don't wait up to 5 minutes for the next tick. Not awaited: the caller should return now, and the
+  // queue reports its own outcome by DM. With autopilot off this only logs.
+  processSocialQueue().catch(e => console.error(`❌ [social] post-approve publish run failed: ${e?.message || e}`))
+  return { ok: true, row: done }
+}
+
+async function socialSkipById(id) {
+  const done = await socialTransition(id, 'skipped')
+  if (!done) return { ok: false, code: 409, reason: 'Not a draft any more' }
+  return { ok: true, row: done }
+}
+
 async function handleSocialCallback(cq) {
   const answer = (text, alert = false) => tgCall('answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: alert })
 
@@ -625,27 +652,20 @@ async function handleSocialCallback(cq) {
   }
 
   if (action === 'ap') {
-    // Re-check the CURRENT text: it may have been edited in Studio since the draft was made.
-    const { flags } = validateSocialPost(row.text, {
-      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
-    })
-    const hard = flags.filter(f => f.level === 'hard')
-    if (hard.length) return answer(`Not approved — ${hard.map(f => `${f.code}: ${f.msg}`).join('; ')}`.slice(0, 200), true)
-    const done = await socialTransition(id, 'approved')
-    if (!done) return answer('Already handled')
+    const r = await socialApproveById(id)
+    if (!r.ok) {
+      if (r.code === 422) return answer(`Not approved — ${r.reason}`.slice(0, 200), true)
+      return answer(r.reason)
+    }
     await answer('Approved')
-    await socialFinishMessage(cq, done, '✅ Approved — queued to publish')
-    // Don't wait up to 5 minutes for the next tick. Not awaited: the callback should finish now,
-    // and the queue reports its own outcome by DM. With autopilot off this only logs.
-    processSocialQueue().catch(e => console.error(`❌ [social] post-approve publish run failed: ${e?.message || e}`))
-    return
+    return socialFinishMessage(cq, r.row, '✅ Approved — queued to publish')
   }
 
   if (action === 'sk') {
-    const done = await socialTransition(id, 'skipped')
-    if (!done) return answer('Already handled')
+    const r = await socialSkipById(id)
+    if (!r.ok) return answer('Already handled')
     await answer('Skipped')
-    return socialFinishMessage(cq, done, '⏭ Skipped')
+    return socialFinishMessage(cq, r.row, '⏭ Skipped')
   }
 
   // rg
@@ -673,9 +693,10 @@ function isAdmin(user) {
   return !!(user?.email && user.email_confirmed_at && list.includes(user.email.toLowerCase()))
 }
 
-// TEMPORARY manual trigger for testing the approval flow. Real triggers (bias publish, calendar) replace
-// this in the next step. Admin-only; generation takes ~10–20s, so the response is slow by design.
-app.post('/api/admin/social/test-draft', async (req, res) => {
+// Manual draft trigger, used by the Studio's "New draft" panel and kept under its original
+// /test-draft path so anything already calling that keeps working. Admin-only; generation takes
+// ~10–20s, so the response is slow by design.
+const socialGenerateHandler = async (req, res) => {
   const user = await requireUser(req, res)
   if (!user) return
   if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
@@ -711,10 +732,77 @@ app.post('/api/admin/social/test-draft', async (req, res) => {
     if (!row) return res.status(422).json({ error: 'Every variant was blocked by the guardrails — see the admin Telegram DM' })
     res.json({ success: true, row })
   } catch (e) {
-    console.error(`❌ [social] test-draft ${contentType}: ${e?.message || e}`)
-    res.status(500).json({ error: e?.message || 'test-draft failed' })
+    console.error(`❌ [social] generate ${contentType}: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'draft generation failed' })
+  }
+}
+app.post('/api/admin/social/generate', socialGenerateHandler)
+app.post('/api/admin/social/test-draft', socialGenerateHandler)   // original path, same handler
+
+// Who is asking, and what is the posting state. Deliberately never 401s: the sidebar and the Studio
+// page call it on every load, including for signed-out and ordinary users, and a non-admin simply
+// gets admin:false rather than an error to handle.
+app.get('/api/admin/whoami', async (req, res) => {
+  try {
+    const user = await optionalUser(req)
+    const admin = isAdmin(user)
+    res.json({
+      admin,
+      autopilot: socialAutopilotOn() ? 'on' : 'off',
+      dailyCap: xDailyCap(),
+      minGapMin: xMinGapMin(),
+    })
+  } catch {
+    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin() })
   }
 })
+
+// Edit a draft's text. Drafts only — an approved or published row is past the point where editing
+// the text means anything, and editing a published row would make the record disagree with X.
+app.patch('/api/admin/social/queue/:id', async (req, res) => {
+  const user = await requireUser(req, res)
+  if (!user) return
+  if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+  try {
+    const text = String(req.body?.text ?? '').trim()
+    if (!text) return res.status(400).json({ error: 'text is required' })
+    const id = Number(req.params.id)
+    const { data: row, error } = await supabase.from('social_queue').select('*').eq('id', id).maybeSingle()
+    if (error) throw new Error(error.message)
+    if (!row) return res.status(404).json({ error: 'Not found' })
+    if (row.status !== 'draft') return res.status(400).json({ error: `Cannot edit a ${row.status} row` })
+
+    const { flags } = validateSocialPost(text, {
+      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(id),
+    })
+    const { data: saved, error: upErr } = await supabase.from('social_queue')
+      .update({ text, updated_at: new Date().toISOString() })
+      .eq('id', id).eq('status', 'draft').select().maybeSingle()
+    if (upErr) throw new Error(upErr.message)
+    if (!saved) return res.status(400).json({ error: 'Row stopped being a draft while saving' })
+    res.json({ success: true, row: saved, flags })
+  } catch (e) {
+    console.error(`❌ [social] edit #${req.params.id}: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'edit failed' })
+  }
+})
+
+// Approve / skip from the Studio. Same helpers the Telegram buttons use.
+for (const [path, fn, label] of [['approve', socialApproveById, 'approve'], ['skip', socialSkipById, 'skip']]) {
+  app.post(`/api/admin/social/queue/:id/${path}`, async (req, res) => {
+    const user = await requireUser(req, res)
+    if (!user) return
+    if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+    try {
+      const r = await fn(Number(req.params.id))
+      if (!r.ok) return res.status(r.code).json({ error: r.reason, flags: r.flags || [] })
+      res.json({ success: true, row: r.row })
+    } catch (e) {
+      console.error(`❌ [social] ${label} #${req.params.id}: ${e?.message || e}`)
+      res.status(500).json({ error: e?.message || `${label} failed` })
+    }
+  })
+}
 
 // ============================================
 // ⏰ SOCIAL TRIGGERS — what gets drafted, and when
