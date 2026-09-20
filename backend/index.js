@@ -534,7 +534,7 @@ const socialKeyboard = id => ({
 
 // Generate → guardrails/fact-check (inside generateDraft) → card → social_queue row → admin DM.
 // Returns the inserted row, or null when every variant was blocked (the admin is told why).
-async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, notes = '', sourceRef = {}, regenCount = 0 }) {
+async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, notes = '', sourceRef = {}, regenCount = 0, pillar = null }) {
   const admin = v2AdminChat()
   if (!admin) throw new Error('TG_ADMIN_CHAT_ID is not set — drafts need an admin to approve them')
 
@@ -552,7 +552,7 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
   const { data: row, error } = await supabase.from('social_queue').insert({
     platform,
     content_type: contentType,
-    pillar: SOCIAL_PILLARS[contentType] || null,
+    pillar: pillar || SOCIAL_PILLARS[contentType] || null,
     text: chosen.text,
     image_path: card?.path || null,
     image_url: card?.url || null,
@@ -713,6 +713,221 @@ app.post('/api/admin/social/test-draft', async (req, res) => {
   } catch (e) {
     console.error(`❌ [social] test-draft ${contentType}: ${e?.message || e}`)
     res.status(500).json({ error: e?.message || 'test-draft failed' })
+  }
+})
+
+// ============================================
+// ⏰ SOCIAL TRIGGERS — what gets drafted, and when
+// ============================================
+// Two sources feed the queue. The bias engine pushes a card when it publishes a good-enough bias
+// (event-driven), and a 15-minute planner fills the day's slot when it does not (time-driven).
+// Both END at a 'draft' row plus an admin DM. Neither can publish: only the Approve button moves a
+// row to 'approved', and only processSocialQueue posts, behind SOCIAL_AUTOPILOT.
+//
+// The v2 engine grades A / A- / B / C / D (biasEngineV2/biasEngine.js). "B or better" is the bar for
+// spending a post on it; A+ is accepted too in case the scale ever gains it.
+const BIAS_CARD_GRADES = new Set(['A+', 'A', 'A-', 'B'])
+// The v2 cron fires every V2_CYCLE_MIN minutes FROM PROCESS BOOT, not at fixed clock times, so a
+// Railway restart moves every run of the day — there is no dependable "first publish of the day" to
+// key the planner off. 06:30 UTC is used instead: London is trading, New York has not opened, and it
+// gives the engine the whole early session to produce something better first.
+const SOCIAL_FALLBACK_UTC_MIN = 6 * 60 + 30
+const SOCIAL_SATURDAY_UTC_MIN = 6 * 60 + 30
+const SOCIAL_PLANNER_KEY = 'social_planner_state'
+const SOCIAL_ROTATION_KEY = 'social_rotation'
+const SOCIAL_ROTATION = ['macro_insight', 'trader_pain', 'contrarian']
+const SOCIAL_PLANNER_MAX_ATTEMPTS = 3   // a blocked generation retries, but does not retry all day
+const SOCIAL_LIVE_STATUSES = ['draft', 'approved', 'publishing', 'published']
+
+// utcDay() is defined further down with the Today's Bias lock; reused here rather than duplicated.
+const utcDayStart = () => `${utcDay()}T00:00:00.000Z`
+const utcMinutes = (d = new Date()) => d.getUTCHours() * 60 + d.getUTCMinutes()
+
+// Every 'x' row created today that is still alive (not skipped, not failed).
+async function socialRowsToday() {
+  const { data, error } = await supabase.from('social_queue').select('id,content_type,status,created_at')
+    .eq('platform', 'x').in('status', SOCIAL_LIVE_STATUSES).gte('created_at', utcDayStart())
+  if (error) throw new Error(`social_queue today read failed: ${error.message}`)
+  return data || []
+}
+
+// Today's bias card, if the engine produced one. One per UTC day even if the bias flips later: a
+// second card the same day would contradict the first in the feed.
+async function enqueueBiasCardDraft(result, biasHistoryId = null) {
+  if (result?.engine !== 'v2') { console.log(`⏭️ [social] bias card skipped — engine is ${result?.engine || 'v1'}, not v2`); return null }
+  const grade = String(result.tradeGrade || '').toUpperCase()
+  if (!BIAS_CARD_GRADES.has(grade)) { console.log(`⏭️ [social] bias card skipped — grade ${grade || '—'} is below B`); return null }
+
+  const today = await socialRowsToday()
+  if (today.some(r => r.content_type === 'bias_card')) {
+    console.log('⏭️ [social] bias card skipped — one already exists today')
+    return null
+  }
+
+  // The planner may have already filled today's slot. A bias card is the better post, so it replaces
+  // a planner draft that has not gone out yet — but never one that is already public or on its way.
+  const plannerRows = today.filter(r => r.content_type !== 'bias_card')
+  if (plannerRows.some(r => r.status === 'published' || r.status === 'publishing')) {
+    console.log('⏭️ [social] bias card skipped — today\'s planner post already went out')
+    return null
+  }
+  for (const r of plannerRows.filter(r => r.status === 'draft' || r.status === 'approved')) {
+    const { error } = await supabase.from('social_queue')
+      .update({ status: 'skipped', updated_at: new Date().toISOString() })
+      .eq('id', r.id).in('status', ['draft', 'approved'])
+    if (error) { console.error(`⚠️ [social] could not replace planner row #${r.id}: ${error.message}`); continue }
+    console.log(`♻️ [social] planner row #${r.id} (${r.content_type}) replaced by today's bias card`)
+    const admin = v2AdminChat()
+    if (admin) await sendTG(admin, `♻️ #${esc(r.id)} (${esc(r.content_type)}) replaced by today's bias card`)
+  }
+
+  // Five fields only. The invalidation level is NOT passed: it is paid-only, and the writer cannot
+  // leak what it never receives.
+  const facts = {
+    pair: result.pair, direction: result.direction, confidence: result.confidence,
+    grade: result.tradeGrade, reasoning: result.reasoning,
+  }
+  return createDraftAndNotify({ contentType: 'bias_card', pillar: 'daily_bias', facts, sourceRef: { trigger: 'bias_engine', biasHistoryId } })
+}
+
+// Today's high-impact calendar events, in the shape the writer and the card both expect.
+async function socialTodayEvents() {
+  try {
+    const today = utcDay()
+    return (await getEconomicCalendar() || [])
+      .filter(e => String(e.time).slice(0, 10) === today && /high/i.test(String(e.impact)))
+      .sort((a, b) => new Date(a.time) - new Date(b.time))
+      .slice(0, 4)
+      .map(e => ({ time: new Date(e.time).toISOString().slice(11, 16), currency: e.country, title: e.event, forecast: e.forecast || '', previous: e.previous || '', impact: e.impact }))
+  } catch (e) {
+    console.warn(`⚠️ [social] calendar read failed, planner will fall back to the rotation: ${e?.message}`)
+    return []
+  }
+}
+
+// performance jsonb is written by the /api/bias-performance scorer: status 'final' carries a
+// correct true/false verdict once the 24h window closes, 'live' is still running.
+function scorecardOutcome(perf) {
+  if (perf?.status === 'final' && typeof perf.correct === 'boolean') return perf.correct ? 'hit' : 'miss'
+  if (perf?.status === 'live') return 'open'
+  return null
+}
+
+async function socialScorecardRows() {
+  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+  const { data, error } = await supabase.from('bias_history')
+    .select('id,pair,direction,generated_at,performance')
+    .eq('engine', 'v2').gte('generated_at', since).order('generated_at', { ascending: true })
+  if (error) throw new Error(`bias_history read failed: ${error.message}`)
+  const rows = []
+  for (const r of data || []) {
+    const outcome = scorecardOutcome(r.performance)
+    if (!outcome) continue
+    rows.push({
+      date: new Date(r.generated_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', timeZone: 'UTC' }),
+      pair: r.pair, direction: String(r.direction || '').toUpperCase(), outcome,
+    })
+  }
+  return rows
+}
+
+// Time-driven filler. Restart-safe: what has been done today lives in app_state, not in this process,
+// so a Railway restart cannot produce a second draft for the same slot.
+async function runSocialPlanner() {
+  try {
+    const now = new Date()
+    const day = utcDay()
+    const dow = now.getUTCDay()
+    const mins = utcMinutes(now)
+
+    let state = await v2LoadSnapshot(SOCIAL_PLANNER_KEY)
+    if (!state || state.date !== day) state = { date: day, done: { biasWindow: false, saturday: false }, attempts: 0 }
+    const save = () => v2SaveSnapshot(SOCIAL_PLANNER_KEY, state)
+
+    if (dow === 0) return                                   // Sunday: nothing goes out
+
+    if (dow === 6) {
+      if (state.done.saturday || mins < SOCIAL_SATURDAY_UTC_MIN) return
+      const rows = await socialScorecardRows()
+      const resolved = rows.filter(r => r.outcome !== 'open')
+      if (resolved.length < 3) {
+        // Not marked done: calls resolve through the day, so a later run may find enough. Logged at
+        // most once an hour rather than every 15 minutes.
+        if (state.satLoggedHour !== now.getUTCHours()) {
+          state.satLoggedHour = now.getUTCHours(); save()
+          console.log(`⏭️ [social] scorecard skipped — only ${resolved.length} resolved call(s) this week, need 3`)
+        }
+        return
+      }
+      const start = new Date(Date.now() - 6 * 24 * 3600 * 1000)
+      const fmt = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+      // No counts, percentages or totals anywhere — the rows speak for themselves.
+      const facts = { rows: rows.slice(-7), rangeLabel: `${fmt(start)} – ${fmt(now)}` }
+      const row = await createDraftAndNotify({ contentType: 'weekly_scorecard', pillar: 'accountability', facts, sourceRef: { trigger: 'planner' } })
+      if (row) { state.done.saturday = true; save(); console.log(`📅 [social] weekly scorecard drafted (#${row.id}, ${rows.length} rows)`) }
+      return
+    }
+
+    // Mon–Fri
+    if (state.done.biasWindow || mins < SOCIAL_FALLBACK_UTC_MIN) return
+    const today = await socialRowsToday()
+    if (today.length) {
+      state.done.biasWindow = true; save()
+      console.log(`⏭️ [social] planner slot already filled by #${today[0].id} (${today[0].content_type})`)
+      return
+    }
+    if ((state.attempts || 0) >= SOCIAL_PLANNER_MAX_ATTEMPTS) {
+      state.done.biasWindow = true; save()
+      console.warn(`⚠️ [social] planner gave up for today after ${state.attempts} attempts`)
+      return
+    }
+    state.attempts = (state.attempts || 0) + 1; save()
+
+    const events = await socialTodayEvents()
+    let row = null
+    if (events.length) {
+      const facts = { events, dateLabel: now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
+      row = await createDraftAndNotify({ contentType: 'event_preview', pillar: 'calendar', facts, sourceRef: { trigger: 'planner' } })
+    } else {
+      const idx = Number(await v2LoadSnapshot(SOCIAL_ROTATION_KEY)) || 0
+      const contentType = SOCIAL_ROTATION[idx % SOCIAL_ROTATION.length]
+      let facts = {}
+      if (contentType === 'macro_insight') {
+        const { data: b } = await supabase.from('bias_history').select('reasoning')
+          .eq('engine', 'v2').order('generated_at', { ascending: false }).limit(1).maybeSingle()
+        facts = { reasoning: b?.reasoning || '', events: await socialTodayEvents() }
+      }
+      row = await createDraftAndNotify({ contentType, pillar: SOCIAL_PILLARS[contentType], facts, sourceRef: { trigger: 'planner', rotationIndex: idx } })
+      // Advance ONLY on success, so a blocked generation does not burn a pillar's turn.
+      if (row) v2SaveSnapshot(SOCIAL_ROTATION_KEY, idx + 1)
+    }
+    if (row) {
+      state.done.biasWindow = true; save()
+      console.log(`📅 [social] planner drafted #${row.id} (${row.content_type})`)
+    } else {
+      console.warn(`⚠️ [social] planner draft blocked (attempt ${state.attempts}/${SOCIAL_PLANNER_MAX_ATTEMPTS}) — will retry`)
+    }
+  } catch (e) {
+    // Never let the interval die.
+    console.error(`❌ [social] planner error: ${e?.message || e}`)
+  }
+}
+
+// The queue, without opening Supabase.
+app.get('/api/admin/social/queue', async (req, res) => {
+  const user = await requireUser(req, res)
+  if (!user) return
+  if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+  try {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 14))
+    const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString()
+    const { data, error } = await supabase.from('social_queue').select('*')
+      .gte('created_at', since).order('created_at', { ascending: false }).limit(100)
+    if (error) throw new Error(error.message)
+    res.json({ success: true, days, count: data?.length || 0, rows: data || [] })
+  } catch (e) {
+    console.error(`❌ [social] queue list: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'queue list failed' })
   }
 })
 
@@ -3261,6 +3476,9 @@ async function publishTodayBias(result) {
     if (saved) {
       if (lastTodaysBiasKey) notifyTodaysBiasChange(result, lastTodaysBiasKey).catch(() => {})
       lastTodaysBiasKey = newKey   // advance ONLY after confirmed save — failed insert retries next cycle
+      // Social draft for the admin to approve. Deliberately not awaited and fully caught: publishing
+      // the bias matters, a social post does not, and nothing here may delay or break the path above.
+      enqueueBiasCardDraft(result, saved).catch(e => console.warn(`⚠️ [social] bias card enqueue failed: ${e?.message || e}`))
     } else {
       console.warn(`⚠️ Bias change ${lastTodaysBiasKey || 'first of day'} → ${newKey} NOT saved — will retry next cycle`)
     }
@@ -3305,7 +3523,7 @@ async function publishTodayBias(result) {
 // /api/bias-performance, which is what drops the historical XAUUSD rows (v2 does not score gold).
 async function saveBiasHistory(result, previousKey) {
   try {
-    const { error } = await supabase.from('bias_history').insert({
+    const { data, error } = await supabase.from('bias_history').insert({
       engine: result.engine === 'v2' ? 'v2' : 'v1',
       pair: result.pair,
       direction: result.direction,
@@ -3315,10 +3533,12 @@ async function saveBiasHistory(result, previousKey) {
       previous_bias: previousKey,
       invalidation: result.bias?.levels?.invalidation || null,
       generated_at: result.generatedAt || new Date().toISOString(),
-    })
+    }).select('id').single()
     if (error) throw error   // supabase-js DB errors ko return karta hai, throw nahi — check zaroori
     console.log(`📜 Bias history saved: ${result.direction} ${result.pair} (was: ${previousKey || 'first of day'})`)
-    return true
+    // Returns the new row's id (truthy) instead of `true`, so the social bias card can reference the
+    // exact row it came from. Callers only test truthiness, so the meaning of `if (saved)` is unchanged.
+    return data?.id ?? true
   } catch (e) { console.error('Bias history save error:', e?.message); return false }
 }
 
@@ -6577,6 +6797,17 @@ app.listen(5000, () => {
   setTimeout(() => { processSocialQueue().catch(e => console.error(`❌ [social] boot run error: ${e?.message}`)) }, 60 * 1000)
   setInterval(() => { processSocialQueue().catch(e => console.error(`❌ [social] run error: ${e?.message}`)) }, 5 * 60 * 1000)
   console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X' : 'OFF — logs only'}, cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min)`)
+  // Planner. Drafts only — everything it creates still waits for an Approve tap. State lives in
+  // app_state, so the 90s boot run cannot repeat a slot the pre-restart process already filled.
+  setTimeout(() => { runSocialPlanner().catch(e => console.error(`❌ [social] planner boot error: ${e?.message}`)) }, 90 * 1000)
+  setInterval(() => { runSocialPlanner().catch(e => console.error(`❌ [social] planner error: ${e?.message}`)) }, 15 * 60 * 1000)
+  v2LoadSnapshot(SOCIAL_PLANNER_KEY)
+    .then(s => {
+      const fb = `${String(Math.floor(SOCIAL_FALLBACK_UTC_MIN / 60)).padStart(2, '0')}:${String(SOCIAL_FALLBACK_UTC_MIN % 60).padStart(2, '0')} UTC`
+      const today = s?.date === utcDay() ? `biasWindow ${!!s.done?.biasWindow}, saturday ${!!s.done?.saturday}` : 'fresh day'
+      console.log(`📅 Social planner (15min, fallback ${fb}, today: ${today})`)
+    })
+    .catch(() => console.log('📅 Social planner (15min) — planner state unreadable at boot'))
   // 🔬 v2 shadow cron — OFF by default. Set V2_SHADOW_CRON=on (Railway env) to enable.
   if (process.env.V2_SHADOW_CRON === 'on') {
     const mins = V2_CYCLE_MIN
