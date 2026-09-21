@@ -21,14 +21,16 @@ const NO_FACT_TYPES = new Set(['trader_pain', 'contrarian'])
 
 export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'news_reaction', 'trader_pain', 'contrarian', 'build_log']
 
-const SYSTEM_PROMPT = `You write social media posts for BiasForge (biasforge.co), a daily macro bias tool for funded and prop-firm forex and gold traders. You write as a trader talking to other traders.
+// Shared rules first, then one PLATFORM RULES section chosen per platform (see PLATFORM_RULES).
+// Everything that differs between X and LinkedIn — length, shapes, hashtags — lives in that section,
+// so neither platform is told something that contradicts the other.
+const BASE_PROMPT = `You write social media posts for BiasForge (biasforge.co), a daily macro bias tool for funded and prop-firm forex and gold traders. You write as a trader talking to other traders.
 
 VOICE
 - Trader to trader. Plainspoken, sharp, short sentences.
 - Say the thing. Do not build up to it, do not warm up, do not summarise at the end.
 - No hype words. Never write "game-changer", "unlock", "level up", "next level", "insane", "massive", "revolutionary", "secret", "edge you've been missing".
 - No rocket emojis. At most 1 emoji per post, and usually zero.
-- At most 1 hashtag per post, and usually none.
 
 FACTS ONLY
 - NEVER invent numbers, win rates, accuracy figures, user counts, testimonials, quotes or outcomes.
@@ -54,7 +56,7 @@ CLAIMS
 
 DOMAIN AND LINKS
 - The domain is biasforge.co. It is NEVER written as biasforge.ai, and no .ai domain appears anywhere.
-- When PLATFORM is x: include no link, no URL and no domain at all, not even biasforge.co.
+- No link and no URL in the post body, on any platform.
 
 BANNED PHRASES
 Never use any of these, in any casing or punctuation:
@@ -64,17 +66,34 @@ ORIGINALITY
 - Do not reuse sentences, openers or distinctive phrasing from PAST POSTS.
 - Do not start a variant with the same first word as any past post.
 
-LENGTH
-- X posts: hard maximum 260 characters per variant, counting spaces and punctuation.
-- Instagram captions: maximum 2000 characters. LinkedIn posts: maximum 2800 characters.
-
 OUTPUT
-- Produce exactly 3 variants. Each must be a DIFFERENT shape, chosen from: one-liner, setup-then-punch, short list, question, number-led observation, confession/story.
+- Produce exactly 3 variants. Each must be a DIFFERENT shape, chosen from the shapes listed in PLATFORM RULES.
 - Only use number-led observation if FACTS contains a number you can lead with.
 - Each variant starts with a different opening word.
-- Make the lengths noticeably different. At least one variant must be under 100 characters.
 - Output ONLY minified JSON in exactly this form: {"variants":[{"shape":"...","text":"..."}]}
 - No preamble, no explanation, no markdown, no code fences.`
+
+const PLATFORM_RULES = {
+  // Unchanged X rules, moved here from the shared prompt.
+  x: `PLATFORM RULES — X
+- Hard maximum 260 characters per variant, counting spaces and punctuation.
+- Shapes: one-liner, setup-then-punch, short list, question, number-led observation, confession/story.
+- Make the lengths noticeably different. At least one variant must be under 100 characters.
+- At most 1 hashtag per post, and usually none.
+- Include no link, no URL and no domain at all, not even biasforge.co.`,
+
+  linkedin: `PLATFORM RULES — LINKEDIN
+- Each variant is 500 to 1300 characters, counting spaces and line breaks.
+- The FIRST LINE must work on its own as the hook. LinkedIn cuts the post after roughly the first 200 characters behind "see more", so the first line has to earn the click by itself.
+- Short paragraphs of 1 to 3 sentences, with a blank line between paragraphs. No walls of bullet points.
+- Give more context than a tweet: explain the reasoning behind the read in plain language, the way one trader explains a view to another over coffee. Still no predictions and no targets — say what the facts show and why it matters, never what price will do next.
+- Hashtags: at most 3, only if they are natural, and only on the very last line on their own — never inside a sentence.
+- At most 1 emoji.
+- No link, no URL and no domain in the body.
+- Shapes: setup-then-punch, question-led, number-led observation, confession/story, explainer.`,
+}
+
+const systemFor = platform => `${BASE_PROMPT}\n\n${PLATFORM_RULES[platform] || PLATFORM_RULES.x}`
 
 // What the model is asked to do per content type, and which facts it is allowed to see.
 const pick = (obj, keys) => Object.fromEntries(keys.filter(k => obj?.[k] !== undefined).map(k => [k, obj[k]]))
@@ -179,11 +198,11 @@ function parseVariants(raw) {
   }
 }
 
-async function callModel(anthropic, trackAI, user) {
+async function callModel(anthropic, trackAI, user, system) {
   const m = await anthropic.messages.create({
     model: MODEL,
     max_tokens: MAX_TOKENS,
-    system: SYSTEM_PROMPT,
+    system,
     messages: [{ role: 'user', content: user }],
   })
   if (typeof trackAI === 'function') {
@@ -193,9 +212,9 @@ async function callModel(anthropic, trackAI, user) {
 }
 
 // One call, plus one more if the reply does not parse. Malformed JSON is usually a one-off.
-async function generateVariants(anthropic, trackAI, user) {
+async function generateVariants(anthropic, trackAI, user, system) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const variants = parseVariants(await callModel(anthropic, trackAI, user))
+    const variants = parseVariants(await callModel(anthropic, trackAI, user, system))
     if (variants) return variants
   }
   return null
@@ -340,7 +359,8 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   }
 
   const user = buildUserMessage({ contentType, platform, facts: safeFacts, notes, pastTexts: past })
-  const first = await generateVariants(anthropic, trackAI, user)
+  const system = systemFor(platform)
+  const first = await generateVariants(anthropic, trackAI, user, system)
   if (!first) return { variants: [], chosen: null, failed: true }
 
   let variants = await withFlags(first)
@@ -350,7 +370,7 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   // Every variant broke a hard rule. Tell the model exactly which ones and try once more.
   const broken = [...new Set(variants.flatMap(v => v.flags.filter(f => f.level === 'hard').map(f => `${f.code}: ${f.msg}`)))]
   const retryUser = `${user}\n\nYour previous attempt broke these rules. Every new variant must avoid all of them:\n${broken.map(b => `- ${b}`).join('\n')}`
-  const second = await generateVariants(anthropic, trackAI, retryUser)
+  const second = await generateVariants(anthropic, trackAI, retryUser, system)
   if (!second) return { variants, chosen: null, failed: true }
 
   variants = await withFlags(second)

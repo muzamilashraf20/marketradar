@@ -33,6 +33,7 @@ for (const [name, text] of [['processSocialQueue', pubSrc], ['socialPastTexts', 
 // console that was itself already patched would silently swallow the rest of this file's output.
 const REAL_LOG = console.log
 const REAL_ERR = console.error
+const REAL_WARN = console.warn
 
 let pass = 0, fail = 0
 function check(name, ok, detail = '') {
@@ -87,6 +88,9 @@ let dms = []
 let logs = []
 let publishCalls = []
 let publishImpl = async () => ({ id: '1770000000000000001' })
+let liCalls = []
+let liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
+let liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
 const snap = {}
 
 const env = (autopilot, extra = {}) => {
@@ -102,16 +106,22 @@ function buildModule() {
   const v2LoadSnapshot = async k => snap[k] ?? null
   const v2SaveSnapshot = (k, v) => { snap[k] = v }
   const publishToX = async args => { publishCalls.push(args); return publishImpl(args) }
+  const publishToLinkedIn = async args => { liCalls.push(args); return liImpl(args) }
+  const linkedinTokenStatus = () => liToken
+  const utcDay = () => new Date().toISOString().slice(0, 10)
   const app = { post: () => {} }
   const requireUser = async () => null
   const isAdmin = () => false
   console.log = (...a) => { logs.push(a.join(' ')) }
   console.error = (...a) => { logs.push(a.join(' ')) }
+  console.warn = (...a) => { logs.push(a.join(' ')) }
   const mod = new Function(
     'supabase', 'sendTG', 'v2AdminChat', 'v2LoadSnapshot', 'v2SaveSnapshot', 'publishToX', 'validateSocialPost', 'app', 'requireUser', 'isAdmin',
-    `${escSrc}\n${pastSrc}\n${pubSrc}\nreturn { processSocialQueue }`,
-  )(supabase, sendTG, v2AdminChat, v2LoadSnapshot, v2SaveSnapshot, publishToX, validateSocialPost, app, requireUser, isAdmin)
-  return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR } }
+    'publishToLinkedIn', 'linkedinTokenStatus', 'utcDay',
+    `${escSrc}\n${pastSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken }`,
+  )(supabase, sendTG, v2AdminChat, v2LoadSnapshot, v2SaveSnapshot, publishToX, validateSocialPost, app, requireUser, isAdmin,
+    publishToLinkedIn, linkedinTokenStatus, utcDay)
+  return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR; console.warn = REAL_WARN } }
 }
 
 const ago = min => new Date(Date.now() - min * 60000).toISOString()
@@ -125,10 +135,12 @@ const row = (over = {}) => ({
 })
 function reset(rows, autopilot = 'on', extra = {}) {
   db = rows
-  dms = []; logs = []; publishCalls = []
+  dms = []; logs = []; publishCalls = []; liCalls = []
+  liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
+  liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
   publishImpl = async () => ({ id: '1770000000000000001' })
   for (const k of Object.keys(snap)) delete snap[k]
-  env(autopilot, { X_DAILY_CAP: null, X_MIN_GAP_MIN: null, ...extra })
+  env(autopilot, { X_DAILY_CAP: null, X_MIN_GAP_MIN: null, LINKEDIN_DAILY_CAP: null, ...extra })
 }
 const find = id => db.find(r => r.id === id)
 
@@ -301,6 +313,139 @@ const find = id => db.find(r => r.id === id)
   await m2.processSocialQueue()
   m2.restore()
   check('failed rows are never retried automatically', publishCalls.length === 0 && find(1).status === 'failed', `${publishCalls.length} ${find(1).status}`)
+}
+
+// ── 8. LinkedIn ───────────────────────────────────────────────────────────────
+const LI_TEXT = 'Why the dollar keeps the upper hand on EUR/USD this week.\n\nThe rate gap between US and German 2Y yields is still widening, and that gap is what funds carry trades against the euro.\n\n#forex'
+const liRow = (over = {}) => row({ platform: 'linkedin', text: LI_TEXT, ...over })
+{
+  // One row per platform per run: an X row and a LinkedIn row both go out in the same tick.
+  reset([row({ id: 1 }), liRow({ id: 2 })])
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('one X and one LinkedIn post in the same run', publishCalls.length === 1 && liCalls.length === 1 && find(1).status === 'published' && find(2).status === 'published', `x=${publishCalls.length} li=${liCalls.length} ${find(1).status}/${find(2).status}`)
+  check('LinkedIn: external_id is the post URN', find(2).external_id === 'urn:li:share:7000000000000000001', find(2).external_id)
+  check('LinkedIn: DM carries the feed URL', dms.some(d => d.text.includes('https://www.linkedin.com/feed/update/urn:li:share:7000000000000000001') && /Posted to LinkedIn/.test(d.text)), JSON.stringify(dms.map(d => d.text)))
+  check('X: DM still says "Posted to X" with the x.com link', dms.some(d => /Posted to X</.test(d.text) && d.text.includes('https://x.com/MuzamilAshraf_1/status/')), JSON.stringify(dms.map(d => d.text)))
+
+  // Two LinkedIn rows due: only one per run.
+  reset([liRow({ id: 1, scheduled_for: ago(30) }), liRow({ id: 2, scheduled_for: ago(10), text: 'EUR/USD in one line: positioning is lopsided.\n\nSpeculators are still net long the euro while the macro inputs lean the other way, and crowded positioning tends to unwind on the first disappointment.' })])
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('LinkedIn: at most one row per run', liCalls.length === 1 && find(1).status === 'published' && find(2).status === 'approved', `${liCalls.length} ${find(1).status}/${find(2).status}`)
+}
+
+// LinkedIn cap is counted over LinkedIn rows only, and does not touch X.
+{
+  const today = new Date().toISOString().slice(0, 10)
+  // Five X posts today: X is at its cap. LinkedIn has posted nothing, so its cap of 1 is free.
+  const xPosted = Array.from({ length: 5 }, (_, i) => row({ id: 100 + i, status: 'published', published_at: `${today}T0${i}:00:00.000Z`, text: `old x post ${i}` }))
+  reset([row({ id: 1 }), liRow({ id: 2 }), ...xPosted])
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('X at its cap does not stop LinkedIn', find(1).status === 'approved' && find(2).status === 'published' && publishCalls.length === 0 && liCalls.length === 1, `${find(1).status}/${find(2).status}`)
+
+  // One LinkedIn post already today: LinkedIn is held, X still posts.
+  reset([row({ id: 1 }), liRow({ id: 2 }), liRow({ id: 50, status: 'published', published_at: `${today}T01:00:00.000Z`, text: 'earlier linkedin post' })])
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  const li = find(2)
+  check('LinkedIn cap (1/day) reached: held until 06:30 UTC tomorrow, not posted', li.status === 'approved' && /T06:30:00\.000Z$/.test(li.scheduled_for) && liCalls.length === 0, `${li.status} ${li.scheduled_for}`)
+  check('LinkedIn at its cap does not stop X', find(1).status === 'published' && publishCalls.length === 1, find(1).status)
+  check('LinkedIn cap DM is separate and says LinkedIn', dms.some(d => /Daily LinkedIn cap reached/.test(d.text)) && !dms.some(d => /Daily X cap reached/.test(d.text)), JSON.stringify(dms.map(d => d.text)))
+
+  // LINKEDIN_DAILY_CAP=2 lets a second one through.
+  reset([liRow({ id: 2 }), liRow({ id: 50, status: 'published', published_at: `${today}T01:00:00.000Z`, text: 'earlier linkedin post' })], 'on', { LINKEDIN_DAILY_CAP: 2 })
+  const m3 = buildModule()
+  await m3.processSocialQueue()
+  m3.restore()
+  check('LINKEDIN_DAILY_CAP=2 with 1 posted: publishes', find(2).status === 'published' && liCalls.length === 1, find(2).status)
+
+  // No min-gap rule for LinkedIn: a LinkedIn post 5 minutes ago does not hold the next one back
+  // beyond the daily cap.
+  reset([liRow({ id: 2 }), liRow({ id: 50, status: 'published', published_at: ago(5), text: 'five minutes ago' })], 'on', { LINKEDIN_DAILY_CAP: 3 })
+  const m4 = buildModule()
+  await m4.processSocialQueue()
+  m4.restore()
+  check('LinkedIn has no minimum gap', find(2).status === 'published', find(2).status)
+}
+
+// Expired token: no API call, row failed, admin told.
+{
+  reset([liRow({ id: 2 })])
+  liToken = { expiresOn: '2026-09-01', daysLeft: -20, expired: true }
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  const r = find(2)
+  check('expired token → LinkedIn publisher never called', liCalls.length === 0, `${liCalls.length}`)
+  check('expired token → row failed with "token expired"', r.status === 'failed' && /token expired/.test(r.error), `${r.status} ${r.error}`)
+  check('expired token → admin DMed', dms.some(d => /Post failed/.test(d.text) && /token expired/.test(d.text)), JSON.stringify(dms.map(d => d.text)))
+}
+
+// LinkedIn guardrails and errors: the same rules as X.
+{
+  reset([liRow({ id: 2, text: `${LI_TEXT}\n\nEntry at 1.0850, SL 1.0880.` })])
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('LinkedIn: hard flag at publish time → failed, publisher never called', find(2).status === 'failed' && liCalls.length === 0 && /trade_levels/.test(find(2).error), `${find(2).status} ${find(2).error}`)
+
+  reset([liRow({ id: 2 })])
+  liImpl = async () => { throw new Error('LinkedIn token expired or revoked — re-run the token script') }
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('LinkedIn: API error → failed with the message, no retry', find(2).status === 'failed' && /re-run the token script/.test(find(2).error) && liCalls.length === 1, `${find(2).status} calls=${liCalls.length}`)
+
+  // A LinkedIn post and its X sibling share phrasing by design. The duplicate check is per
+  // platform, so the X sibling being published must not fail the LinkedIn post.
+  const shared = 'The rate gap between US and German 2Y yields is still widening, and that gap is what funds carry trades against the euro.'
+  reset([liRow({ id: 2, text: `Why the dollar keeps the upper hand on EUR/USD.\n\n${shared}` }), row({ id: 1, status: 'published', published_at: ago(300), text: `EUR/USD: ${shared}` })])
+  const m3 = buildModule()
+  await m3.processSocialQueue()
+  m3.restore()
+  check('X sibling with the same sentence does not make LinkedIn a duplicate', find(2).status === 'published', `${find(2).status} ${find(2).error}`)
+}
+
+// Kill switch covers LinkedIn too.
+{
+  reset([row({ id: 1 }), liRow({ id: 2 })], 'off')
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('autopilot off: LinkedIn not posted either', liCalls.length === 0 && publishCalls.length === 0 && find(2).status === 'approved')
+  check('autopilot off: waiting count includes LinkedIn', logs.some(l => l.includes('autopilot OFF — 2 approved rows waiting')), logs.join(' | '))
+}
+
+// Token warning DM: once a day, only from 7 days out.
+{
+  reset([])
+  liToken = { expiresOn: '2026-09-28', daysLeft: 6, expired: false }
+  const m = buildModule()
+  await m.checkLinkedInToken()
+  await m.checkLinkedInToken()
+  m.restore()
+  check('token 6 days out → one warning DM, not two', dms.filter(d => /LinkedIn token/.test(d.text)).length === 1 && dms[0].text.includes('Re-run the LinkedIn token script'), JSON.stringify(dms.map(d => d.text)))
+
+  reset([])
+  liToken = { expiresOn: '2026-10-10', daysLeft: 19, expired: false }
+  const m2 = buildModule()
+  await m2.checkLinkedInToken()
+  m2.restore()
+  check('token 19 days out → no DM', dms.length === 0)
+
+  reset([])
+  liToken = null
+  const m3 = buildModule()
+  await m3.checkLinkedInToken()
+  m3.restore()
+  check('LINKEDIN_TOKEN_EXPIRES unset → no DM, no crash', dms.length === 0)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

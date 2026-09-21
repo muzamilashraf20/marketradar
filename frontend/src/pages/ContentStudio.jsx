@@ -15,7 +15,13 @@ import DashboardLayout from '../components/layout/DashboardLayout'
 import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
-const X_LIMIT = 260
+// Per-platform character limits for the live counter.
+const LIMITS = { x: 260, linkedin: 1300 }
+const PLATFORM_LABEL = { x: 'X', linkedin: 'LinkedIn' }
+const PLATFORM_STYLES = {
+  x: 'bg-white/5 text-slate-200 border-white/15',
+  linkedin: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+}
 const POLL_MS = 30000
 
 const CONTENT_TYPES = [
@@ -97,7 +103,8 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
 
   const isDraft = row.status === 'draft'
   const hardFlags = flags.filter(f => f.level === 'hard')
-  const overLimit = row.platform === 'x' && text.length > X_LIMIT
+  const limit = LIMITS[row.platform] || null
+  const overLimit = !!limit && text.length > limit
   const dirty = text !== (row.text || '')
 
   const call = async (path, init, label) => {
@@ -138,6 +145,9 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
       }`}
     >
       <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${PLATFORM_STYLES[row.platform] || PLATFORM_STYLES.x}`}>
+          {PLATFORM_LABEL[row.platform] || row.platform}
+        </span>
         <StatusBadge status={row.status} />
         <span className="text-sm font-semibold text-white">{row.content_type}</span>
         {row.pillar && <span className="text-[11px] text-slate-500">· {row.pillar}</span>}
@@ -162,12 +172,12 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
-            rows={4}
+            rows={row.platform === 'linkedin' ? 12 : 4}
             className="w-full px-3 py-2.5 rounded-lg bg-[#030712] border border-white/10 text-sm text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 resize-y"
           />
           <div className="flex items-center justify-between mt-1.5">
             <span className={`text-[11px] font-semibold ${overLimit ? 'text-red-400' : 'text-slate-500'}`}>
-              {text.length}{row.platform === 'x' ? ` / ${X_LIMIT}` : ''} chars{overLimit ? ' — over the X limit' : ''}
+              {text.length}{limit ? ` / ${limit}` : ''} chars{overLimit ? ` — over the ${PLATFORM_LABEL[row.platform] || ''} limit` : ''}
             </span>
             {dirty && <span className="text-[11px] text-amber-400">unsaved</span>}
           </div>
@@ -238,12 +248,12 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
         )}
         {row.status === 'published' && row.external_id && (
           <a
-            href={`https://x.com/MuzamilAshraf_1/status/${row.external_id}`}
+            href={row.platform === 'linkedin' ? `https://www.linkedin.com/feed/update/${row.external_id}` : `https://x.com/MuzamilAshraf_1/status/${row.external_id}`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/25 transition-colors"
           >
-            <ExternalLink size={13} /> View on X
+            <ExternalLink size={13} /> View on {PLATFORM_LABEL[row.platform] || 'X'}
           </a>
         )}
       </div>
@@ -260,6 +270,7 @@ export default function ContentStudio() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [contentType, setContentType] = useState('bias_card')
+  const [platform, setPlatform] = useState('x')
   const [notes, setNotes] = useState('')
   const [generating, setGenerating] = useState(false)
   const [genMsg, setGenMsg] = useState(null)    // { kind: 'info' | 'error', text }
@@ -318,7 +329,7 @@ export default function ContentStudio() {
     try {
       const res = await authedFetch(`${API_BASE}/api/admin/social/generate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contentType, notes }),
+        body: JSON.stringify({ contentType, notes, platform }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
@@ -358,6 +369,10 @@ export default function ContentStudio() {
   if (!who.admin) return <Navigate to="/dashboard" replace />
 
   const autopilotOn = who.autopilot === 'on'
+  // LinkedIn tokens are renewed by hand about every 60 days. null = LINKEDIN_TOKEN_EXPIRES not set.
+  const liDays = who.linkedinTokenDaysLeft
+  const liExpired = who.linkedinTokenExpired === true
+  const liWarn = liExpired || (typeof liDays === 'number' && liDays <= 10)
 
   return (
     <DashboardLayout>
@@ -379,7 +394,9 @@ export default function ContentStudio() {
             }`}>
               Autopilot {autopilotOn ? 'ON' : 'OFF'}
             </span>
-            <span className="text-[11px] text-slate-500">{who.dailyCap}/day · {who.minGapMin}min gap</span>
+            <span className="text-[11px] text-slate-500">
+              X {who.dailyCap}/day · {who.minGapMin}min gap · LinkedIn {who.linkedinDailyCap ?? 1}/day
+            </span>
             <button
               onClick={loadQueue}
               className="p-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors"
@@ -390,9 +407,36 @@ export default function ContentStudio() {
           </div>
         </div>
 
+        {liWarn && (
+          <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border ${
+            liExpired
+              ? 'bg-red-500/10 border-red-500/30'
+              : 'bg-amber-500/10 border-amber-500/30'
+          }`}>
+            <AlertTriangle size={15} className={`mt-0.5 shrink-0 ${liExpired ? 'text-red-400' : 'text-amber-400'}`} />
+            <div>
+              <p className={`text-sm font-semibold ${liExpired ? 'text-red-300' : 'text-amber-300'}`}>
+                {liExpired
+                  ? 'LinkedIn token has expired — LinkedIn posts will fail.'
+                  : `LinkedIn token expires in ${liDays} day${liDays === 1 ? '' : 's'}.`}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Re-run the LinkedIn token script, then update LINKEDIN_ACCESS_TOKEN and LINKEDIN_TOKEN_EXPIRES on Railway.</p>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-xl bg-[#020617] border border-white/10 p-4">
           <h2 className="text-sm font-bold text-white mb-3">New draft</h2>
           <div className="flex flex-col sm:flex-row gap-3">
+            <select
+              value={platform}
+              onChange={e => setPlatform(e.target.value)}
+              aria-label="Platform"
+              className="px-3 py-2 rounded-lg bg-[#030712] border border-white/10 text-sm text-slate-200 focus:outline-none focus:border-cyan-500/50"
+            >
+              <option value="x">X</option>
+              <option value="linkedin">LinkedIn</option>
+            </select>
             <select
               value={contentType}
               onChange={e => setContentType(e.target.value)}

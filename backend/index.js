@@ -9,6 +9,7 @@ import { withBudget } from './lib/withBudget.js'
 import { generateDraft } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
+import { publishToLinkedIn, linkedinTokenStatus } from './social/linkedinPublisher.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -437,14 +438,17 @@ const SOCIAL_PILLARS = {
   macro_insight: 'education', news_reaction: 'macro_news', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
 }
 
-// Texts that have gone (or are about to go) out in the last 30 days, any platform. The duplicate and
-// same-opener guardrails compare against these.
+// Texts that have gone (or are about to go) out in the last 30 days on ONE platform. The duplicate
+// and same-opener guardrails compare against these.
 // excludeId keeps a row from being compared against itself: once the publisher claims a row it is
 // 'publishing', so without this every post would look like a duplicate of itself.
-async function socialPastTexts(excludeId = null) {
+// Scoped to a platform because a duplicate is a problem within one account's feed. A LinkedIn post
+// and its X sibling are written from the same facts and are expected to overlap; comparing across
+// platforms would fail the second one at publish time.
+async function socialPastTexts(excludeId = null, platform = 'x') {
   const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
   let qy = supabase.from('social_queue').select('text')
-    .in('status', ['approved', 'publishing', 'published']).gt('created_at', since)
+    .eq('platform', platform).in('status', ['approved', 'publishing', 'published']).gt('created_at', since)
   if (excludeId != null) qy = qy.neq('id', excludeId)
   const { data, error } = await qy.order('created_at', { ascending: false }).limit(200)
   if (error) { console.error(`⚠️ [social] pastTexts load failed: ${error.message}`); return [] }
@@ -513,7 +517,9 @@ function socialDraftMessage(row, statusLine = '') {
   const chosen = ref.chosen || {}
   const soft = (chosen.flags || []).filter(f => f.level === 'soft').map(f => f.code)
   const parts = [
-    `📝 <b>${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
+    // Platform first, in caps: an X draft and its LinkedIn sibling come from the same facts and
+    // would otherwise look alike in the chat.
+    `📝 <b>${esc(String(row.platform || 'x').toUpperCase())} · ${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
     esc(row.text),
     `<b>FACTS</b>\n${socialFactsBlock(row.content_type, ref.facts)}`,
     [soft.length ? `⚠️ soft: ${esc(soft.join(', '))}` : null,
@@ -534,11 +540,13 @@ const socialKeyboard = id => ({
 
 // Generate → guardrails/fact-check (inside generateDraft) → card → social_queue row → admin DM.
 // Returns the inserted row, or null when every variant was blocked (the admin is told why).
-async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, notes = '', sourceRef = {}, regenCount = 0, pillar = null }) {
+// `reuseImage` ({ path, url }) attaches an existing card instead of rendering one — a LinkedIn
+// sibling shows the same card as its X draft.
+async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, notes = '', sourceRef = {}, regenCount = 0, pillar = null, reuseImage = null }) {
   const admin = v2AdminChat()
   if (!admin) throw new Error('TG_ADMIN_CHAT_ID is not set — drafts need an admin to approve them')
 
-  const pastTexts = await socialPastTexts()
+  const pastTexts = await socialPastTexts(null, platform)
   const draft = await generateDraft({ contentType, platform, facts, notes, pastTexts, anthropic, trackAI })
   if (draft.failed || !draft.chosen) {
     const reasons = [...new Set(draft.variants.flatMap(v => v.flags.filter(f => f.level === 'hard').map(f => `${f.code}: ${f.msg}`)))]
@@ -547,7 +555,9 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
     return null
   }
 
-  const card = SOCIAL_CARD_TYPES.has(contentType) ? await socialRenderAndUpload(contentType, facts) : null
+  const card = reuseImage?.url
+    ? { path: reuseImage.path || null, url: reuseImage.url, png: null }
+    : SOCIAL_CARD_TYPES.has(contentType) ? await socialRenderAndUpload(contentType, facts) : null
   const { chosen } = draft
   const { data: row, error } = await supabase.from('social_queue').insert({
     platform,
@@ -570,14 +580,55 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
 
   const text = socialDraftMessage(row)
   const reply_markup = socialKeyboard(row.id)
-  let messageId = card?.png ? await sendTGPhoto(admin, card.png, text, { reply_markup }) : null
+  let messageId = null
+  if (card && text.length <= 1024) {
+    // Fits a photo caption: one message, card and buttons together.
+    messageId = card.png
+      ? await sendTGPhoto(admin, card.png, text, { reply_markup })
+      : (await tgCall('sendPhoto', { chat_id: admin, photo: card.url, caption: text, parse_mode: 'HTML', reply_markup }))?.message_id ?? null
+  } else if (card) {
+    // A LinkedIn draft runs to 1300 characters, past Telegram's 1024-character caption limit, and a
+    // truncated caption would cut off the FACTS needed to check it. Card first, then the full text
+    // with the buttons — the buttons' message is the one that gets edited after a tap.
+    if (card.png) await sendTGPhoto(admin, card.png, `Card for #${esc(row.id)}`)
+    else await tgCall('sendPhoto', { chat_id: admin, photo: card.url, caption: `Card for #${esc(row.id)}` })
+  }
   if (!messageId) messageId = (await sendTG(admin, text, { reply_markup }))?.message_id ?? null
   if (messageId) {
     await supabase.from('social_queue').update({ tg_message_id: messageId, updated_at: new Date().toISOString() }).eq('id', row.id)
     row.tg_message_id = messageId
   } else console.error(`⚠️ [social] draft #${row.id} saved but the admin DM failed`)
-  console.log(`📝 [social] draft #${row.id} ${contentType} → admin (${card ? 'card' : 'text'})`)
+  console.log(`📝 [social] draft #${row.id} ${platform} ${contentType} → admin (${card ? 'card' : 'text'})`)
+
+  // An X draft of a substantive type gets a LinkedIn sibling from the same facts. Not awaited and
+  // fully caught: the X draft is already saved and DM'd, and nothing about LinkedIn may undo that.
+  if (platform === 'x' && LINKEDIN_SIBLING_TYPES.has(contentType)) {
+    createLinkedInSibling(row, { contentType, facts, notes, sourceRef, pillar })
+      .catch(e => console.error(`⚠️ [social] LinkedIn sibling of #${row.id} failed (X draft unaffected): ${e?.message || e}`))
+  }
   return row
+}
+
+// Substantive posts go to LinkedIn too. The psychology pillar stays X-only: a one-line observation
+// about revenge trading reads as a tweet, not as something to put in front of a professional feed.
+const LINKEDIN_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'macro_insight', 'weekly_scorecard', 'news_reaction', 'build_log'])
+
+// At most one LinkedIn draft a day, first qualifying content wins — normally the bias card, since it
+// publishes earliest. Returns the sibling row, or null when the day already has one.
+async function createLinkedInSibling(xRow, { contentType, facts, notes, sourceRef, pillar }) {
+  const { data: existing, error } = await supabase.from('social_queue').select('id')
+    .eq('platform', 'linkedin').in('status', ['draft', 'approved', 'publishing', 'published'])
+    .gte('created_at', `${utcDay()}T00:00:00.000Z`).limit(1)
+  if (error) throw new Error(`linkedin daily check failed: ${error.message}`)
+  if (existing?.length) {
+    console.log(`⏭️ [social] no LinkedIn sibling for #${xRow.id} — today already has LinkedIn draft #${existing[0].id}`)
+    return null
+  }
+  return createDraftAndNotify({
+    contentType, platform: 'linkedin', facts, notes, pillar,
+    sourceRef: { ...sourceRef, siblingId: xRow.id },
+    reuseImage: xRow.image_url ? { path: xRow.image_path, url: xRow.image_url } : null,
+  })
 }
 
 // Take the buttons off the DM and append what happened, so a stale message can't be tapped again.
@@ -610,7 +661,7 @@ async function socialApproveById(id) {
   if (row.status !== 'draft') return { ok: false, code: 409, reason: `Already ${row.status}`, row }
   // The text may have been edited since the draft was made, here or in Studio.
   const { flags } = validateSocialPost(row.text, {
-    platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
+    platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id, row.platform),
   })
   const hard = flags.filter(f => f.level === 'hard')
   if (hard.length) return { ok: false, code: 422, reason: hard.map(f => `${f.code}: ${f.msg}`).join('; '), flags, row }
@@ -680,6 +731,8 @@ async function handleSocialCallback(cq) {
   createDraftAndNotify({
     contentType: row.content_type, platform: row.platform, facts, notes: notes || '',
     sourceRef: { ...rest, regenerated_from: row.id }, regenCount: next,
+    // A LinkedIn draft keeps the card it shares with its X sibling; X renders afresh as before.
+    reuseImage: row.platform === 'linkedin' && row.image_url ? { path: row.image_path, url: row.image_url } : null,
   }).catch(async e => {
     console.error(`❌ [social] regen of #${row.id} failed: ${e?.message || e}`)
     await sendTG(admin, `❌ Regenerate of #${esc(row.id)} failed: ${esc(e?.message || e)}`)
@@ -701,7 +754,8 @@ const socialGenerateHandler = async (req, res) => {
   if (!user) return
   if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
 
-  const { contentType, notes = '' } = req.body || {}
+  const { contentType, notes = '', platform = 'x' } = req.body || {}
+  if (!['x', 'linkedin'].includes(platform)) return res.status(400).json({ error: 'platform must be x or linkedin' })
   try {
     let facts = {}
     let sourceRef = { trigger: 'manual-test' }
@@ -728,7 +782,7 @@ const socialGenerateHandler = async (req, res) => {
     } else {
       return res.status(400).json({ error: 'test-draft supports bias_card, event_preview, trader_pain, contrarian' })
     }
-    const row = await createDraftAndNotify({ contentType, facts, notes, sourceRef })
+    const row = await createDraftAndNotify({ contentType, platform, facts, notes, sourceRef })
     if (!row) return res.status(422).json({ error: 'Every variant was blocked by the guardrails — see the admin Telegram DM' })
     res.json({ success: true, row })
   } catch (e) {
@@ -751,9 +805,13 @@ app.get('/api/admin/whoami', async (req, res) => {
       autopilot: socialAutopilotOn() ? 'on' : 'off',
       dailyCap: xDailyCap(),
       minGapMin: xMinGapMin(),
+      linkedinDailyCap: linkedinDailyCap(),
+      // Days until LINKEDIN_TOKEN_EXPIRES; negative or 0 once it is past. null when the env is unset.
+      linkedinTokenDaysLeft: linkedinTokenStatus()?.daysLeft ?? null,
+      linkedinTokenExpired: linkedinTokenStatus()?.expired ?? null,
     })
   } catch {
-    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin() })
+    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin(), linkedinDailyCap: linkedinDailyCap(), linkedinTokenDaysLeft: null, linkedinTokenExpired: null })
   }
 })
 
@@ -773,7 +831,7 @@ app.patch('/api/admin/social/queue/:id', async (req, res) => {
     if (row.status !== 'draft') return res.status(400).json({ error: `Cannot edit a ${row.status} row` })
 
     const { flags } = validateSocialPost(text, {
-      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(id),
+      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(id, row.platform),
     })
     const { data: saved, error: upErr } = await supabase.from('social_queue')
       .update({ text, updated_at: new Date().toISOString() })
@@ -1074,17 +1132,40 @@ app.get('/api/admin/social/queue', async (req, res) => {
 })
 
 // ============================================
-// 🚀 SOCIAL PUBLISHER — approved rows → X
+// 🚀 SOCIAL PUBLISHER — approved rows → X and LinkedIn
 // ============================================
-// One post per run, claimed atomically, paced, re-checked, then posted. Everything here is built so
-// the two expensive mistakes cannot happen: posting twice, and posting something that should never
-// have gone out. A failed row stays failed — no automatic retry, because a retry that silently
-// double-posts is worse than a post that did not go out.
+// One post per platform per run, claimed atomically, paced, re-checked, then posted. Everything
+// here is built so the two expensive mistakes cannot happen: posting twice, and posting something
+// that should never have gone out. A failed row stays failed — no automatic retry, because a retry
+// that silently double-posts is worse than a post that did not go out.
 const X_PROFILE = 'MuzamilAshraf_1'
 const SOCIAL_CAP_DM_KEY = 'social_cap_dm_date'
 const socialAutopilotOn = () => process.env.SOCIAL_AUTOPILOT === 'on'
 const xDailyCap = () => Number(process.env.X_DAILY_CAP) || 5
 const xMinGapMin = () => Number(process.env.X_MIN_GAP_MIN) || 90
+const linkedinDailyCap = () => Number(process.env.LINKEDIN_DAILY_CAP) || 1
+
+// What differs between platforms. Pacing, caps and the posting call are per platform; the claim,
+// the guardrail re-check and the no-retry rule are shared and live in publishNextFor.
+const SOCIAL_PLATFORMS = {
+  x: {
+    label: 'X', cap: xDailyCap, capDmKey: SOCIAL_CAP_DM_KEY, minGapMin: xMinGapMin,
+    blocked: () => null,
+    publish: publishToX,
+    url: id => `https://x.com/${X_PROFILE}/status/${id}`,
+  },
+  linkedin: {
+    // No minimum gap: at one post a day by default, the daily cap already is the pacing.
+    label: 'LinkedIn', cap: linkedinDailyCap, capDmKey: 'social_cap_dm_date_linkedin', minGapMin: null,
+    // A known-dead token is not worth an API call that can only 401.
+    blocked: () => {
+      const s = linkedinTokenStatus()
+      return s?.expired ? `token expired — LINKEDIN_TOKEN_EXPIRES was ${s.expiresOn}. Re-run the LinkedIn token script.` : null
+    },
+    publish: publishToLinkedIn,
+    url: id => `https://www.linkedin.com/feed/update/${id}`,
+  },
+}
 
 // Put a claimed row back in the queue for later. Used by the pacing checks, which run AFTER the
 // claim: the row must not be left stuck in 'publishing'.
@@ -1105,20 +1186,34 @@ async function socialFail(id, message) {
 
 async function processSocialQueue() {
   try {
-    // Kill switch first — before any select that could lead to a post.
+    // Kill switch first — before any select that could lead to a post, on any platform.
     if (!socialAutopilotOn()) {
       const { count, error } = await supabase.from('social_queue')
-        .select('id', { count: 'exact', head: true }).eq('platform', 'x').eq('status', 'approved')
+        .select('id', { count: 'exact', head: true }).in('platform', Object.keys(SOCIAL_PLATFORMS)).eq('status', 'approved')
       if (error) console.error(`❌ [social] queue count failed: ${error.message}`)
       console.log(`📭 [social] autopilot OFF — ${count ?? 0} approved rows waiting`)
       return
     }
+    // At most one row per platform per run. Sequential, and each platform's failure is contained,
+    // so a LinkedIn problem never delays or blocks an X post.
+    for (const platform of Object.keys(SOCIAL_PLATFORMS)) {
+      try { await publishNextFor(platform) }
+      catch (e) { console.error(`❌ [social] ${platform} run error: ${e?.message || e}`) }
+    }
+  } catch (e) {
+    // Never let the interval die.
+    console.error(`❌ [social] queue run error: ${e?.message || e}`)
+  }
+}
 
+async function publishNextFor(platform) {
+  const cfg = SOCIAL_PLATFORMS[platform]
+  {
     const nowISO = new Date().toISOString()
     const { data: due, error: dueErr } = await supabase.from('social_queue').select('id')
-      .eq('platform', 'x').eq('status', 'approved').lte('scheduled_for', nowISO)
+      .eq('platform', platform).eq('status', 'approved').lte('scheduled_for', nowISO)
       .order('scheduled_for', { ascending: true }).order('id', { ascending: true }).limit(1)
-    if (dueErr) { console.error(`❌ [social] queue read failed: ${dueErr.message}`); return }
+    if (dueErr) { console.error(`❌ [social] ${platform} queue read failed: ${dueErr.message}`); return }
     if (!due?.length) return
 
     // Atomic claim. The status filter means only one run can take a row: whoever updates it first
@@ -1134,39 +1229,41 @@ async function processSocialQueue() {
       const dayStart = `${nowISO.slice(0, 10)}T00:00:00.000Z`
       const { count: postedToday, error: capErr } = await supabase.from('social_queue')
         .select('id', { count: 'exact', head: true })
-        .eq('platform', 'x').eq('status', 'published').gte('published_at', dayStart)
+        .eq('platform', platform).eq('status', 'published').gte('published_at', dayStart)
       if (capErr) throw new Error(`daily cap check failed: ${capErr.message}`)
-      if ((postedToday ?? 0) >= xDailyCap()) {
+      if ((postedToday ?? 0) >= cfg.cap()) {
         const t = new Date(Date.now() + 24 * 3600 * 1000)
         const tomorrow = `${t.toISOString().slice(0, 10)}T06:30:00.000Z`
-        await socialRelease(row.id, tomorrow, `daily cap ${postedToday}/${xDailyCap()} reached`)
+        await socialRelease(row.id, tomorrow, `${cfg.label} daily cap ${postedToday}/${cfg.cap()} reached`)
         const today = nowISO.slice(0, 10)
-        if ((await v2LoadSnapshot(SOCIAL_CAP_DM_KEY)) !== today) {   // one DM per day, not per run
-          v2SaveSnapshot(SOCIAL_CAP_DM_KEY, today)
+        if ((await v2LoadSnapshot(cfg.capDmKey)) !== today) {   // one DM per day per platform, not per run
+          v2SaveSnapshot(cfg.capDmKey, today)
           const admin = v2AdminChat()
-          if (admin) await sendTG(admin, `📵 <b>Daily X cap reached</b> (${esc(postedToday)}/${esc(xDailyCap())})\n\nRemaining approved posts are held until 06:30 UTC tomorrow.`)
+          if (admin) await sendTG(admin, `📵 <b>Daily ${esc(cfg.label)} cap reached</b> (${esc(postedToday)}/${esc(cfg.cap())})\n\nRemaining approved posts are held until 06:30 UTC tomorrow.`)
         }
         return
       }
 
-      // (b) Minimum gap since the last post.
-      const { data: last, error: lastErr } = await supabase.from('social_queue').select('published_at')
-        .eq('platform', 'x').eq('status', 'published').not('published_at', 'is', null)
-        .order('published_at', { ascending: false }).limit(1).maybeSingle()
-      if (lastErr) throw new Error(`gap check failed: ${lastErr.message}`)
-      if (last?.published_at) {
-        const gapMs = xMinGapMin() * 60 * 1000
-        const sinceMs = Date.now() - new Date(last.published_at).getTime()
-        if (sinceMs < gapMs) {
-          const nextAt = new Date(new Date(last.published_at).getTime() + gapMs).toISOString()
-          await socialRelease(row.id, nextAt, `only ${Math.round(sinceMs / 60000)}min since the last post (min ${xMinGapMin()})`)
-          return
+      // (b) Minimum gap since the last post on this platform.
+      if (cfg.minGapMin) {
+        const { data: last, error: lastErr } = await supabase.from('social_queue').select('published_at')
+          .eq('platform', platform).eq('status', 'published').not('published_at', 'is', null)
+          .order('published_at', { ascending: false }).limit(1).maybeSingle()
+        if (lastErr) throw new Error(`gap check failed: ${lastErr.message}`)
+        if (last?.published_at) {
+          const gapMs = cfg.minGapMin() * 60 * 1000
+          const sinceMs = Date.now() - new Date(last.published_at).getTime()
+          if (sinceMs < gapMs) {
+            const nextAt = new Date(new Date(last.published_at).getTime() + gapMs).toISOString()
+            await socialRelease(row.id, nextAt, `only ${Math.round(sinceMs / 60000)}min since the last post (min ${cfg.minGapMin()})`)
+            return
+          }
         }
       }
 
       // Last line of defence: the text may have been edited after approval.
       const { flags } = validateSocialPost(row.text, {
-        platform: 'x', contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id),
+        platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id, platform),
       })
       const hard = flags.filter(f => f.level === 'hard')
       if (hard.length) {
@@ -1176,8 +1273,16 @@ async function processSocialQueue() {
         return
       }
 
-      const { id: externalId } = await publishToX({ text: row.text, imageUrl: row.image_url || null })
-      const url = `https://x.com/${X_PROFILE}/status/${externalId}`
+      // Platform-level blocks that make an API call pointless (an expired LinkedIn token).
+      const blocked = cfg.blocked()
+      if (blocked) {
+        console.error(`🚫 [social] #${row.id} ${cfg.label}: ${blocked}`)
+        await socialFail(row.id, blocked)
+        return
+      }
+
+      const { id: externalId } = await cfg.publish({ text: row.text, imageUrl: row.image_url || null })
+      const url = cfg.url(externalId)
       const { error: doneErr } = await supabase.from('social_queue')
         .update({ status: 'published', external_id: String(externalId), published_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() })
         .eq('id', row.id)
@@ -1186,15 +1291,31 @@ async function processSocialQueue() {
       if (doneErr) console.error(`🚨 [social] #${row.id} POSTED (${url}) but the row update failed: ${doneErr.message} — fix by hand`)
       else console.log(`🚀 [social] #${row.id} published → ${url}`)
       const admin = v2AdminChat()
-      if (admin) await sendTG(admin, `🚀 <b>Posted to X</b> · #${esc(row.id)} ${esc(row.content_type)}\n\n${esc(row.text)}\n\n${esc(url)}`)
+      if (admin) await sendTG(admin, `🚀 <b>Posted to ${esc(cfg.label)}</b> · #${esc(row.id)} ${esc(row.content_type)}\n\n${esc(row.text)}\n\n${esc(url)}`)
     } catch (e) {
       console.error(`❌ [social] publish #${row.id} failed: ${e?.message || e}`)
       await socialFail(row.id, e?.message || String(e))
     }
-  } catch (e) {
-    // Never let the interval die.
-    console.error(`❌ [social] queue run error: ${e?.message || e}`)
   }
+}
+
+// LinkedIn tokens last about 60 days and are renewed by hand. Warn in a DM once a day from 7 days
+// out, so the renewal happens before a post fails rather than after. One DM per UTC day, tracked in
+// app_state so a restart does not repeat it.
+const LINKEDIN_WARN_KEY = 'linkedin_token_warn_date'
+const LINKEDIN_WARN_DAYS = 7
+async function checkLinkedInToken() {
+  try {
+    const s = linkedinTokenStatus()
+    if (!s || s.daysLeft > LINKEDIN_WARN_DAYS) return
+    const today = utcDay()
+    if ((await v2LoadSnapshot(LINKEDIN_WARN_KEY)) === today) return
+    v2SaveSnapshot(LINKEDIN_WARN_KEY, today)
+    const admin = v2AdminChat()
+    const when = s.expired ? `expired on ${s.expiresOn} — LinkedIn posts will fail` : `expires ${s.expiresOn} (${s.daysLeft} day${s.daysLeft === 1 ? '' : 's'} left)`
+    console.warn(`⚠️ [social] LinkedIn token ${when}`)
+    if (admin) await sendTG(admin, `🔑 <b>LinkedIn token ${esc(when)}</b>\n\nRe-run the LinkedIn token script and update LINKEDIN_ACCESS_TOKEN and LINKEDIN_TOKEN_EXPIRES on Railway.`)
+  } catch (e) { console.error(`⚠️ [social] LinkedIn token check failed: ${e?.message || e}`) }
 }
 
 // Put a failed row back in the queue by hand. Only 'failed' rows: a row stuck in 'publishing' may
@@ -6942,7 +7063,11 @@ app.listen(5000, () => {
   // and covers anything that fell due while the process was down. One post per run, paced inside.
   setTimeout(() => { processSocialQueue().catch(e => console.error(`❌ [social] boot run error: ${e?.message}`)) }, 60 * 1000)
   setInterval(() => { processSocialQueue().catch(e => console.error(`❌ [social] run error: ${e?.message}`)) }, 5 * 60 * 1000)
-  console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X' : 'OFF — logs only'}, cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min)`)
+  console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X + LinkedIn' : 'OFF — logs only'}, X cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min, LinkedIn cap ${linkedinDailyCap()}/day)`)
+  // LinkedIn token expiry: checked hourly, DMs at most once a day from 7 days out.
+  setTimeout(() => { checkLinkedInToken() }, 2 * 60 * 1000)
+  setInterval(() => { checkLinkedInToken() }, 60 * 60 * 1000)
+  { const s = linkedinTokenStatus(); console.log(`🔑 LinkedIn token: ${s ? (s.expired ? `EXPIRED (${s.expiresOn})` : `${s.daysLeft} days left (${s.expiresOn})`) : 'LINKEDIN_TOKEN_EXPIRES not set'}`) }
   // Planner. Drafts only — everything it creates still waits for an Approve tap. State lives in
   // app_state, so the 90s boot run cannot repeat a slot the pre-restart process already filled.
   setTimeout(() => { runSocialPlanner().catch(e => console.error(`❌ [social] planner boot error: ${e?.message}`)) }, 90 * 1000)
