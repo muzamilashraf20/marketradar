@@ -11,6 +11,7 @@ import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
 import { publishToLinkedIn, linkedinTokenStatus } from './social/linkedinPublisher.js'
 import { publishToInstagram, createIgTokenStore, igTokenStatus } from './social/instagramPublisher.js'
+import { pickEduTopic, EDU_REPEAT_DAYS } from './social/eduTopics.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -437,6 +438,7 @@ const SOCIAL_CARD_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scoreca
 const SOCIAL_PILLARS = {
   bias_card: 'daily_bias', event_preview: 'calendar', weekly_scorecard: 'accountability',
   macro_insight: 'education', news_reaction: 'macro_news', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
+  education: 'education',
 }
 
 // Texts that have gone (or are about to go) out in the last 30 days on ONE platform. The duplicate
@@ -520,9 +522,13 @@ function socialDraftMessage(row, statusLine = '') {
   const parts = [
     // Platform first, in caps: an X draft and its LinkedIn sibling come from the same facts and
     // would otherwise look alike in the chat.
-    `📝 <b>${esc(String(row.platform || 'x').toUpperCase())} · ${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
+    // News drafts are time-sensitive, so they lead with ⚡ NEWS and stand out in the chat.
+    `${row.content_type === 'news_reaction' ? '⚡ NEWS · ' : '📝 '}<b>${esc(String(row.platform || 'x').toUpperCase())} · ${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
     esc(row.text),
-    `<b>FACTS</b>\n${socialFactsBlock(row.content_type, ref.facts)}`,
+    // Education has no facts to check against — the topic is what to judge it by.
+    row.content_type === 'education'
+      ? `topic: ${esc(ref.facts?.topic || '—')}`
+      : `<b>FACTS</b>\n${socialFactsBlock(row.content_type, ref.facts)}`,
     [soft.length ? `⚠️ soft: ${esc(soft.join(', '))}` : null,
       chosen.factcheck?.status ? `🔎 fact check: ${esc(chosen.factcheck.status)}` : null,
       `${String(row.text || '').length} chars · regen ${esc(row.regen_count || 0)}/${SOCIAL_MAX_REGENS}`].filter(Boolean).join('\n'),
@@ -618,7 +624,9 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
 
 // Substantive posts go to LinkedIn too. The psychology pillar stays X-only: a one-line observation
 // about revenge trading reads as a tweet, not as something to put in front of a professional feed.
-const LINKEDIN_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'macro_insight', 'weekly_scorecard', 'news_reaction', 'build_log'])
+// Empty by design under the current content plan: LinkedIn gets its own daily education post and
+// Saturday results from the planner, not copies of X drafts. Add a type here to bring siblings back.
+const LINKEDIN_SIBLING_TYPES = new Set([])
 // Instagram needs an image, and these are the types that render a card.
 const INSTAGRAM_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
 
@@ -690,6 +698,12 @@ async function socialApproveById(id) {
   if (error) throw new Error(`social_queue load #${id}: ${error.message}`)
   if (!row) return { ok: false, code: 404, reason: 'Draft not found' }
   if (row.status !== 'draft') return { ok: false, code: 409, reason: `Already ${row.status}`, row }
+  // A preview of events that have all happened is worse than no post. Caught here and again in the
+  // publisher, since approval and publishing can be hours apart.
+  if (row.content_type === 'event_preview' && eventsAllPast(row)) {
+    const skipped = await skipPastEventRow(row, 'approve')
+    return { ok: false, code: 410, reason: 'Event already happened — draft skipped', row: skipped || { ...row, status: 'skipped' } }
+  }
   // The text may have been edited since the draft was made, here or in Studio.
   const { flags } = validateSocialPost(row.text, {
     platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id, row.platform),
@@ -737,6 +751,7 @@ async function handleSocialCallback(cq) {
     const r = await socialApproveById(id)
     if (!r.ok) {
       if (r.code === 422) return answer(`Not approved — ${r.reason}`.slice(0, 200), true)
+      if (r.code === 410) { await answer(r.reason, true); return socialFinishMessage(cq, r.row, '⏭ Skipped — event already happened') }
       return answer(r.reason)
     }
     await answer('Approved')
@@ -803,14 +818,12 @@ const socialGenerateHandler = async (req, res) => {
       facts = { pair: b.pair, direction: b.direction, confidence: b.confidence, grade: b.trade_grade, reasoning: b.reasoning, driver: firstSentence(b.reasoning), invalidation: b.invalidation || null }
       sourceRef = { ...sourceRef, bias_history_id: b.id, generated_at: b.generated_at }
     } else if (contentType === 'event_preview') {
-      const today = new Date().toISOString().slice(0, 10)
-      const cal = await getEconomicCalendar()
-      const events = (cal || [])
-        .filter(e => String(e.time).slice(0, 10) === today && /high/i.test(String(e.impact)))
-        .sort((a, b) => new Date(a.time) - new Date(b.time))
-        .slice(0, 4)
-        .map(e => ({ time: new Date(e.time).toISOString().slice(11, 16), currency: e.country, title: e.event, forecast: e.forecast || '', previous: e.previous || '', impact: e.impact }))
-      if (!events.length) return res.status(400).json({ error: 'No high-impact events on the calendar today (UTC)' })
+      // Same rules as the planner: USD high-impact only, 45 minutes to 6 hours ahead, grouped.
+      const { events, why } = await nextEventPreview([])
+      if (!events.length) {
+        const msg = why === 'none-ahead(USD)' ? 'No upcoming high-impact USD events today' : `The next high-impact USD event is too far off to preview yet (${why.replace('next-in-', '')})`
+        return res.status(400).json({ error: msg })
+      }
       facts = { events, dateLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
     } else if (contentType === 'trader_pain' || contentType === 'contrarian') {
       // notes-only content types
@@ -910,10 +923,14 @@ for (const [path, fn, label] of [['approve', socialApproveById, 'approve'], ['sk
 // ============================================
 // ⏰ SOCIAL TRIGGERS — what gets drafted, and when
 // ============================================
-// Two sources feed the queue. The bias engine pushes a card when it publishes a good-enough bias
-// (event-driven), and a 15-minute planner fills the day's slot when it does not (time-driven).
-// Both END at a 'draft' row plus an admin DM. Neither can publish: only the Approve button moves a
-// row to 'approved', and only processSocialQueue posts, behind SOCIAL_AUTOPILOT.
+// The content plan, per platform:
+//   X         bias_card (engine-driven, daily) · news_reaction (immediately on high-impact news, max
+//             3/day) · event_preview (upcoming high-impact USD events, max 2/day) · a rotation pillar
+//             only on a quiet day
+//   LinkedIn  one education post a day, Sunday–Friday · weekly results on Saturday
+//   Instagram card siblings of X drafts (created in createDraftAndNotify, unchanged here)
+// Every path ENDS at a 'draft' row plus an admin DM. Nothing here can publish: only the Approve
+// button moves a row to 'approved', and only processSocialQueue posts, behind SOCIAL_AUTOPILOT.
 //
 // The v2 engine grades A / A- / B / C / D (biasEngineV2/biasEngine.js). "B or better" is the bar for
 // spending a post on it; A+ is accepted too in case the scale ever gains it.
@@ -928,56 +945,46 @@ const SOCIAL_PLANNER_KEY = 'social_planner_state'
 const SOCIAL_ROTATION_KEY = 'social_rotation'
 const SOCIAL_ROTATION = ['macro_insight', 'trader_pain', 'contrarian']
 const SOCIAL_PLANNER_MAX_ATTEMPTS = 3   // a blocked generation retries, but does not retry all day
-// We post the market's REACTION, not the headline. Everyone already has the headline, and a post
-// written in the first minutes says nothing an aggregator could not say. Waiting lets the move
-// happen so the post can be about what changed.
-const NEWS_REACTION_DELAY_MIN = 25
-// Past this, the reaction is no longer a reaction.
-const NEWS_REACTION_WINDOW_MIN = 90
 const SOCIAL_LIVE_STATUSES = ['draft', 'approved', 'publishing', 'published']
+// News: speed is the point, so no delay; three a day at most so the feed does not turn into a wire.
+const NEWS_DAILY_MAX = 3
+// Events: only USD high-impact, only while there is still time to read the preview before the print.
+const EVENT_LEAD_MIN = 45               // closer than this, the preview would land after the number
+const EVENT_LEAD_MAX_MIN = 6 * 60       // further than this, it is too early to be useful
+const EVENT_GROUP_MIN = 120             // events this close together share one preview
+const EVENT_DAILY_MAX = 2
+// Rotation only fills a quiet day: fewer than this many other X drafts by the fallback time.
+const ROTATION_MAX_OTHER_X = 2
+const LI_EDU_ROTATION_KEY = 'li_edu_rotation'
 
 // utcDay() is defined further down with the Today's Bias lock; reused here rather than duplicated.
 const utcDayStart = () => `${utcDay()}T00:00:00.000Z`
 const utcMinutes = (d = new Date()) => d.getUTCHours() * 60 + d.getUTCMinutes()
 
-// Every 'x' row created today that is still alive (not skipped, not failed).
-async function socialRowsToday() {
-  const { data, error } = await supabase.from('social_queue').select('id,content_type,status,created_at')
-    .eq('platform', 'x').in('status', SOCIAL_LIVE_STATUSES).gte('created_at', utcDayStart())
+// Rows created today on one platform. Live rows only (not skipped/failed) unless asked for all.
+async function socialRowsToday(platform = 'x', { allStatuses = false } = {}) {
+  let q = supabase.from('social_queue').select('id,content_type,status,created_at,source_ref')
+    .eq('platform', platform).gte('created_at', utcDayStart())
+  if (!allStatuses) q = q.in('status', SOCIAL_LIVE_STATUSES)
+  const { data, error } = await q
   if (error) throw new Error(`social_queue today read failed: ${error.message}`)
   return data || []
 }
 
+// ── Bias card ─────────────────────────────────────────────────────────────────
 // Today's bias card, if the engine produced one. One per UTC day even if the bias flips later: a
-// second card the same day would contradict the first in the feed.
+// second card the same day would contradict the first in the feed. It no longer displaces other
+// drafts — news, events and the card each have their own lane now.
 async function enqueueBiasCardDraft(result, biasHistoryId = null) {
   if (result?.engine !== 'v2') { console.log(`⏭️ [social] bias card skipped — engine is ${result?.engine || 'v1'}, not v2`); return null }
   const grade = String(result.tradeGrade || '').toUpperCase()
   if (!BIAS_CARD_GRADES.has(grade)) { console.log(`⏭️ [social] bias card skipped — grade ${grade || '—'} is below B`); return null }
 
-  const today = await socialRowsToday()
+  const today = await socialRowsToday('x')
   if (today.some(r => r.content_type === 'bias_card')) {
     console.log('⏭️ [social] bias card skipped — one already exists today')
     return null
   }
-
-  // The planner may have already filled today's slot. A bias card is the better post, so it replaces
-  // a planner draft that has not gone out yet — but never one that is already public or on its way.
-  const plannerRows = today.filter(r => r.content_type !== 'bias_card')
-  if (plannerRows.some(r => r.status === 'published' || r.status === 'publishing')) {
-    console.log('⏭️ [social] bias card skipped — today\'s planner post already went out')
-    return null
-  }
-  for (const r of plannerRows.filter(r => r.status === 'draft' || r.status === 'approved')) {
-    const { error } = await supabase.from('social_queue')
-      .update({ status: 'skipped', updated_at: new Date().toISOString() })
-      .eq('id', r.id).in('status', ['draft', 'approved'])
-    if (error) { console.error(`⚠️ [social] could not replace planner row #${r.id}: ${error.message}`); continue }
-    console.log(`♻️ [social] planner row #${r.id} (${r.content_type}) replaced by today's bias card`)
-    const admin = v2AdminChat()
-    if (admin) await sendTG(admin, `♻️ #${esc(r.id)} (${esc(r.content_type)}) replaced by today's bias card`)
-  }
-
   // Five fields only. The invalidation level is NOT passed: it is paid-only, and the writer cannot
   // leak what it never receives.
   const facts = {
@@ -987,33 +994,26 @@ async function enqueueBiasCardDraft(result, biasHistoryId = null) {
   return createDraftAndNotify({ contentType: 'bias_card', pillar: 'daily_bias', facts, sourceRef: { trigger: 'bias_engine', biasHistoryId } })
 }
 
-// Today's high-impact calendar events, in the shape the writer and the card both expect.
-async function socialTodayEvents() {
-  try {
-    const today = utcDay()
-    return (await getEconomicCalendar() || [])
-      .filter(e => String(e.time).slice(0, 10) === today && /high/i.test(String(e.impact)))
-      .sort((a, b) => new Date(a.time) - new Date(b.time))
-      .slice(0, 4)
-      .map(e => ({ time: new Date(e.time).toISOString().slice(11, 16), currency: e.country, title: e.event, forecast: e.forecast || '', previous: e.previous || '', impact: e.impact }))
-  } catch (e) {
-    console.warn(`⚠️ [social] calendar read failed, planner will fall back to the rotation: ${e?.message}`)
-    return []
-  }
-}
+// ── News ──────────────────────────────────────────────────────────────────────
+// Words that carry the story, for comparing two headlines about the same thing.
+// Light normalisation so ordinary rewording still matches: plural/verb "s" dropped ("holds"/"hold",
+// "cuts"/"cut"), short but meaningful tokens kept ("fed", "cpi"). It is word overlap, not meaning:
+// a headline rewritten with entirely different words is not caught, by design — over-merging would
+// silently drop genuinely different news.
+const NEWS_STOPWORDS = new Set(['the', 'and', 'for', 'but', 'not', 'are', 'was', 'its', 'has', 'with', 'from', 'that', 'this', 'after', 'before', 'over', 'into', 'amid', 'say', 'says', 'said', 'will', 'more', 'than', 'what', 'when', 'have', 'been', 'their', 'about', 'new'])
+const stem = w => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)
+const headlineWords = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).map(stem).filter(w => w.length >= 3 && !NEWS_STOPWORDS.has(w)))
+const jaccard = (a, b) => { if (!a.size || !b.size) return 0; let n = 0; for (const w of a) if (b.has(w)) n++; return n / (a.size + b.size - n) }
+const tagKey = tags => (Array.isArray(tags) ? tags : []).map(t => String(t).toUpperCase()).sort().join('|')
 
-// The best news item to react to right now, or null. Reads the cache the news feed already fills —
-// it never triggers a fetch of its own, so a quiet cache simply means no news post today.
-function pickNewsReaction() {
-  const items = getCached('latest_news')
-  if (!Array.isArray(items) || !items.length) return null
-  const now = Date.now()
-  return items
-    .filter(a => (a.impact ?? 0) >= NEWS_ALERT_IMPACT_MIN && a.publishedAt)
-    .map(a => ({ a, ageMin: (now - new Date(a.publishedAt).getTime()) / 60000 }))
-    .filter(({ ageMin }) => Number.isFinite(ageMin) && ageMin >= NEWS_REACTION_DELAY_MIN && ageMin <= NEWS_REACTION_WINDOW_MIN)
-    .sort((x, y) => (y.a.impact - x.a.impact) || (x.ageMin - y.ageMin))
-    .map(({ a }) => a)[0] || null
+// Two headlines are the same story if they share most of their meaningful words, or share the
+// same market tags and a fair part of their words (outlets rewrite headlines; the tags stay put).
+function isSameStory(prev, item) {
+  const a = headlineWords(prev.headline), b = headlineWords(item.title)
+  const sim = jaccard(a, b)
+  if (sim >= 0.5) return true
+  const ta = tagKey(prev.tags), tb = tagKey(item.marketTags)
+  return !!ta && ta === tb && sim >= 0.25
 }
 
 // What the writer gets about the event, plus today's bias if there is one. Instruments come from the
@@ -1038,8 +1038,95 @@ async function newsReactionFacts(item) {
   return facts
 }
 
-// performance jsonb is written by the /api/bias-performance scorer: status 'final' carries a
-// correct true/false verdict once the 24h window closes, 'live' is still running.
+// Called from the news alert path the moment high-impact items are recognised — same items, same
+// threshold as the subscriber alert. Drafts right away (no delay), highest impact first, at most
+// NEWS_DAILY_MAX a UTC day, and never the same story twice. Every decision is logged. A run that
+// is still generating when the next alert fires is not doubled up.
+let newsEnqueueBusy = false
+async function enqueueNewsReactions(items) {
+  if (!Array.isArray(items) || !items.length) return
+  if (newsEnqueueBusy) { console.log(`📰 [social news] previous batch still drafting — ${items.length} item(s) left for the next alert`); return }
+  newsEnqueueBusy = true
+  try {
+    // Every news draft today counts, even skipped ones: the cap is on drafts, not on posts.
+    const today = (await socialRowsToday('x', { allStatuses: true })).filter(r => r.content_type === 'news_reaction')
+    const seen = today.map(r => ({ headline: r.source_ref?.facts?.headline, tags: r.source_ref?.facts?.marketTags }))
+    let count = today.length
+    const sorted = [...items].sort((a, b) => (b.impact - a.impact) || (Date.parse(b.publishedAt || 0) - Date.parse(a.publishedAt || 0)))
+    for (const item of sorted) {
+      const label = `"${String(item.title || '').slice(0, 70)}" (impact ${item.impact})`
+      if (count >= NEWS_DAILY_MAX) { console.log(`📰 [social news] skipped ${label} — daily cap ${count}/${NEWS_DAILY_MAX}`); continue }
+      const dup = seen.find(s => isSameStory(s, item))
+      if (dup) { console.log(`📰 [social news] skipped ${label} — same story as "${String(dup.headline || '').slice(0, 60)}"`); continue }
+      const facts = await newsReactionFacts(item)
+      const row = await createDraftAndNotify({ contentType: 'news_reaction', pillar: 'macro_news', facts, sourceRef: { trigger: 'news', newsUrl: item.url || null } })
+      seen.push({ headline: item.title, tags: item.marketTags })   // even if blocked: don't retry the same story this batch
+      if (row) { count++; console.log(`📰 [social news] drafted #${row.id} from ${label} (${count}/${NEWS_DAILY_MAX} today)`) }
+      else console.log(`📰 [social news] ${label} — every variant was blocked by the guardrails`)
+    }
+  } catch (e) {
+    console.error(`❌ [social news] enqueue failed: ${e?.message || e}`)
+  } finally {
+    newsEnqueueBusy = false
+  }
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+const eventKey = e => `${e.title}|${e.at}`
+
+// Upcoming USD high-impact events, soonest first, with their absolute time kept in `at` so an
+// event_preview row can later tell whether its events are already past.
+async function socialUpcomingUsdEvents(nowMs = Date.now()) {
+  let cal = []
+  try { cal = await getEconomicCalendar() || [] } catch (e) { console.warn(`⚠️ [social] calendar read failed: ${e?.message}`); return [] }
+  return cal
+    .filter(e => String(e.country).toUpperCase() === 'USD' && /high/i.test(String(e.impact)))
+    .map(e => ({ ms: Date.parse(e.time), e }))
+    .filter(({ ms }) => Number.isFinite(ms) && ms - nowMs >= EVENT_LEAD_MIN * 60000)
+    .sort((a, b) => a.ms - b.ms)
+    .map(({ ms, e }) => ({
+      time: new Date(ms).toISOString().slice(11, 16), at: new Date(ms).toISOString(),
+      currency: 'USD', title: e.event, forecast: e.forecast || '', previous: e.previous || '', impact: e.impact,
+    }))
+}
+
+// The next preview to write, or why there is none. The earliest not-yet-previewed event must be
+// 45 minutes to 6 hours away; everything within 2 hours of it rides along in the same preview.
+async function nextEventPreview(previewedKeys, nowMs = Date.now()) {
+  const upcoming = (await socialUpcomingUsdEvents(nowMs)).filter(e => !previewedKeys.includes(eventKey(e)))
+  if (!upcoming.length) return { events: [], why: 'none-ahead(USD)' }
+  const first = Date.parse(upcoming[0].at)
+  if (first - nowMs > EVENT_LEAD_MAX_MIN * 60000) return { events: [], why: `next-in-${Math.round((first - nowMs) / 3600000)}h` }
+  return { events: upcoming.filter(e => Date.parse(e.at) - first <= EVENT_GROUP_MIN * 60000), why: null }
+}
+
+// True when every event in an event_preview row has already happened — the preview is then worse
+// than nothing. Old rows without `at` fall back to the row's creation date plus the HH:MM time.
+// If any time cannot be read, the answer is false: when in doubt, do not skip.
+function eventsAllPast(row, nowMs = Date.now()) {
+  const events = row?.source_ref?.facts?.events
+  if (!Array.isArray(events) || !events.length) return false
+  const day = String(row.created_at || '').slice(0, 10)
+  const times = events.map(e => (e?.at ? Date.parse(e.at) : /^\d{1,2}:\d{2}$/.test(String(e?.time || '')) && day ? Date.parse(`${day}T${String(e.time).padStart(5, '0')}:00.000Z`) : NaN))
+  if (times.some(t => !Number.isFinite(t))) return false
+  return times.every(t => t < nowMs)
+}
+
+// Take a past-event preview out of the queue and say so. Used at approve time and by the publisher.
+async function skipPastEventRow(row, where) {
+  const { data, error } = await supabase.from('social_queue')
+    .update({ status: 'skipped', error: 'event already happened', updated_at: new Date().toISOString() })
+    .eq('id', row.id).in('status', ['draft', 'approved', 'publishing']).select().maybeSingle()
+  if (error) console.error(`⚠️ [social] could not skip past-event #${row.id}: ${error.message}`)
+  console.log(`⏭️ [social] #${row.id} event_preview skipped at ${where} — event already happened`)
+  const admin = v2AdminChat()
+  if (admin) await sendTG(admin, `⏭ #${esc(row.id)} event_preview skipped — event already happened (caught at ${esc(where)})`)
+  return data
+}
+
+// ── Scorecard ─────────────────────────────────────────────────────────────────
+// performance jsonb is written by scoreBiasHistory (on a schedule and from /api/bias-performance):
+// status 'final' carries a correct true/false verdict once the 24h window closes, 'live' is running.
 function scorecardOutcome(perf) {
   if (perf?.status === 'final' && typeof perf.correct === 'boolean') return perf.correct ? 'hit' : 'miss'
   if (perf?.status === 'live') return 'open'
@@ -1064,23 +1151,57 @@ async function socialScorecardRows() {
   return rows
 }
 
-// Time-driven filler. Restart-safe: what has been done today lives in app_state, not in this process,
-// so a Railway restart cannot produce a second draft for the same slot.
+function scorecardFacts(rows, now = new Date()) {
+  const start = new Date(now.getTime() - 6 * 24 * 3600 * 1000)
+  const fmt = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+  // No counts, percentages or totals anywhere — the rows speak for themselves.
+  return { rows: rows.slice(-7), rangeLabel: `${fmt(start)} – ${fmt(now)}` }
+}
+
+// ── LinkedIn education ────────────────────────────────────────────────────────
+// One evergreen topic a day from eduTopics.js; a topic may not repeat within 45 days. The history
+// only advances when a draft is actually created, so a blocked generation does not burn a topic.
+async function draftEducation(reason = null) {
+  const rot = (await v2LoadSnapshot(LI_EDU_ROTATION_KEY)) || { history: [] }
+  const { topic, relaxed } = pickEduTopic(rot.history || [], utcDay())
+  if (relaxed) console.warn(`⚠️ [social] every education topic was used in the last ${EDU_REPEAT_DAYS} days — reusing the oldest, "${topic.title}"`)
+  const row = await createDraftAndNotify({
+    contentType: 'education', platform: 'linkedin', pillar: 'education',
+    facts: { topic: topic.title, angle: topic.angle, topicId: topic.id },
+    sourceRef: { trigger: 'planner', topicId: topic.id, ...(reason ? { reason } : {}) },
+  })
+  if (row) v2SaveSnapshot(LI_EDU_ROTATION_KEY, { history: [...(rot.history || []), { id: topic.id, date: utcDay() }].slice(-200) })
+  return { row, topic }
+}
+
+// ── Planner ───────────────────────────────────────────────────────────────────
+// Every 15 minutes. Restart-safe: what has run today lives in app_state, so a Railway restart cannot
+// draft the same slot twice. Each lane is independent and each run logs one summary line.
+function freshPlannerState(day) {
+  return { date: day, done: { saturday: false, rotation: false, linkedin: false }, attempts: { rotation: 0, linkedin: 0 }, eventKeys: [], eventPreviews: 0 }
+}
+
 async function runSocialPlanner() {
+  const status = { bias: '-', news: '-', event: '-', rotation: '-', li: '-' }
   try {
     const now = new Date()
+    const nowMs = now.getTime()
     const day = utcDay()
     const dow = now.getUTCDay()
     const mins = utcMinutes(now)
+    const weekday = dow >= 1 && dow <= 5
 
     let state = await v2LoadSnapshot(SOCIAL_PLANNER_KEY)
-    if (!state || state.date !== day) state = { date: day, done: { biasWindow: false, saturday: false, newsReaction: false }, attempts: 0 }
+    if (!state || state.date !== day || !state.attempts) state = freshPlannerState(day)
     const save = () => v2SaveSnapshot(SOCIAL_PLANNER_KEY, state)
 
-    if (dow === 0) return                                   // Sunday: nothing goes out
+    const xToday = await socialRowsToday('x')
+    const xAll = await socialRowsToday('x', { allStatuses: true })
+    status.bias = xToday.some(r => r.content_type === 'bias_card') ? 'done' : 'none'
+    status.news = `${xAll.filter(r => r.content_type === 'news_reaction').length}/${NEWS_DAILY_MAX}`
 
-    if (dow === 6) {
-      if (state.done.saturday || mins < SOCIAL_SATURDAY_UTC_MIN) return
+    // ── X: Saturday scorecard (unchanged) ──
+    if (dow === 6 && !state.done.saturday && mins >= SOCIAL_SATURDAY_UTC_MIN) {
       const rows = await socialScorecardRows()
       const resolved = rows.filter(r => r.outcome !== 'open')
       if (resolved.length < 3) {
@@ -1090,71 +1211,87 @@ async function runSocialPlanner() {
           state.satLoggedHour = now.getUTCHours(); save()
           console.log(`⏭️ [social] scorecard skipped — only ${resolved.length} resolved call(s) this week, need 3`)
         }
-        return
+      } else {
+        const row = await createDraftAndNotify({ contentType: 'weekly_scorecard', pillar: 'accountability', facts: scorecardFacts(rows, now), sourceRef: { trigger: 'planner' } })
+        if (row) { state.done.saturday = true; save(); console.log(`📅 [social] weekly scorecard drafted (#${row.id}, ${rows.length} rows)`) }
       }
-      const start = new Date(Date.now() - 6 * 24 * 3600 * 1000)
-      const fmt = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })
-      // No counts, percentages or totals anywhere — the rows speak for themselves.
-      const facts = { rows: rows.slice(-7), rangeLabel: `${fmt(start)} – ${fmt(now)}` }
-      const row = await createDraftAndNotify({ contentType: 'weekly_scorecard', pillar: 'accountability', facts, sourceRef: { trigger: 'planner' } })
-      if (row) { state.done.saturday = true; save(); console.log(`📅 [social] weekly scorecard drafted (#${row.id}, ${rows.length} rows)`) }
-      return
     }
 
-    // Mon–Fri
-    if (state.done.biasWindow || mins < SOCIAL_FALLBACK_UTC_MIN) return
-    const today = await socialRowsToday()
-    if (today.length) {
-      state.done.biasWindow = true; save()
-      console.log(`⏭️ [social] planner slot already filled by #${today[0].id} (${today[0].content_type})`)
-      return
-    }
-    if ((state.attempts || 0) >= SOCIAL_PLANNER_MAX_ATTEMPTS) {
-      state.done.biasWindow = true; save()
-      console.warn(`⚠️ [social] planner gave up for today after ${state.attempts} attempts`)
-      return
-    }
-    state.attempts = (state.attempts || 0) + 1; save()
-
-    // Priority for the day's single slot, highest first:
-    //   1. bias_card      — the engine's own call, drafted by enqueueBiasCardDraft, replaces a
-    //                       planner draft that has not gone out yet
-    //   2. event_preview  — a dated, scheduled reason to post
-    //   3. news_reaction  — something that actually moved, at most one a day so the account reads
-    //                       as an analyst rather than a headline aggregator
-    //   4. rotation       — macro_insight / trader_pain / contrarian, the evergreen filler
-    const events = await socialTodayEvents()
-    const news = state.done.newsReaction ? null : pickNewsReaction()
-    let row = null
-    if (events.length) {
-      const facts = { events, dateLabel: now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
-      row = await createDraftAndNotify({ contentType: 'event_preview', pillar: 'calendar', facts, sourceRef: { trigger: 'planner' } })
-    } else if (news) {
-      const facts = await newsReactionFacts(news)
-      row = await createDraftAndNotify({ contentType: 'news_reaction', pillar: 'macro_news', facts, sourceRef: { trigger: 'planner', newsUrl: news.url || null } })
-      if (row) { state.done.newsReaction = true; save() }   // one a day, whatever else happens later
-    } else {
-      const idx = Number(await v2LoadSnapshot(SOCIAL_ROTATION_KEY)) || 0
-      const contentType = SOCIAL_ROTATION[idx % SOCIAL_ROTATION.length]
-      let facts = {}
-      if (contentType === 'macro_insight') {
-        const { data: b } = await supabase.from('bias_history').select('reasoning')
-          .eq('engine', 'v2').order('generated_at', { ascending: false }).limit(1).maybeSingle()
-        facts = { reasoning: b?.reasoning || '', events: await socialTodayEvents() }
+    // ── X: event previews, USD high-impact only, 45 min – 6 h ahead ──
+    if (weekday) {
+      if (state.eventPreviews >= EVENT_DAILY_MAX) status.event = `cap(${state.eventPreviews}/${EVENT_DAILY_MAX})`
+      else {
+        const { events, why } = await nextEventPreview(state.eventKeys, nowMs)
+        if (!events.length) status.event = why
+        else {
+          const facts = { events, dateLabel: now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }) }
+          const row = await createDraftAndNotify({ contentType: 'event_preview', pillar: 'calendar', facts, sourceRef: { trigger: 'planner' } })
+          // Marked previewed either way, so a blocked draft does not retry the same events every 15 minutes.
+          state.eventKeys.push(...events.map(eventKey))
+          if (row) { state.eventPreviews++; status.event = `drafted(#${row.id}, ${events.length} event${events.length === 1 ? '' : 's'})` }
+          else status.event = 'blocked'
+          save()
+        }
       }
-      row = await createDraftAndNotify({ contentType, pillar: SOCIAL_PILLARS[contentType], facts, sourceRef: { trigger: 'planner', rotationIndex: idx } })
-      // Advance ONLY on success, so a blocked generation does not burn a pillar's turn.
-      if (row) v2SaveSnapshot(SOCIAL_ROTATION_KEY, idx + 1)
+    } else status.event = 'weekend'
+
+    // ── X: rotation pillar, only on a quiet day ──
+    if (!weekday) status.rotation = 'weekend'
+    else if (state.done.rotation) status.rotation = 'done'
+    else if (mins < SOCIAL_FALLBACK_UTC_MIN) status.rotation = 'not-yet'
+    else {
+      const others = xToday.filter(r => !SOCIAL_ROTATION.includes(r.content_type)).length
+      if (others >= ROTATION_MAX_OTHER_X) { state.done.rotation = true; save(); status.rotation = `skipped(${others} drafts)` }
+      else if (state.attempts.rotation >= SOCIAL_PLANNER_MAX_ATTEMPTS) { state.done.rotation = true; save(); status.rotation = 'gave-up' }
+      else {
+        state.attempts.rotation++; save()
+        const idx = Number(await v2LoadSnapshot(SOCIAL_ROTATION_KEY)) || 0
+        const contentType = SOCIAL_ROTATION[idx % SOCIAL_ROTATION.length]
+        let facts = {}
+        if (contentType === 'macro_insight') {
+          const { data: b } = await supabase.from('bias_history').select('reasoning')
+            .eq('engine', 'v2').order('generated_at', { ascending: false }).limit(1).maybeSingle()
+          facts = { reasoning: b?.reasoning || '', events: await socialUpcomingUsdEvents(nowMs) }
+        }
+        const row = await createDraftAndNotify({ contentType, pillar: SOCIAL_PILLARS[contentType], facts, sourceRef: { trigger: 'planner', rotationIndex: idx } })
+        // Advance ONLY on success, so a blocked generation does not burn a pillar's turn.
+        if (row) { v2SaveSnapshot(SOCIAL_ROTATION_KEY, idx + 1); state.done.rotation = true; save(); status.rotation = `drafted(${contentType})` }
+        else status.rotation = `blocked(${state.attempts.rotation}/${SOCIAL_PLANNER_MAX_ATTEMPTS})`
+      }
     }
-    if (row) {
-      state.done.biasWindow = true; save()
-      console.log(`📅 [social] planner drafted #${row.id} (${row.content_type})`)
-    } else {
-      console.warn(`⚠️ [social] planner draft blocked (attempt ${state.attempts}/${SOCIAL_PLANNER_MAX_ATTEMPTS}) — will retry`)
+
+    // ── LinkedIn: education Sun–Fri, results on Saturday ──
+    if (state.done.linkedin) status.li = 'done'
+    else if (mins < SOCIAL_FALLBACK_UTC_MIN) status.li = 'not-yet'
+    else if (state.attempts.linkedin >= SOCIAL_PLANNER_MAX_ATTEMPTS) { state.done.linkedin = true; save(); status.li = 'gave-up' }
+    else {
+      state.attempts.linkedin++; save()
+      let row = null
+      if (dow === 6) {
+        const rows = await socialScorecardRows()
+        const resolved = rows.filter(r => r.outcome !== 'open')
+        if (resolved.length >= 3) {
+          row = await createDraftAndNotify({ contentType: 'weekly_scorecard', platform: 'linkedin', pillar: 'accountability', facts: scorecardFacts(rows, now), sourceRef: { trigger: 'planner' } })
+          status.li = row ? `results(#${row.id})` : 'results-blocked'
+        } else {
+          const why = `only ${resolved.length} resolved call(s) this week, need 3`
+          console.log(`📅 [social] LinkedIn Saturday results skipped — ${why}; posting education instead`)
+          const r = await draftEducation(`saturday results skipped: ${why}`)
+          row = r.row
+          status.li = row ? `edu-instead(topic: ${r.topic.title})` : 'edu-blocked'
+        }
+      } else {
+        const r = await draftEducation()
+        row = r.row
+        status.li = row ? `li-edu:drafted(topic: ${r.topic.title})` : 'edu-blocked'
+      }
+      if (row) { state.done.linkedin = true; save() }
     }
   } catch (e) {
     // Never let the interval die.
     console.error(`❌ [social] planner error: ${e?.message || e}`)
+  } finally {
+    console.log(`[social planner] bias:${status.bias} news:${status.news} event:${status.event} rotation:${status.rotation} li:${status.li}`)
   }
 }
 
@@ -1315,7 +1452,14 @@ async function publishNextFor(platform) {
     if (!row) { console.log(`↩️ [social] #${due[0].id} already claimed by another run`); return }
 
     try {
-      // (a) Daily cap, UTC day.
+      // Approved hours ago for events that have since happened: never post it. Checked before the
+      // pacing so a dead preview does not hold up or use a slot.
+      if (row.content_type === 'event_preview' && eventsAllPast(row)) {
+        await skipPastEventRow(row, 'publish')
+        return
+      }
+
+      // (a) Daily cap, UTC day. News counts toward it like everything else.
       const dayStart = `${nowISO.slice(0, 10)}T00:00:00.000Z`
       const { count: postedToday, error: capErr } = await supabase.from('social_queue')
         .select('id', { count: 'exact', head: true })
@@ -1335,7 +1479,8 @@ async function publishNextFor(platform) {
       }
 
       // (b) Minimum gap since the last post on this platform.
-      if (cfg.minGapMin) {
+      // News is exempt: a reaction held back 90 minutes is no longer a reaction.
+      if (cfg.minGapMin && row.content_type !== 'news_reaction') {
         const { data: last, error: lastErr } = await supabase.from('social_queue').select('published_at')
           .eq('platform', platform).eq('status', 'published').not('published_at', 'is', null)
           .order('published_at', { ascending: false }).limit(1).maybeSingle()
@@ -1638,6 +1783,11 @@ async function checkAndSendNewsAlerts() {
     if (!cached) return
     const hi = cached.filter(a => a.impact >= NEWS_ALERT_IMPACT_MIN && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
+
+    // Social: a ⚡ NEWS draft for the admin from the same items this alert fires on, at the same
+    // threshold. Not awaited and fully caught — the subscriber alert and the bias refresh below
+    // matter more than a social draft, and nothing in the social path may delay or break them.
+    enqueueNewsReactions(hi).catch(e => console.warn(`⚠️ [social news] enqueue failed: ${e?.message || e}`))
 
     // ⚡ CATALYST CLASSIFICATION: Tier 1 (refresh only) vs Tier 2 (market-shaker → full re-pick)
     // Reset dedupe at day boundary
@@ -4051,6 +4201,55 @@ async function scoreBias(row) {
 }
 
 // 🎯 Bias performance — every bias scored vs real market + summary stats
+// Score the v2 biases of the last `days` days and persist every completed 24h window. Moved out of
+// /api/bias-performance unchanged, so a schedule can run it too: finalised outcomes used to be
+// written only when someone opened the Bias History modal, and the Saturday results post needs
+// them whether or not anyone did. Returns the rows with their performance attached.
+async function scoreBiasHistory(days) {
+  const since = new Date(Date.now() - days * 86400 * 1000).toISOString()
+  // v2 rows ONLY. A win rate blended across two engines describes neither, and pre-migration rows
+  // have engine=null so they drop out on their own — XAUUSD included, which v2 never scores.
+  const { data: rows, error } = await supabase
+    .from('bias_history').select('*')
+    .eq('engine', 'v2')
+    .gte('generated_at', since)
+    .order('generated_at', { ascending: false })
+    .limit(50)
+  if (error) throw error
+
+  let fetches = 0
+  const results = []
+  for (const row of rows || []) {
+    // Already permanently scored → reuse, zero API cost
+    if (row.performance?.status === 'final') { results.push(row); continue }
+    if (fetches >= TRACKER_MAX_FETCHES) {
+      results.push({ ...row, performance: { status: 'pending', note: 'Queued (rate-limit headroom) — scores on next refresh' } })
+      continue
+    }
+    fetches++
+    const perf = await scoreBias(row)
+    // Persist ONLY completed 24h windows — each bias costs exactly one fetch, ever
+    if (perf.status === 'final') {
+      try {
+        const { error: upErr } = await supabase.from('bias_history').update({ performance: perf }).eq('id', row.id)
+        if (upErr) console.error('Tracker persist error (run the performance column SQL?):', upErr.message)
+      } catch (pe) { console.error('Tracker persist error:', pe?.message) }
+    }
+    results.push({ ...row, performance: perf })
+  }
+  return results
+}
+
+// The scheduled run. Same function, same TRACKER_MAX_FETCHES budget per run, same tdAcquire rate
+// limiter inside scoreBias — so it queues behind the engine's TwelveData calls instead of racing them.
+async function runScheduledScoring() {
+  try {
+    const rows = await scoreBiasHistory(7)
+    const finals = rows.filter(r => r.performance?.status === 'final').length
+    console.log(`📈 [scoring] ${rows.length} v2 biases in 7d · ${finals} resolved`)
+  } catch (e) { console.error(`⚠️ [scoring] scheduled run failed: ${e?.message || e}`) }
+}
+
 app.get('/api/bias-performance', async (req, res) => {
   // Win rate, average pips, per-bias scoring. The landing page carries no
   // performance claim by design; this endpoint was publishing one anyway, to
@@ -4061,37 +4260,7 @@ app.get('/api/bias-performance', async (req, res) => {
     const days = Math.min(parseInt(req.query.days) || 7, 90)
     const cacheKey = `bias_performance_${days}`
     if (isCacheFresh(cacheKey)) return res.json(getCached(cacheKey))
-    const since = new Date(Date.now() - days * 86400 * 1000).toISOString()
-    // v2 rows ONLY. A win rate blended across two engines describes neither, and pre-migration rows
-    // have engine=null so they drop out on their own — XAUUSD included, which v2 never scores.
-    const { data: rows, error } = await supabase
-      .from('bias_history').select('*')
-      .eq('engine', 'v2')
-      .gte('generated_at', since)
-      .order('generated_at', { ascending: false })
-      .limit(50)
-    if (error) throw error
-
-    let fetches = 0
-    const results = []
-    for (const row of rows || []) {
-      // Already permanently scored → reuse, zero API cost
-      if (row.performance?.status === 'final') { results.push(row); continue }
-      if (fetches >= TRACKER_MAX_FETCHES) {
-        results.push({ ...row, performance: { status: 'pending', note: 'Queued (rate-limit headroom) — scores on next refresh' } })
-        continue
-      }
-      fetches++
-      const perf = await scoreBias(row)
-      // Persist ONLY completed 24h windows — each bias costs exactly one fetch, ever
-      if (perf.status === 'final') {
-        try {
-          const { error: upErr } = await supabase.from('bias_history').update({ performance: perf }).eq('id', row.id)
-          if (upErr) console.error('Tracker persist error (run the performance column SQL?):', upErr.message)
-        } catch (pe) { console.error('Tracker persist error:', pe?.message) }
-      }
-      results.push({ ...row, performance: perf })
-    }
+    const results = await scoreBiasHistory(days)
 
     // Win/loss verdict ONLY from closed 24h windows (final) AND high-conviction calls — Grade B+
     // with 60%+ confidence. Low-conviction D-grade biases (e.g. NFP-day whipsaws) were never meant
@@ -7193,6 +7362,11 @@ app.listen(5000, () => {
   setTimeout(() => { maintainIgToken() }, 3 * 60 * 1000)
   setInterval(() => { maintainIgToken() }, 6 * 60 * 60 * 1000)
   console.log(`📸 Instagram: cap ${igDailyCap()}/day, token ${process.env.IG_ACCESS_TOKEN ? 'seeded from IG_ACCESS_TOKEN (auto-refresh weekly)' : 'IG_ACCESS_TOKEN not set'}`)
+  // Outcome scoring. Finalised 24h windows used to be written only when someone opened the Bias
+  // History modal; the Saturday results post needs them regardless. Same function the endpoint uses.
+  setTimeout(() => { runScheduledScoring() }, 4 * 60 * 1000)
+  setInterval(() => { runScheduledScoring() }, 6 * 60 * 60 * 1000)
+  console.log('📈 Outcome scoring (6h + boot, v2 biases, 7d window)')
   // Planner. Drafts only — everything it creates still waits for an Approve tap. State lives in
   // app_state, so the 90s boot run cannot repeat a slot the pre-restart process already filled.
   setTimeout(() => { runSocialPlanner().catch(e => console.error(`❌ [social] planner boot error: ${e?.message}`)) }, 90 * 1000)
@@ -7200,7 +7374,9 @@ app.listen(5000, () => {
   v2LoadSnapshot(SOCIAL_PLANNER_KEY)
     .then(s => {
       const fb = `${String(Math.floor(SOCIAL_FALLBACK_UTC_MIN / 60)).padStart(2, '0')}:${String(SOCIAL_FALLBACK_UTC_MIN % 60).padStart(2, '0')} UTC`
-      const today = s?.date === utcDay() ? `biasWindow ${!!s.done?.biasWindow}, saturday ${!!s.done?.saturday}` : 'fresh day'
+      const today = s?.date === utcDay() && s.attempts
+        ? `rotation ${!!s.done?.rotation}, linkedin ${!!s.done?.linkedin}, events ${s.eventPreviews || 0}/${EVENT_DAILY_MAX}, saturday ${!!s.done?.saturday}`
+        : 'fresh day'
       console.log(`📅 Social planner (15min, fallback ${fb}, today: ${today})`)
     })
     .catch(() => console.log('📅 Social planner (15min) — planner state unreadable at boot'))

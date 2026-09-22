@@ -19,7 +19,7 @@ const FACTCHECK_MAX_TOKENS = 800 // the per-entity evidence lines ran to ~370 to
 // Posts built from opinion and notes only; there is nothing to check them against.
 const NO_FACT_TYPES = new Set(['trader_pain', 'contrarian'])
 
-export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'news_reaction', 'trader_pain', 'contrarian', 'build_log']
+export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 'macro_insight', 'news_reaction', 'education', 'trader_pain', 'contrarian', 'build_log']
 
 // Shared rules first, then one PLATFORM RULES section chosen per platform (see PLATFORM_RULES).
 // Everything that differs between X and LinkedIn — length, shapes, hashtags — lives in that section,
@@ -131,7 +131,19 @@ const TASKS = {
     brief: `Write an honest scoreboard post for the week's calls.
 - Name the misses as plainly as the hits. Do not bury them, excuse them or spin them.
 - NO aggregate anywhere: no percentage, no win rate, no hit count, no "X of Y", no totals. Talk about individual calls.
-- outcome "open" means the call has not resolved yet.`,
+- outcome "open" means the call has not resolved yet.
+- When PLATFORM is linkedin, close with what the week taught — a lesson about process or reading the macro picture, not a claim about performance.`,
+  },
+  // LinkedIn only. Evergreen teaching: there are deliberately no FACTS to ground it, so it is checked
+  // for invented specifics instead (see EDU_CHECK below).
+  education: {
+    facts: f => pick(f, ['topic', 'angle']),
+    brief: `Write an educational post about FACTS.topic for forex and prop-firm traders.
+- Explain HOW the mechanism works, in plain English. FACTS.angle says what the post must make clear.
+- Define every technical term the first time you use it.
+- End with how a trader actually uses it — in their analysis or their risk, not as a trade call.
+- NO specific historical numbers, dates, years, named events, statistics or percentages. Explain the mechanism in general terms; the lesson must hold without them.
+- No predictions about current markets, no mention of today's prices or today's bias.`,
   },
   macro_insight: {
     facts: f => pick(f, ['reasoning', 'events']),
@@ -146,10 +158,10 @@ const TASKS = {
       ...pick(f, ['headline', 'instruments', 'marketTags', 'oneliner', 'impactScore', 'publishedAt']),
       ...(f.biasPair ? { todaysBias: pick(f, ['biasPair', 'biasDirection', 'biasReasoning']) } : {}),
     }),
-    brief: `Write a reaction to a macro event that has just moved markets.
-- This is a reaction, NOT a news report. State what happened in half a sentence at most; the reader has already seen the headline.
-- Spend the rest of the post on what it means for positioning, or what it confirms or breaks in the macro picture.
-- NEVER predict the next move and never name a price target. Do not say what will happen — say what changed.
+    brief: `Write a fast take on a macro story that is breaking now.
+- NOT a headline recap. Lead with what it means for FX: which currencies or assets it touches, and why — the mechanism, trader to trader.
+- Paraphrase in your own words. Never copy or closely echo the headline wording.
+- NEVER predict the next move and never name a price target. Do not say what will happen — say what it changes.
 - Never name or tag an account, a publication, an analyst, a news outlet or a competitor. Attribute to the data and the event itself, not to a person or a brand.
 - Name only the countries, central banks, data series and instruments that appear in FACTS.`,
   },
@@ -297,16 +309,54 @@ function parseChecks(raw, n) {
   return out
 }
 
+// ── Claim check for education posts ──────────────────────────────────────────
+// Education posts have no FACTS to ground against — they explain mechanisms. What goes wrong there
+// is different: an invented statistic, a misremembered date, or an explanation simplified until it
+// is false. Two layers. The deterministic one catches specifics outright (a year, a bp/% figure,
+// a calendar date) because the brief forbids them and a regex cannot be talked out of it. Haiku
+// then judges what a regex cannot: whether the explanation is actually right.
+const EDU_SPECIFIC_RES = [
+  [/\b(19|20)\d{2}\b/, 'names a specific year'],
+  // '%' is a non-word character, so it must not need a trailing \b (there is no word boundary
+  // between '%' and the space after it — "9.1%" would slip through).
+  [/\b\d+(\.\d+)?\s?(%|(bp|bps|basis points?|percent|per cent)\b)/i, 'quotes a specific figure'],
+  [/\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\.?\s+\d{1,2}(st|nd|rd|th)?\b/i, 'names a specific date'],
+]
+export function eduSpecificClaims(text) {
+  return EDU_SPECIFIC_RES.filter(([re]) => re.test(String(text || ''))).map(([re, why]) => `${why}: "${String(text).match(re)[0]}"`)
+}
+
+const EDU_CHECK_SYSTEM = `You review educational posts about forex and macro trading for accuracy. You are strict about correctness and relaxed about style.`
+
+function eduCheckPrompt(facts, texts) {
+  return `TOPIC: ${JSON.stringify(facts)}
+
+DRAFTS:
+${texts.map((t, i) => `[${i}] ${t}`).join('\n')}
+
+For each draft, decide whether it is safe to publish as education. A draft FAILS if it contains any of:
+- a specific number, percentage, basis-point figure or statistic
+- a specific date, year or named historical event
+- a statement about how markets or economics work that is wrong, or simplified so far that it becomes wrong
+General explanations of mechanisms are fine. Opinion and framing are fine.
+If a draft fails, give the issue in one short line quoting the problem.
+
+Output ONLY minified JSON, no preamble, no code fences:
+{"checks":[{"i":0,"grounded":true,"issue":null}]}
+Use "grounded": true for a draft that passes and false for one that fails. One entry per draft, in order.`
+}
+
 // Returns one { grounded, issue } per text (null where the checker gave no answer), or null if the
 // check could not run. Never throws: an API hiccup here must not block a draft.
-async function factCheck(anthropic, trackAI, facts, texts) {
+async function factCheck(anthropic, trackAI, facts, texts, mode = 'grounding') {
   try {
+    const edu = mode === 'education'
     const m = await anthropic.messages.create({
       model: FACTCHECK_MODEL,
       max_tokens: FACTCHECK_MAX_TOKENS,
       temperature: 0, // a checker should give the same answer every time
-      system: FACTCHECK_SYSTEM,
-      messages: [{ role: 'user', content: factCheckPrompt(facts, texts) }],
+      system: edu ? EDU_CHECK_SYSTEM : FACTCHECK_SYSTEM,
+      messages: [{ role: 'user', content: edu ? eduCheckPrompt(facts, texts) : factCheckPrompt(facts, texts) }],
     })
     if (typeof trackAI === 'function') {
       try { trackAI('social-factcheck', FACTCHECK_MODEL, m.usage) } catch {}
@@ -354,16 +404,19 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   // Each variant gets factcheck: { status: grounded | ungrounded | skipped | unavailable, issue }.
   // Only 'ungrounded' adds a flag; a check that could not run never blocks the draft.
   const withFlags = async vs => {
-    const checks = doFactCheck ? await factCheck(anthropic, trackAI, modelFacts, vs.map(v => v.text)) : null
+    const edu = contentType === 'education'
+    const checks = doFactCheck ? await factCheck(anthropic, trackAI, modelFacts, vs.map(v => v.text), edu ? 'education' : 'grounding') : null
     return vs.map((v, i) => {
       const flags = [...validateSocialPost(v.text, check).flags]
+      // Education: a hard flag for every forbidden specific, whatever the model check says.
+      if (edu) for (const why of eduSpecificClaims(v.text)) flags.push({ level: 'hard', code: 'claim_check', msg: why })
       let factcheck
       if (!doFactCheck) factcheck = { status: 'skipped', issue: null }
       else if (!checks || !checks[i]) factcheck = { status: 'unavailable', issue: null }
       else if (checks[i].grounded) factcheck = { status: 'grounded', issue: null }
       else {
         factcheck = { status: 'ungrounded', issue: checks[i].issue }
-        flags.push({ level: 'hard', code: 'ungrounded', msg: checks[i].issue })
+        flags.push({ level: 'hard', code: edu ? 'claim_check' : 'ungrounded', msg: checks[i].issue })
       }
       return { ...v, flags, factcheck }
     })

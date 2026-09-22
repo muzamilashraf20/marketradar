@@ -26,6 +26,8 @@ const cut = (from, to) => {
 const escSrc = cut('function esc(s)', '// Resolve the caller')
 const pastSrc = cut('// excludeId keeps a row', "// The engine's reasoning")
 const pubSrc = cut('// 🚀 SOCIAL PUBLISHER', '// 📧 EMAIL TEMPLATE')
+// The past-event safety net lives with the triggers; the publisher calls it.
+const pastEventSrc = cut('function eventsAllPast', '// ── Scorecard')
 for (const [name, text] of [['processSocialQueue', pubSrc], ['socialPastTexts', pastSrc], ['esc', escSrc]]) {
   if (!text.includes(name)) throw new Error(`extraction sanity check failed: ${name} not found`)
 }
@@ -126,7 +128,7 @@ function buildModule() {
   const mod = new Function(
     'supabase', 'sendTG', 'v2AdminChat', 'v2LoadSnapshot', 'v2SaveSnapshot', 'publishToX', 'validateSocialPost', 'app', 'requireUser', 'isAdmin',
     'publishToLinkedIn', 'linkedinTokenStatus', 'utcDay', 'createIgTokenStore', 'igTokenStatus', 'publishToInstagram', 'SOCIAL_BUCKET',
-    `${escSrc}\n${pastSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken, maintainIgToken }`,
+    `${escSrc}\n${pastSrc}\n${pastEventSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken, maintainIgToken }`,
   )(supabase, sendTG, v2AdminChat, v2LoadSnapshot, v2SaveSnapshot, publishToX, validateSocialPost, app, requireUser, isAdmin,
     publishToLinkedIn, linkedinTokenStatus, utcDay, createIgTokenStore, igTokenStatus, publishToInstagram, 'social-media')
   return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR; console.warn = REAL_WARN } }
@@ -550,6 +552,49 @@ const seedIgToken = async (over = {}) => {
   check('refresh failure does not throw out of the check', threw === null, threw?.message)
   check('refresh failure DMs once a day, with Meta\'s message', dms.filter(d => /Instagram token refresh failed/.test(d.text)).length === 1 && dms[0].text.includes('Token is too new to refresh'), JSON.stringify(dms.map(d => d.text)))
   check('refresh failure leaves the old token in place', snap.ig_token?.token === 'IG_ENV_TOKEN', snap.ig_token?.token)
+}
+
+// ── 10. News is exempt from the minimum gap; everything else still waits ─────
+{
+  const NEWS = 'EUR/USD: the Fed hold keeps the rate gap in the dollar\'s favour.'
+  reset([row({ id: 1, content_type: 'news_reaction', text: NEWS, source_ref: { facts: { headline: 'Fed holds' } } }), row({ id: 200, status: 'published', published_at: ago(20), text: 'recent post' })])
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('news_reaction publishes with the min gap not met (20min < 90)', find(1).status === 'published' && publishCalls.length === 1, `${find(1).status} ${find(1).scheduled_for}`)
+
+  reset([row({ id: 1 }), row({ id: 200, status: 'published', published_at: ago(20), text: 'recent post' })])
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('a non-news row in the same situation waits', find(1).status === 'approved' && publishCalls.length === 0 && find(1).scheduled_for > new Date().toISOString(), `${find(1).status} ${find(1).scheduled_for}`)
+
+  // News still counts toward the daily cap.
+  const today = new Date().toISOString().slice(0, 10)
+  reset([row({ id: 1, content_type: 'news_reaction', text: NEWS, source_ref: { facts: { headline: 'Fed holds' } } }),
+    ...Array.from({ length: 5 }, (_, i) => row({ id: 100 + i, status: 'published', published_at: `${today}T0${i}:00:00.000Z`, text: `old post ${i}` }))])
+  const m3 = buildModule()
+  await m3.processSocialQueue()
+  m3.restore()
+  check('news_reaction still counts toward X_DAILY_CAP (held at 5/5)', find(1).status === 'approved' && publishCalls.length === 0, find(1).status)
+}
+
+// ── 11. An event_preview whose events have all happened is skipped, not posted ─
+{
+  const EV_TEXT = 'Two USD prints land together at 12:30 UTC: CPI and jobless claims.'
+  const evRow = (events, over = {}) => row({ id: 1, content_type: 'event_preview', text: EV_TEXT, source_ref: { facts: { dateLabel: 'Today', events } }, ...over })
+  reset([evRow([{ time: '00:01', at: ago(120), currency: 'USD', title: 'CPI' }, { time: '00:02', at: ago(60), currency: 'USD', title: 'Claims' }])])
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('all events past → skipped with the reason, publisher never called', find(1).status === 'skipped' && find(1).error === 'event already happened' && publishCalls.length === 0, `${find(1).status} ${find(1).error}`)
+  check('the skip is DMed', dms.some(d => /event already happened/.test(d.text) && /publish/.test(d.text)), JSON.stringify(dms.map(d => d.text)))
+
+  reset([evRow([{ time: '00:01', at: ago(60), currency: 'USD', title: 'CPI' }, { time: '23:59', at: new Date(Date.now() + 3600e3).toISOString(), currency: 'USD', title: 'Fed speaks' }])])
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('one event still ahead → published as normal', find(1).status === 'published' && publishCalls.length === 1, find(1).status)
 }
 
 // Token warning DM: once a day, only from 7 days out.

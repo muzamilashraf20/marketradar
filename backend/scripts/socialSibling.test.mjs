@@ -19,7 +19,7 @@ const RENDERER = new URL('../social/renderer.js', import.meta.url).href
 const block = cut('// 📝 SOCIAL DRAFTS', '// ⏰ SOCIAL TRIGGERS').replace("await import('./social/renderer.js')", `await import('${RENDERER}')`)
 const escSrc = cut('function esc(s)', '// Resolve the caller')
 const truncSrc = cut('function truncateTGHtml', '// Photo upload via multipart')
-for (const n of ['createDraftAndNotify', 'createLinkedInSibling', 'LINKEDIN_SIBLING_TYPES']) {
+for (const n of ['createDraftAndNotify', 'createInstagramSibling', 'LINKEDIN_SIBLING_TYPES']) {
   if (!block.includes(n)) throw new Error(`extraction sanity check failed: ${n} not found`)
 }
 
@@ -100,33 +100,52 @@ function reset() { rows = []; nextId = 1; uploads = []; tg = []; gens = []; logs
 
 const FACTS = { pair: 'EUR/USD', direction: 'BEARISH', confidence: 72, grade: 'B', reasoning: 'Rate gap widening. Specs long euro.', invalidation: '1.0850' }
 
-// ── 1. X bias card → LinkedIn sibling with the same card ──────────────────────
+// ── 1. No LinkedIn siblings under the current plan ────────────────────────────
+// LinkedIn gets its own education and Saturday results from the planner; X drafts are not copied.
+for (const [contentType, facts] of [
+  ['bias_card', FACTS], ['event_preview', { dateLabel: 'Monday', events: [{ time: '12:30', currency: 'USD', title: 'CPI', impact: 'High' }] }],
+  ['news_reaction', { headline: 'Fed holds', marketTags: ['USD↑'] }], ['macro_insight', { reasoning: 'Gold firm.' }],
+  ['weekly_scorecard', { rangeLabel: 'x', rows: [{ date: 'Mon', pair: 'EURUSD', direction: 'BEARISH', outcome: 'hit' }] }], ['build_log', {}],
+]) {
+  reset()
+  const m = build()
+  await m.createDraftAndNotify({ contentType, facts, notes: 'n' })
+  await settle()
+  restore()
+  check(`X ${contentType} → no LinkedIn sibling`, !rows.some(r => r.platform === 'linkedin'), JSON.stringify(rows.map(r => r.platform)))
+}
+
+// A LinkedIn draft made directly (as the planner does) never spawns anything.
 {
   reset()
   const m = build()
-  const x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS, sourceRef: { trigger: 'bias_engine', biasHistoryId: 9 } })
+  await m.createDraftAndNotify({ contentType: 'education', platform: 'linkedin', facts: { topic: 'Carry trade', angle: 'x' } })
   await settle()
   restore()
-  const li = rows.find(r => r.platform === 'linkedin')
-  check('X draft created', x && rows.find(r => r.id === x.id)?.platform === 'x')
-  check('LinkedIn sibling created', !!li && li.status === 'draft' && li.content_type === 'bias_card', JSON.stringify(rows.map(r => `${r.id}:${r.platform}`)))
-  check('sibling stores siblingId = the X row id, and keeps the trigger', li?.source_ref?.siblingId === x.id && li?.source_ref?.biasHistoryId === 9, JSON.stringify(li?.source_ref))
-  check('sibling reuses the X card: same image_url, rendered once', li?.image_url === x.image_url && !!x.image_url && uploads.length === 1, `${li?.image_url} vs ${x.image_url}, uploads=${uploads.length}`)
-  check('sibling generated from the same facts for platform linkedin', gens[1]?.platform === 'linkedin' && gens[1]?.facts === FACTS, JSON.stringify(gens.map(g => g.platform)))
-  const xDm = tg.find(t => t.m === 'sendPhoto' && t.extra?.reply_markup)
-  check('X DM header starts "X · bias_card"', /^📝 <b>X · bias_card<\/b>/.test(xDm?.caption || ''), xDm?.caption?.slice(0, 60))
-  const liDm = tg.filter(t => t.m === 'sendMessage').find(t => /LINKEDIN · bias_card/.test(t.text))
-  check('LinkedIn DM header starts "LINKEDIN · bias_card"', !!liDm && /^📝 <b>LINKEDIN · bias_card<\/b>/.test(liDm.text), JSON.stringify(tg.map(t => t.m)))
-  check('LinkedIn DM keeps the full text and the buttons (too long for a caption)', liDm?.text.includes(LI_BODY.slice(-40).replace(/&/g, '&amp;')) && liDm?.extra?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data === `sq:ap:${li?.id}`, liDm?.text?.slice(-80))
-  check('LinkedIn card sent by URL before the text (no re-render)', tg.some(t => t.m === 'sendPhoto' && t.photo === x.image_url && /Card for #/.test(t.caption)), JSON.stringify(tg.filter(t => t.m === 'sendPhoto').map(t => t.photo || 'buffer')))
-  check('tg_message_id on the LinkedIn row is the message with the buttons', rows.find(r => r.id === li?.id)?.tg_message_id === 100 + tg.indexOf(liDm) + 1, String(rows.find(r => r.id === li?.id)?.tg_message_id))
+  check('a LinkedIn draft does not spawn another draft', rows.length === 1 && rows[0].platform === 'linkedin', JSON.stringify(rows.map(r => r.platform)))
 }
 
-// A LinkedIn draft short enough for a caption goes out as one photo message by URL.
+// ── 2. DM mechanics for drafts too long for a caption ─────────────────────────
+// A LinkedIn scorecard renders its own card and runs past Telegram's 1024-character caption limit:
+// card first, then the full text with the buttons on it.
+{
+  reset()
+  const m = build()
+  const li = await m.createDraftAndNotify({ contentType: 'weekly_scorecard', platform: 'linkedin', facts: { rangeLabel: '15 – 19 September', rows: [{ date: 'Mon 15', pair: 'EURUSD', direction: 'BEARISH', outcome: 'hit' }, { date: 'Tue 16', pair: 'GBPUSD', direction: 'BULLISH', outcome: 'miss' }, { date: 'Wed 17', pair: 'AUDUSD', direction: 'BEARISH', outcome: 'miss' }] } })
+  await settle()
+  restore()
+  const textDm = tg.find(t => t.m === 'sendMessage' && t.extra?.reply_markup)
+  check('LinkedIn DM header starts "LINKEDIN · weekly_scorecard"', /^📝 <b>LINKEDIN · weekly_scorecard<\/b>/.test(textDm?.text || ''), textDm?.text?.slice(0, 60))
+  check('long LinkedIn draft: card first (rendered), then full text with buttons', tg.findIndex(t => t.m === 'sendPhoto') < tg.indexOf(textDm) && textDm?.extra?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data === `sq:ap:${li.id}`, JSON.stringify(tg.map(t => t.m)))
+  check('tg_message_id is the message with the buttons', rows.find(r => r.id === li.id)?.tg_message_id === 100 + tg.indexOf(textDm) + 1, String(rows.find(r => r.id === li.id)?.tg_message_id))
+}
+
+// An Instagram sibling reuses the X card by URL — no second render — and a short caption rides on
+// the photo in one message.
 {
   reset()
   genImpl = args => {
-    const text = args.platform === 'linkedin' ? 'EUR/USD leans lower.\n\nThe rate gap keeps widening in the dollar\'s favour.' : 'EUR/USD bearish. The rate gap keeps widening the dollar way.'
+    const text = args.platform === 'instagram' ? 'EUR/USD leans lower.\n\nThe rate gap keeps widening.\n\n#forex #eurusd #macro #trading #fx' : 'EUR/USD bearish. The rate gap keeps widening the dollar way.'
     const chosen = { shape: 'one-liner', text, flags: [], factcheck: { status: 'grounded', issue: null } }
     return { failed: false, chosen, variants: [chosen] }
   }
@@ -134,86 +153,9 @@ const FACTS = { pair: 'EUR/USD', direction: 'BEARISH', confidence: 72, grade: 'B
   const x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
   await settle()
   restore()
-  const li = rows.find(r => r.platform === 'linkedin')
-  const liDm = tg.find(t => t.m === 'sendPhoto' && t.photo === x.image_url)
-  check('short LinkedIn DM: one photo message by URL, with caption and buttons', /^📝 <b>LINKEDIN · bias_card<\/b>/.test(liDm?.caption || '') && liDm?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data === `sq:ap:${li?.id}`, JSON.stringify(liDm))
-}
-
-// ── 2. The sibling throws: the X draft stands ─────────────────────────────────
-{
-  reset()
-  genImpl = args => { if (args.platform === 'linkedin') throw new Error('Anthropic 529 overloaded'); return generateDraftDefault(args) }
-  const m = build()
-  let thrown = null, x = null
-  try { x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS }) } catch (e) { thrown = e }
-  await settle()
-  restore()
-  check('X draft returned despite the sibling throwing', !thrown && x?.platform === 'x' && x?.status === 'draft', thrown?.message)
-  check('X row is saved and DM\'d', rows.some(r => r.id === x?.id) && tg.some(t => t.extra?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data === `sq:ap:${x?.id}`))
-  check('no LinkedIn row after the failure', !rows.some(r => r.platform === 'linkedin'))
-  check('the sibling failure is logged, naming the X draft as unaffected', logs.some(l => /LinkedIn sibling of #\d+ failed \(X draft unaffected\).*529/.test(l)), logs.join(' | '))
-}
-function generateDraftDefault(args) {
-  const text = args.platform === 'linkedin' ? LI_BODY : 'EUR/USD bearish. The rate gap keeps widening the dollar way.'
-  const chosen = { shape: 'one-liner', text, flags: [], factcheck: { status: 'grounded', issue: null } }
-  return { failed: false, chosen, variants: [chosen] }
-}
-
-// A sibling that is blocked by the guardrails (failed draft) is also just a skipped sibling.
-{
-  reset()
-  genImpl = args => args.platform === 'linkedin'
-    ? { failed: true, chosen: null, variants: [{ shape: 'x', text: 'bad', flags: [{ level: 'hard', code: 'guarantee', msg: 'Promises an outcome' }] }] }
-    : generateDraftDefault(args)
-  const m = build()
-  const x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
-  await settle()
-  restore()
-  check('blocked sibling: X draft stands, no LinkedIn row', x?.platform === 'x' && !rows.some(r => r.platform === 'linkedin'))
-}
-
-// ── 3. One LinkedIn draft per day ─────────────────────────────────────────────
-{
-  reset()
-  const m = build()
-  await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
-  await settle()
-  await m.createDraftAndNotify({ contentType: 'event_preview', facts: { dateLabel: 'Monday', events: [{ time: '12:30', currency: 'USD', title: 'CPI', impact: 'High' }] } })
-  await settle()
-  restore()
-  check('second X draft the same day → no second LinkedIn draft', rows.filter(r => r.platform === 'linkedin').length === 1 && rows.filter(r => r.platform === 'x').length === 2, JSON.stringify(rows.map(r => `${r.platform}:${r.content_type}`)))
-  check('the skip is logged', logs.some(l => /today already has LinkedIn draft/.test(l)), logs.join(' | '))
-
-  // A skipped or failed LinkedIn row does not use up the day.
-  reset()
-  rows.push({ id: 50, platform: 'linkedin', content_type: 'bias_card', status: 'skipped', created_at: new Date().toISOString(), text: 'old' })
-  nextId = 51
-  const m2 = build()
-  await m2.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
-  await settle()
-  restore()
-  check('a skipped LinkedIn row today does not block a new sibling', rows.filter(r => r.platform === 'linkedin' && r.status === 'draft').length === 1)
-}
-
-// ── 4. Which types get siblings ───────────────────────────────────────────────
-for (const [contentType, want] of [['trader_pain', false], ['contrarian', false], ['macro_insight', true], ['news_reaction', true], ['build_log', true]]) {
-  reset()
-  const m = build()
-  await m.createDraftAndNotify({ contentType, facts: contentType === 'macro_insight' ? { reasoning: 'Gold firm.' } : {}, notes: 'n' })
-  await settle()
-  restore()
-  const got = rows.some(r => r.platform === 'linkedin')
-  check(`${contentType} → ${want ? 'gets' : 'no'} LinkedIn sibling`, got === want, JSON.stringify(rows.map(r => r.platform)))
-}
-
-// A LinkedIn draft never spawns a sibling of its own.
-{
-  reset()
-  const m = build()
-  await m.createDraftAndNotify({ contentType: 'bias_card', platform: 'linkedin', facts: FACTS })
-  await settle()
-  restore()
-  check('a LinkedIn draft does not spawn another draft', rows.length === 1 && rows[0].platform === 'linkedin', JSON.stringify(rows.map(r => r.platform)))
+  const ig = rows.find(r => r.platform === 'instagram')
+  const igDm = tg.find(t => t.m === 'sendPhoto' && t.photo === x.image_url)
+  check('Instagram sibling: card sent by URL, caption and buttons in one message', /INSTAGRAM · bias_card/.test(igDm?.caption || '') && igDm?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data === `sq:ap:${ig?.id}` && uploads.length === 1, JSON.stringify(igDm))
 }
 
 // ── 5. Instagram siblings ─────────────────────────────────────────────────────
@@ -235,7 +177,7 @@ const genWithIg = (overrideIg) => args => {
   check('Instagram sibling reuses the X card, rendered once', ig?.image_url === x.image_url && uploads.length === 1, `${ig?.image_url} uploads=${uploads.length}`)
   check('Instagram sibling stores siblingId and the trigger', ig?.source_ref?.siblingId === x.id && ig?.source_ref?.trigger === 'bias_engine', JSON.stringify(ig?.source_ref))
   check('Instagram generated for platform instagram from the same facts', gens.some(g => g.platform === 'instagram' && g.facts === FACTS))
-  check('LinkedIn sibling still created alongside', rows.some(r => r.platform === 'linkedin'))
+  check('no LinkedIn sibling alongside (current plan)', !rows.some(r => r.platform === 'linkedin'))
   const igDm = tg.find(t => (t.caption || t.text || '').includes('INSTAGRAM · bias_card'))
   check('Instagram DM header starts "INSTAGRAM · bias_card"', /📝 <b>INSTAGRAM · bias_card<\/b>/.test(igDm?.caption || igDm?.text || ''), JSON.stringify(tg.map(t => (t.caption || t.text || '').slice(0, 40))))
 }
@@ -249,7 +191,7 @@ const genWithIg = (overrideIg) => args => {
   await settle()
   restore()
   check('Instagram sibling failure: X draft returned and saved', !thrown && x?.platform === 'x' && rows.some(r => r.id === x.id), thrown?.message)
-  check('Instagram sibling failure: LinkedIn sibling unaffected', rows.some(r => r.platform === 'linkedin') && !rows.some(r => r.platform === 'instagram'), JSON.stringify(rows.map(r => r.platform)))
+  check('Instagram sibling failure: no Instagram row, X row intact', !rows.some(r => r.platform === 'instagram') && rows.filter(r => r.platform === 'x').length === 1, JSON.stringify(rows.map(r => r.platform)))
   check('Instagram sibling failure is logged as X-unaffected', logs.some(l => /Instagram sibling of #\d+ failed \(X draft unaffected\)/.test(l)), logs.join(' | '))
 }
 
