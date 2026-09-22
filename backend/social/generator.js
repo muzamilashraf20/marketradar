@@ -91,6 +91,17 @@ const PLATFORM_RULES = {
 - At most 1 emoji.
 - No link, no URL and no domain in the body.
 - Shapes: setup-then-punch, question-led, number-led observation, confession/story, explainer.`,
+
+  // The caption sits under a card image that already shows the pair, direction and grade.
+  instagram: `PLATFORM RULES — INSTAGRAM
+- Each variant is 300 to 1200 characters, counting spaces and line breaks.
+- The FIRST LINE is the hook. Instagram cuts the caption after roughly 125 characters behind "more", so the first line must stand on its own.
+- Short lines and generous line breaks. Leave a blank line between each thought.
+- The caption goes under a card image that already shows the pair, direction and grade. Use the caption for the reasoning behind the read, in plain language, trader to trader. No predictions and no targets.
+- End with 5 to 8 relevant hashtags on their own final line, nowhere else.
+- No links, no URLs and no domains in the caption — they are not clickable on Instagram. You may write "Link in bio" once if it fits.
+- At most 1 emoji.
+- Shapes: setup-then-punch, question-led, number-led observation, confession/story, explainer.`,
 }
 
 const systemFor = platform => `${BASE_PROMPT}\n\n${PLATFORM_RULES[platform] || PLATFORM_RULES.x}`

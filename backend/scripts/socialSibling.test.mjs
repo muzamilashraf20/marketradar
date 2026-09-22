@@ -33,6 +33,8 @@ function check(name, ok, detail = '') {
 // ── Fakes ─────────────────────────────────────────────────────────────────────
 let rows = [], nextId = 1, uploads = [], tg = [], gens = [], logs = []
 let genImpl = null
+let igCap = 1
+let failUploads = false
 const ADMIN = '111222333'
 
 function table() {
@@ -59,7 +61,7 @@ function table() {
 const supabase = {
   from: table,
   storage: { from: bucket => ({
-    upload: async (path, png) => { uploads.push({ bucket, path, bytes: png.length }); return { error: null } },
+    upload: async (path, png) => { if (failUploads) return { error: { message: 'storage down' } }; uploads.push({ bucket, path, bytes: png.length }); return { error: null } },
     getPublicUrl: path => ({ data: { publicUrl: `https://bucket.example/${bucket}/${path}` } }),
   }) },
 }
@@ -86,15 +88,15 @@ function build() {
   return new Function(
     'supabase', 'sendTG', 'sendTGPhoto', 'tgCall', 'v2AdminChat', 'v2LoadSnapshot', 'v2SaveSnapshot', 'generateDraft', 'validateSocialPost',
     'app', 'requireUser', 'optionalUser', 'getEconomicCalendar', 'anthropic', 'trackAI', 'processSocialQueue', 'utcDay',
-    'socialAutopilotOn', 'xDailyCap', 'xMinGapMin', 'linkedinDailyCap', 'linkedinTokenStatus',
+    'socialAutopilotOn', 'xDailyCap', 'xMinGapMin', 'linkedinDailyCap', 'linkedinTokenStatus', 'igDailyCap',
     `${escSrc}\n${truncSrc}\n${block}\nreturn { createDraftAndNotify, socialDraftMessage }`,
   )(supabase, sendTG, sendTGPhoto, tgCall, () => ADMIN, async k => snap[k] ?? null, (k, v) => { snap[k] = v }, generateDraft, validateSocialPost,
     app, async () => null, async () => null, async () => [], {}, () => {}, async () => {}, () => new Date().toISOString().slice(0, 10),
-    () => false, () => 5, () => 90, () => 1, () => null)
+    () => false, () => 5, () => 90, () => 1, () => null, () => igCap)
 }
 const restore = () => { console.log = REAL.log; console.error = REAL.error; console.warn = REAL.warn }
 const settle = () => new Promise(r => setTimeout(r, 400))
-function reset() { rows = []; nextId = 1; uploads = []; tg = []; gens = []; logs = []; genImpl = null; for (const k of Object.keys(snap)) delete snap[k] }
+function reset() { rows = []; nextId = 1; uploads = []; tg = []; gens = []; logs = []; genImpl = null; igCap = 1; failUploads = false; for (const k of Object.keys(snap)) delete snap[k] }
 
 const FACTS = { pair: 'EUR/USD', direction: 'BEARISH', confidence: 72, grade: 'B', reasoning: 'Rate gap widening. Specs long euro.', invalidation: '1.0850' }
 
@@ -212,6 +214,92 @@ for (const [contentType, want] of [['trader_pain', false], ['contrarian', false]
   await settle()
   restore()
   check('a LinkedIn draft does not spawn another draft', rows.length === 1 && rows[0].platform === 'linkedin', JSON.stringify(rows.map(r => r.platform)))
+}
+
+// ── 5. Instagram siblings ─────────────────────────────────────────────────────
+const IG_BODY = 'EUR/USD leans lower today.\n\nThe rate gap keeps widening in the dollar\'s favour.\n\n#forex #eurusd #macro #trading #fx'
+const genWithIg = (overrideIg) => args => {
+  if (args.platform === 'instagram' && overrideIg) return overrideIg(args)
+  const text = args.platform === 'linkedin' ? LI_BODY : args.platform === 'instagram' ? IG_BODY : 'EUR/USD bearish. The rate gap keeps widening the dollar way.'
+  const chosen = { shape: 'one-liner', text, flags: [], factcheck: { status: 'grounded', issue: null } }
+  return { failed: false, chosen, variants: [chosen] }
+}
+{
+  reset(); genImpl = genWithIg()
+  const m = build()
+  const x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS, sourceRef: { trigger: 'bias_engine' } })
+  await settle()
+  restore()
+  const ig = rows.find(r => r.platform === 'instagram')
+  check('X bias card → Instagram sibling', !!ig && ig.status === 'draft' && ig.content_type === 'bias_card', JSON.stringify(rows.map(r => r.platform)))
+  check('Instagram sibling reuses the X card, rendered once', ig?.image_url === x.image_url && uploads.length === 1, `${ig?.image_url} uploads=${uploads.length}`)
+  check('Instagram sibling stores siblingId and the trigger', ig?.source_ref?.siblingId === x.id && ig?.source_ref?.trigger === 'bias_engine', JSON.stringify(ig?.source_ref))
+  check('Instagram generated for platform instagram from the same facts', gens.some(g => g.platform === 'instagram' && g.facts === FACTS))
+  check('LinkedIn sibling still created alongside', rows.some(r => r.platform === 'linkedin'))
+  const igDm = tg.find(t => (t.caption || t.text || '').includes('INSTAGRAM · bias_card'))
+  check('Instagram DM header starts "INSTAGRAM · bias_card"', /📝 <b>INSTAGRAM · bias_card<\/b>/.test(igDm?.caption || igDm?.text || ''), JSON.stringify(tg.map(t => (t.caption || t.text || '').slice(0, 40))))
+}
+
+// The Instagram sibling throws: X and LinkedIn stand.
+{
+  reset(); genImpl = genWithIg(() => { throw new Error('Anthropic overloaded for instagram') })
+  const m = build()
+  let thrown = null, x = null
+  try { x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS }) } catch (e) { thrown = e }
+  await settle()
+  restore()
+  check('Instagram sibling failure: X draft returned and saved', !thrown && x?.platform === 'x' && rows.some(r => r.id === x.id), thrown?.message)
+  check('Instagram sibling failure: LinkedIn sibling unaffected', rows.some(r => r.platform === 'linkedin') && !rows.some(r => r.platform === 'instagram'), JSON.stringify(rows.map(r => r.platform)))
+  check('Instagram sibling failure is logged as X-unaffected', logs.some(l => /Instagram sibling of #\d+ failed \(X draft unaffected\)/.test(l)), logs.join(' | '))
+}
+
+// Types without a card: no Instagram sibling (LinkedIn may still get one).
+for (const contentType of ['macro_insight', 'news_reaction', 'build_log', 'trader_pain']) {
+  reset(); genImpl = genWithIg()
+  const m = build()
+  await m.createDraftAndNotify({ contentType, facts: contentType === 'macro_insight' ? { reasoning: 'Gold firm.' } : {}, notes: 'n' })
+  await settle()
+  restore()
+  check(`${contentType} → no Instagram sibling`, !rows.some(r => r.platform === 'instagram'), JSON.stringify(rows.map(r => r.platform)))
+}
+{
+  reset(); genImpl = genWithIg()
+  const m = build()
+  await m.createDraftAndNotify({ contentType: 'event_preview', facts: { dateLabel: 'Monday', events: [{ time: '12:30', currency: 'USD', title: 'CPI', impact: 'High' }] } })
+  await settle()
+  restore()
+  check('event_preview → Instagram sibling', rows.some(r => r.platform === 'instagram' && r.content_type === 'event_preview'), JSON.stringify(rows.map(r => `${r.platform}:${r.content_type}`)))
+}
+
+// X card render failed: no image to reuse → no Instagram sibling.
+{
+  reset(); genImpl = genWithIg(); failUploads = true
+  const m = build()
+  const x = await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
+  await settle()
+  restore()
+  check('X draft without a card → no Instagram sibling, and it says why', !x.image_url && !rows.some(r => r.platform === 'instagram') && logs.some(l => /no card to reuse/.test(l)), JSON.stringify(rows.map(r => r.platform)))
+}
+
+// IG_DAILY_CAP bounds Instagram drafts per day.
+{
+  reset(); genImpl = genWithIg()
+  const m = build()
+  await m.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
+  await settle()
+  await m.createDraftAndNotify({ contentType: 'event_preview', facts: { dateLabel: 'Monday', events: [{ time: '12:30', currency: 'USD', title: 'CPI', impact: 'High' }] } })
+  await settle()
+  restore()
+  check('cap 1: second card draft the same day → no second Instagram draft', rows.filter(r => r.platform === 'instagram').length === 1 && logs.some(l => /today already has 1 Instagram draft/.test(l)), JSON.stringify(rows.map(r => r.platform)))
+
+  reset(); genImpl = genWithIg(); igCap = 2
+  const m2 = build()
+  await m2.createDraftAndNotify({ contentType: 'bias_card', facts: FACTS })
+  await settle()
+  await m2.createDraftAndNotify({ contentType: 'event_preview', facts: { dateLabel: 'Monday', events: [{ time: '12:30', currency: 'USD', title: 'CPI', impact: 'High' }] } })
+  await settle()
+  restore()
+  check('cap 2: two Instagram drafts allowed', rows.filter(r => r.platform === 'instagram').length === 2, JSON.stringify(rows.map(r => r.platform)))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

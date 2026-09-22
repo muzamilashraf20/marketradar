@@ -10,6 +10,7 @@ import { generateDraft } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
 import { publishToLinkedIn, linkedinTokenStatus } from './social/linkedinPublisher.js'
+import { publishToInstagram, createIgTokenStore, igTokenStatus } from './social/instagramPublisher.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
@@ -606,12 +607,42 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
     createLinkedInSibling(row, { contentType, facts, notes, sourceRef, pillar })
       .catch(e => console.error(`⚠️ [social] LinkedIn sibling of #${row.id} failed (X draft unaffected): ${e?.message || e}`))
   }
+  // Same for Instagram, which is image-first: only types that come with a card. Independent of the
+  // LinkedIn sibling — either can fail without touching the other or the X draft.
+  if (platform === 'x' && INSTAGRAM_SIBLING_TYPES.has(contentType)) {
+    createInstagramSibling(row, { contentType, facts, notes, sourceRef, pillar })
+      .catch(e => console.error(`⚠️ [social] Instagram sibling of #${row.id} failed (X draft unaffected): ${e?.message || e}`))
+  }
   return row
 }
 
 // Substantive posts go to LinkedIn too. The psychology pillar stays X-only: a one-line observation
 // about revenge trading reads as a tweet, not as something to put in front of a professional feed.
 const LINKEDIN_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'macro_insight', 'weekly_scorecard', 'news_reaction', 'build_log'])
+// Instagram needs an image, and these are the types that render a card.
+const INSTAGRAM_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+
+// Up to IG_DAILY_CAP Instagram drafts a day, reusing the X draft's card. No card on the X draft
+// (the render failed) means no Instagram draft: Meta will not publish a caption without an image.
+async function createInstagramSibling(xRow, { contentType, facts, notes, sourceRef, pillar }) {
+  if (!xRow.image_url) {
+    console.log(`⏭️ [social] no Instagram sibling for #${xRow.id} — the X draft has no card to reuse`)
+    return null
+  }
+  const { data: existing, error } = await supabase.from('social_queue').select('id')
+    .eq('platform', 'instagram').in('status', ['draft', 'approved', 'publishing', 'published'])
+    .gte('created_at', `${utcDay()}T00:00:00.000Z`).limit(igDailyCap())
+  if (error) throw new Error(`instagram daily check failed: ${error.message}`)
+  if ((existing?.length || 0) >= igDailyCap()) {
+    console.log(`⏭️ [social] no Instagram sibling for #${xRow.id} — today already has ${existing.length} Instagram draft(s) (cap ${igDailyCap()})`)
+    return null
+  }
+  return createDraftAndNotify({
+    contentType, platform: 'instagram', facts, notes, pillar,
+    sourceRef: { ...sourceRef, siblingId: xRow.id },
+    reuseImage: { path: xRow.image_path, url: xRow.image_url },
+  })
+}
 
 // At most one LinkedIn draft a day, first qualifying content wins — normally the bias card, since it
 // publishes earliest. Returns the sibling row, or null when the day already has one.
@@ -732,7 +763,7 @@ async function handleSocialCallback(cq) {
     contentType: row.content_type, platform: row.platform, facts, notes: notes || '',
     sourceRef: { ...rest, regenerated_from: row.id }, regenCount: next,
     // A LinkedIn draft keeps the card it shares with its X sibling; X renders afresh as before.
-    reuseImage: row.platform === 'linkedin' && row.image_url ? { path: row.image_path, url: row.image_url } : null,
+    reuseImage: (row.platform === 'linkedin' || row.platform === 'instagram') && row.image_url ? { path: row.image_path, url: row.image_url } : null,
   }).catch(async e => {
     console.error(`❌ [social] regen of #${row.id} failed: ${e?.message || e}`)
     await sendTG(admin, `❌ Regenerate of #${esc(row.id)} failed: ${esc(e?.message || e)}`)
@@ -755,7 +786,11 @@ const socialGenerateHandler = async (req, res) => {
   if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
 
   const { contentType, notes = '', platform = 'x' } = req.body || {}
-  if (!['x', 'linkedin'].includes(platform)) return res.status(400).json({ error: 'platform must be x or linkedin' })
+  if (!['x', 'linkedin', 'instagram'].includes(platform)) return res.status(400).json({ error: 'platform must be x, linkedin or instagram' })
+  // Instagram cannot post a caption without an image, and only these types render a card.
+  if (platform === 'instagram' && !INSTAGRAM_SIBLING_TYPES.has(contentType)) {
+    return res.status(400).json({ error: `Instagram needs a card image, and ${contentType || 'that content type'} has none. Use bias_card or event_preview for Instagram.` })
+  }
   try {
     let facts = {}
     let sourceRef = { trigger: 'manual-test' }
@@ -800,18 +835,28 @@ app.get('/api/admin/whoami', async (req, res) => {
   try {
     const user = await optionalUser(req)
     const admin = isAdmin(user)
-    res.json({
+    const base = {
       admin,
       autopilot: socialAutopilotOn() ? 'on' : 'off',
       dailyCap: xDailyCap(),
       minGapMin: xMinGapMin(),
       linkedinDailyCap: linkedinDailyCap(),
+      igDailyCap: igDailyCap(),
+    }
+    // Token health is admin-only. Every page load calls this route for every visitor, and the
+    // Instagram status needs an app_state read — neither should happen for someone who is not the admin.
+    if (!admin) return res.json(base)
+    res.json({
+      ...base,
       // Days until LINKEDIN_TOKEN_EXPIRES; negative or 0 once it is past. null when the env is unset.
       linkedinTokenDaysLeft: linkedinTokenStatus()?.daysLeft ?? null,
       linkedinTokenExpired: linkedinTokenStatus()?.expired ?? null,
+      // From the token in app_state; null until the first refresh reveals the expiry.
+      igTokenDaysLeft: (await refreshIgTokenStatus())?.daysLeft ?? null,
+      igTokenExpired: igTokenStatusCache?.expired ?? null,
     })
   } catch {
-    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin(), linkedinDailyCap: linkedinDailyCap(), linkedinTokenDaysLeft: null, linkedinTokenExpired: null })
+    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin(), linkedinDailyCap: linkedinDailyCap(), igDailyCap: igDailyCap() })
   }
 })
 
@@ -1144,6 +1189,31 @@ const socialAutopilotOn = () => process.env.SOCIAL_AUTOPILOT === 'on'
 const xDailyCap = () => Number(process.env.X_DAILY_CAP) || 5
 const xMinGapMin = () => Number(process.env.X_MIN_GAP_MIN) || 90
 const linkedinDailyCap = () => Number(process.env.LINKEDIN_DAILY_CAP) || 1
+const igDailyCap = () => Number(process.env.IG_DAILY_CAP) || 1
+
+// Instagram's long-lived token is refreshed by the server itself, so the live copy lives in
+// app_state ('ig_token'); IG_ACCESS_TOKEN only seeds it. The save is awaited, unlike the
+// fire-and-forget snapshot helper: a refreshed token lost to a failed write would leave the old one
+// to expire.
+const IG_TOKEN_KEY = 'ig_token'
+const igTokens = createIgTokenStore({
+  load: () => v2LoadSnapshot(IG_TOKEN_KEY),
+  save: async value => {
+    const { error } = await supabase.from('app_state').upsert({ key: IG_TOKEN_KEY, value, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+    if (error) throw new Error(`saving the Instagram token failed: ${error.message}`)
+  },
+})
+
+// Instagram takes JPEG only. The publisher converts each card and hands the bytes here to be stored
+// next to the PNGs, under cards/ig/, at a public URL Meta can fetch.
+async function uploadIgJpeg(buffer, index = 0) {
+  const path = `cards/ig/${Date.now()}-${index}.jpg`
+  const { error } = await supabase.storage.from(SOCIAL_BUCKET).upload(path, buffer, { contentType: 'image/jpeg', upsert: false })
+  if (error) throw new Error(`Instagram JPEG upload failed: ${error.message}`)
+  const { data } = supabase.storage.from(SOCIAL_BUCKET).getPublicUrl(path)
+  if (!data?.publicUrl) throw new Error('Instagram JPEG upload returned no public URL')
+  return data.publicUrl
+}
 
 // What differs between platforms. Pacing, caps and the posting call are per platform; the claim,
 // the guardrail re-check and the no-retry rule are shared and live in publishNextFor.
@@ -1165,6 +1235,25 @@ const SOCIAL_PLATFORMS = {
     publish: publishToLinkedIn,
     url: id => `https://www.linkedin.com/feed/update/${id}`,
   },
+  instagram: {
+    // No minimum gap, like LinkedIn: at one post a day the cap is the pacing.
+    label: 'Instagram', cap: igDailyCap, capDmKey: 'social_cap_dm_date_instagram', minGapMin: null,
+    blocked: () => (igTokenStatusCache?.expired ? `token expired on ${igTokenStatusCache.expiresAt.slice(0, 10)} — regenerate it in the Meta app dashboard` : null),
+    publish: ({ text, imageUrl }) => publishToInstagram(
+      { caption: text, imageUrls: imageUrl ? [imageUrl] : [] },
+      { uploadJpeg: uploadIgJpeg, token: igTokens.token },
+    ),
+    // Instagram's media id is not a URL fragment; the permalink comes back from the publisher.
+    url: (id, result) => result?.permalink || `https://www.instagram.com/ (media ${id})`,
+  },
+}
+
+// The Instagram token's status, read once per publisher tick and by whoami. Cached here so the
+// synchronous `blocked` check above can use it.
+let igTokenStatusCache = null
+async function refreshIgTokenStatus() {
+  try { igTokenStatusCache = igTokenStatus(await igTokens.current()) } catch { igTokenStatusCache = null }
+  return igTokenStatusCache
 }
 
 // Put a claimed row back in the queue for later. Used by the pacing checks, which run AFTER the
@@ -1194,8 +1283,9 @@ async function processSocialQueue() {
       console.log(`📭 [social] autopilot OFF — ${count ?? 0} approved rows waiting`)
       return
     }
+    await refreshIgTokenStatus()
     // At most one row per platform per run. Sequential, and each platform's failure is contained,
-    // so a LinkedIn problem never delays or blocks an X post.
+    // so a LinkedIn or Instagram problem never delays or blocks an X post.
     for (const platform of Object.keys(SOCIAL_PLATFORMS)) {
       try { await publishNextFor(platform) }
       catch (e) { console.error(`❌ [social] ${platform} run error: ${e?.message || e}`) }
@@ -1281,11 +1371,13 @@ async function publishNextFor(platform) {
         return
       }
 
-      const { id: externalId } = await cfg.publish({ text: row.text, imageUrl: row.image_url || null })
-      const url = cfg.url(externalId)
-      const { error: doneErr } = await supabase.from('social_queue')
-        .update({ status: 'published', external_id: String(externalId), published_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() })
-        .eq('id', row.id)
+      const result = await cfg.publish({ text: row.text, imageUrl: row.image_url || null })
+      const externalId = result.id
+      const url = cfg.url(externalId, result)
+      const done = { status: 'published', external_id: String(externalId), published_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() }
+      // Instagram returns a permalink separately from its media id; keep it for the Studio link.
+      if (result.permalink) done.source_ref = { ...(row.source_ref || {}), permalink: result.permalink }
+      const { error: doneErr } = await supabase.from('social_queue').update(done).eq('id', row.id)
       // The post is already public here. If this write fails the row stays 'publishing', which no
       // run will pick up again — deliberately, since re-posting would duplicate it.
       if (doneErr) console.error(`🚨 [social] #${row.id} POSTED (${url}) but the row update failed: ${doneErr.message} — fix by hand`)
@@ -1316,6 +1408,35 @@ async function checkLinkedInToken() {
     console.warn(`⚠️ [social] LinkedIn token ${when}`)
     if (admin) await sendTG(admin, `🔑 <b>LinkedIn token ${esc(when)}</b>\n\nRe-run the LinkedIn token script and update LINKEDIN_ACCESS_TOKEN and LINKEDIN_TOKEN_EXPIRES on Railway.`)
   } catch (e) { console.error(`⚠️ [social] LinkedIn token check failed: ${e?.message || e}`) }
+}
+
+// Instagram long-lived tokens last 60 days and can be refreshed by the server once they are at least
+// 24 hours old (Meta's rule). Refreshing weekly keeps the token far from expiry without hammering
+// the endpoint. A freshly seeded env token has no refreshedAt, so it is refreshed on the first check
+// — if Meta says it is too new, that is reported and tried again on the next check.
+const IG_REFRESH_AFTER_DAYS = 7
+const IG_REFRESH_FAIL_KEY = 'ig_token_refresh_fail_date'
+async function maintainIgToken() {
+  try {
+    const rec = await igTokens.current()
+    if (!rec?.token) return
+    const ageDays = rec.refreshedAt ? (Date.now() - Date.parse(rec.refreshedAt)) / 86400000 : Infinity
+    if (ageDays >= IG_REFRESH_AFTER_DAYS) {
+      try {
+        const next = await igTokens.refresh()
+        console.log(`🔑 [social] Instagram token refreshed — valid until ${next.expiresAt || 'unknown'}`)
+      } catch (e) {
+        console.error(`⚠️ [social] Instagram token refresh failed: ${e?.message || e}`)
+        const today = utcDay()
+        if ((await v2LoadSnapshot(IG_REFRESH_FAIL_KEY)) !== today) {   // one DM per day
+          v2SaveSnapshot(IG_REFRESH_FAIL_KEY, today)
+          const admin = v2AdminChat()
+          if (admin) await sendTG(admin, `🔑 <b>Instagram token refresh failed</b>\n\n${esc(e?.message || e)}\n\nIf it keeps failing, regenerate the token in the Meta app dashboard and update IG_ACCESS_TOKEN on Railway.`)
+        }
+      }
+    }
+    await refreshIgTokenStatus()
+  } catch (e) { console.error(`⚠️ [social] Instagram token check failed: ${e?.message || e}`) }
 }
 
 // Put a failed row back in the queue by hand. Only 'failed' rows: a row stuck in 'publishing' may
@@ -7068,6 +7189,10 @@ app.listen(5000, () => {
   setTimeout(() => { checkLinkedInToken() }, 2 * 60 * 1000)
   setInterval(() => { checkLinkedInToken() }, 60 * 60 * 1000)
   { const s = linkedinTokenStatus(); console.log(`🔑 LinkedIn token: ${s ? (s.expired ? `EXPIRED (${s.expiresOn})` : `${s.daysLeft} days left (${s.expiresOn})`) : 'LINKEDIN_TOKEN_EXPIRES not set'}`) }
+  // Instagram token: checked every 6h, refreshed once it is 7 days old. Failures DM once a day.
+  setTimeout(() => { maintainIgToken() }, 3 * 60 * 1000)
+  setInterval(() => { maintainIgToken() }, 6 * 60 * 60 * 1000)
+  console.log(`📸 Instagram: cap ${igDailyCap()}/day, token ${process.env.IG_ACCESS_TOKEN ? 'seeded from IG_ACCESS_TOKEN (auto-refresh weekly)' : 'IG_ACCESS_TOKEN not set'}`)
   // Planner. Drafts only — everything it creates still waits for an Approve tap. State lives in
   // app_state, so the 90s boot run cannot repeat a slot the pre-restart process already filled.
   setTimeout(() => { runSocialPlanner().catch(e => console.error(`❌ [social] planner boot error: ${e?.message}`)) }, 90 * 1000)

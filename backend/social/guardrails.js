@@ -19,7 +19,9 @@ export const BANNED_PHRASES = [
   'macro map',
 ]
 
-const MAX_LENGTH = { x: 270, instagram: 2000, linkedin: 2800 }
+const MAX_LENGTH = { x: 270, instagram: 2200, linkedin: 2800 }   // Instagram: Meta's 2200-character caption limit
+// Unknown platforms get X's rule, the strictest.
+const HASHTAG_MAX = { x: 1, linkedin: 3, instagram: 8 }
 const SIMILARITY_LIMIT = 0.35
 const SHARED_RUN_WORDS = 6
 
@@ -217,9 +219,11 @@ export function validateSocialPost(text, opts) {
     soft('same_opener', `Opens with "${first}" like a recent post`)
   }
 
-  // Hashtag stacking reads as spam on X and LinkedIn and adds nothing to reach.
+  // Hashtag stacking reads as spam, but where the line sits depends on the platform: one on X,
+  // a few on LinkedIn, and on Instagram a handful is simply how posts get found.
   const tags = (text.match(/(?<![\p{L}\p{N}_&])#\p{L}[\p{L}\p{N}_]*/gu) || []).length
-  if (tags > 1) soft('hashtag_heavy', `${tags} hashtags; keep it to one`)
+  const maxTags = HASHTAG_MAX[platform] ?? HASHTAG_MAX.x
+  if (tags > maxTags) soft('hashtag_heavy', `${tags} hashtags; keep it to ${maxTags === 1 ? 'one' : `${maxTags} or fewer`}`)
 
   return { flags }
 }

@@ -16,12 +16,15 @@ import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 // Per-platform character limits for the live counter.
-const LIMITS = { x: 260, linkedin: 1300 }
-const PLATFORM_LABEL = { x: 'X', linkedin: 'LinkedIn' }
+const LIMITS = { x: 260, linkedin: 1300, instagram: 2200 }
+const PLATFORM_LABEL = { x: 'X', linkedin: 'LinkedIn', instagram: 'Instagram' }
 const PLATFORM_STYLES = {
   x: 'bg-white/5 text-slate-200 border-white/15',
   linkedin: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+  instagram: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
 }
+// Only these types come with a card, and Instagram cannot post without one.
+const INSTAGRAM_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
 const POLL_MS = 30000
 
 const CONTENT_TYPES = [
@@ -90,6 +93,14 @@ function FactsBlock({ sourceRef }) {
       )}
     </div>
   )
+}
+
+// Where a published row lives. Instagram's media id is not part of its URL, so the permalink the
+// publisher saved is used instead.
+function postUrl(row) {
+  if (row.platform === 'linkedin') return `https://www.linkedin.com/feed/update/${row.external_id}`
+  if (row.platform === 'instagram') return row.source_ref?.permalink || 'https://www.instagram.com/'
+  return `https://x.com/MuzamilAshraf_1/status/${row.external_id}`
 }
 
 function QueueRow({ row, highlight, onChanged, registerRef }) {
@@ -172,7 +183,7 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
-            rows={row.platform === 'linkedin' ? 12 : 4}
+            rows={row.platform === 'x' ? 4 : 12}
             className="w-full px-3 py-2.5 rounded-lg bg-[#030712] border border-white/10 text-sm text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 resize-y"
           />
           <div className="flex items-center justify-between mt-1.5">
@@ -248,7 +259,7 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
         )}
         {row.status === 'published' && row.external_id && (
           <a
-            href={row.platform === 'linkedin' ? `https://www.linkedin.com/feed/update/${row.external_id}` : `https://x.com/MuzamilAshraf_1/status/${row.external_id}`}
+            href={postUrl(row)}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/25 transition-colors"
@@ -373,6 +384,11 @@ export default function ContentStudio() {
   const liDays = who.linkedinTokenDaysLeft
   const liExpired = who.linkedinTokenExpired === true
   const liWarn = liExpired || (typeof liDays === 'number' && liDays <= 10)
+  // Instagram refreshes its own token weekly; this only lights up if that has been failing.
+  const igDays = who.igTokenDaysLeft
+  const igExpired = who.igTokenExpired === true
+  const igWarn = igExpired || (typeof igDays === 'number' && igDays <= 10)
+  const igNoCard = platform === 'instagram' && !INSTAGRAM_TYPES.has(contentType)
 
   return (
     <DashboardLayout>
@@ -395,7 +411,7 @@ export default function ContentStudio() {
               Autopilot {autopilotOn ? 'ON' : 'OFF'}
             </span>
             <span className="text-[11px] text-slate-500">
-              X {who.dailyCap}/day · {who.minGapMin}min gap · LinkedIn {who.linkedinDailyCap ?? 1}/day
+              X {who.dailyCap}/day · {who.minGapMin}min gap · LinkedIn {who.linkedinDailyCap ?? 1}/day · Instagram {who.igDailyCap ?? 1}/day
             </span>
             <button
               onClick={loadQueue}
@@ -425,6 +441,24 @@ export default function ContentStudio() {
           </div>
         )}
 
+        {igWarn && (
+          <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border ${
+            igExpired
+              ? 'bg-red-500/10 border-red-500/30'
+              : 'bg-amber-500/10 border-amber-500/30'
+          }`}>
+            <AlertTriangle size={15} className={`mt-0.5 shrink-0 ${igExpired ? 'text-red-400' : 'text-amber-400'}`} />
+            <div>
+              <p className={`text-sm font-semibold ${igExpired ? 'text-red-300' : 'text-amber-300'}`}>
+                {igExpired
+                  ? 'Instagram token has expired — Instagram posts will fail.'
+                  : `Instagram token expires in ${igDays} day${igDays === 1 ? '' : 's'} — the weekly auto-refresh is not keeping up.`}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Regenerate the token in the Meta app dashboard, then update IG_ACCESS_TOKEN on Railway.</p>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-xl bg-[#020617] border border-white/10 p-4">
           <h2 className="text-sm font-bold text-white mb-3">New draft</h2>
           <div className="flex flex-col sm:flex-row gap-3">
@@ -436,6 +470,7 @@ export default function ContentStudio() {
             >
               <option value="x">X</option>
               <option value="linkedin">LinkedIn</option>
+              <option value="instagram">Instagram</option>
             </select>
             <select
               value={contentType}
@@ -452,7 +487,8 @@ export default function ContentStudio() {
             />
             <button
               onClick={generate}
-              disabled={generating}
+              disabled={generating || igNoCard}
+              title={igNoCard ? 'Instagram needs a card image — pick bias_card or event_preview' : ''}
               className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-sm font-semibold text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {generating ? <Loader2 size={14} className="animate-spin" /> : <Megaphone size={14} />}
@@ -474,6 +510,7 @@ export default function ContentStudio() {
             </div>
           )}
           {generating && <p className="mt-2 text-[11px] text-slate-500">Writing three variants and fact-checking them — this takes 10–20 seconds.</p>}
+          {igNoCard && <p className="mt-2 text-[11px] text-slate-400">Instagram needs a card image, and {contentType} has none. Pick bias_card or event_preview.</p>}
         </div>
 
         {loading ? (

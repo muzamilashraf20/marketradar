@@ -119,6 +119,22 @@ expectExactly('one ZWJ emoji counts once', [], [], 'Desk is quiet today 👨‍�
 expectSoft('same opener as a past post', 'same_opener', 'Gold is bid again into the close.', { ...X, pastTexts: ['GOLD, again, leads the metals.'] })
 expectSoft('hashtag heavy', 'hashtag_heavy', 'NFP day #forex #trading', X)
 expectExactly('one hashtag and "#1" are fine', [], [], 'The #1 mistake on NFP day #forex', X)
+// Hashtag limits per platform: X >1, LinkedIn >3, Instagram >8.
+const tags = n => `Rates still favour the dollar.\n\n${Array.from({ length: n }, (_, i) => `#tag${String.fromCharCode(97 + i)}`).join(' ')}`
+const LI = { platform: 'linkedin', contentType: 'post' }
+const IG = { platform: 'instagram', contentType: 'post' }
+expectExactly('LinkedIn: 3 hashtags are fine', [], [], tags(3), LI)
+expectSoft('LinkedIn: 4 hashtags → hashtag_heavy', 'hashtag_heavy', tags(4), LI)
+expectExactly('Instagram: 8 hashtags are fine', [], [], tags(8), IG)
+expectSoft('Instagram: 9 hashtags → hashtag_heavy', 'hashtag_heavy', tags(9), IG)
+expectSoft('X is unchanged: 2 hashtags → hashtag_heavy', 'hashtag_heavy', tags(2), X)
+{
+  const r = validateSocialPost(tags(4), LI).flags.find(f => f.code === 'hashtag_heavy')
+  check('LinkedIn hashtag message names its own limit', /keep it to 3 or fewer/.test(r?.msg || ''), r?.msg)
+}
+// Instagram length: Meta's 2200-character caption limit.
+expectExactly('Instagram: 2200 chars is fine', [], [], 'a'.repeat(2200), IG)
+expectHard('Instagram: 2201 chars → too_long', 'too_long', 'a'.repeat(2201), IG)
 
 // ── Bad input ─────────────────────────────────────────────────────────────────
 for (const [label, bad] of [['null', null], ['undefined', undefined], ['empty string', ''], ['whitespace', '   '], ['number', 42]]) {

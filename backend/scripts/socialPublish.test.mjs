@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { validateSocialPost } from '../social/guardrails.js'
+import { createIgTokenStore as realCreateIgTokenStore, igTokenStatus } from '../social/instagramPublisher.js'
 
 const INDEX = fileURLToPath(new URL('../index.js', import.meta.url))
 const src = readFileSync(INDEX, 'utf8')
@@ -91,6 +92,9 @@ let publishImpl = async () => ({ id: '1770000000000000001' })
 let liCalls = []
 let liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
 let liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
+let igCalls = []
+let igImpl = async (args, deps) => ({ id: '17900000000000001', permalink: 'https://www.instagram.com/p/ABC123/' })
+let igEnvToken = 'IG_ENV_TOKEN'
 const snap = {}
 
 const env = (autopilot, extra = {}) => {
@@ -109,6 +113,10 @@ function buildModule() {
   const publishToLinkedIn = async args => { liCalls.push(args); return liImpl(args) }
   const linkedinTokenStatus = () => liToken
   const utcDay = () => new Date().toISOString().slice(0, 10)
+  // The real token store, with its app_state save pointed at the fake snapshot map and the env read
+  // controllable, so refresh → save → publish is exercised as shipped.
+  const createIgTokenStore = ({ load }) => realCreateIgTokenStore({ load, save: async v => { snap.ig_token = v }, env: () => igEnvToken })
+  const publishToInstagram = async (args, deps) => { const token = await deps.token(); igCalls.push({ ...args, token }); return igImpl(args, deps) }
   const app = { post: () => {} }
   const requireUser = async () => null
   const isAdmin = () => false
@@ -117,10 +125,10 @@ function buildModule() {
   console.warn = (...a) => { logs.push(a.join(' ')) }
   const mod = new Function(
     'supabase', 'sendTG', 'v2AdminChat', 'v2LoadSnapshot', 'v2SaveSnapshot', 'publishToX', 'validateSocialPost', 'app', 'requireUser', 'isAdmin',
-    'publishToLinkedIn', 'linkedinTokenStatus', 'utcDay',
-    `${escSrc}\n${pastSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken }`,
+    'publishToLinkedIn', 'linkedinTokenStatus', 'utcDay', 'createIgTokenStore', 'igTokenStatus', 'publishToInstagram', 'SOCIAL_BUCKET',
+    `${escSrc}\n${pastSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken, maintainIgToken }`,
   )(supabase, sendTG, v2AdminChat, v2LoadSnapshot, v2SaveSnapshot, publishToX, validateSocialPost, app, requireUser, isAdmin,
-    publishToLinkedIn, linkedinTokenStatus, utcDay)
+    publishToLinkedIn, linkedinTokenStatus, utcDay, createIgTokenStore, igTokenStatus, publishToInstagram, 'social-media')
   return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR; console.warn = REAL_WARN } }
 }
 
@@ -138,9 +146,12 @@ function reset(rows, autopilot = 'on', extra = {}) {
   dms = []; logs = []; publishCalls = []; liCalls = []
   liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
   liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
+  igCalls = []
+  igImpl = async () => ({ id: '17900000000000001', permalink: 'https://www.instagram.com/p/ABC123/' })
+  igEnvToken = 'IG_ENV_TOKEN'
   publishImpl = async () => ({ id: '1770000000000000001' })
   for (const k of Object.keys(snap)) delete snap[k]
-  env(autopilot, { X_DAILY_CAP: null, X_MIN_GAP_MIN: null, LINKEDIN_DAILY_CAP: null, ...extra })
+  env(autopilot, { X_DAILY_CAP: null, X_MIN_GAP_MIN: null, LINKEDIN_DAILY_CAP: null, IG_DAILY_CAP: null, ...extra })
 }
 const find = id => db.find(r => r.id === id)
 
@@ -421,6 +432,124 @@ const liRow = (over = {}) => row({ platform: 'linkedin', text: LI_TEXT, ...over 
   m.restore()
   check('autopilot off: LinkedIn not posted either', liCalls.length === 0 && publishCalls.length === 0 && find(2).status === 'approved')
   check('autopilot off: waiting count includes LinkedIn', logs.some(l => l.includes('autopilot OFF — 2 approved rows waiting')), logs.join(' | '))
+}
+
+// ── 9. Instagram ──────────────────────────────────────────────────────────────
+const IG_TEXT = 'EUR/USD leans lower today.\n\nThe rate gap between US and German 2Y yields keeps widening in the dollar\'s favour.\n\n#forex #eurusd #macro #trading #fx'
+const igRow = (over = {}) => row({ platform: 'instagram', text: IG_TEXT, ...over })
+const seedIgToken = async (over = {}) => {
+  const s = realCreateIgTokenStore({ load: async () => snap.ig_token, save: async v => { snap.ig_token = v }, env: () => igEnvToken })
+  await s.current()
+  Object.assign(snap.ig_token, over)
+}
+{
+  // All three platforms in one run, one row each.
+  reset([row({ id: 1 }), liRow({ id: 2 }), igRow({ id: 3 })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('X, LinkedIn and Instagram each post once in the same run', publishCalls.length === 1 && liCalls.length === 1 && igCalls.length === 1 && [1, 2, 3].every(id => find(id).status === 'published'), `${publishCalls.length}/${liCalls.length}/${igCalls.length} ${[1, 2, 3].map(id => find(id).status)}`)
+  const ig = find(3)
+  check('Instagram: external_id is the media id', ig.external_id === '17900000000000001', ig.external_id)
+  check('Instagram: permalink stored in source_ref, facts kept', ig.source_ref?.permalink === 'https://www.instagram.com/p/ABC123/' && ig.source_ref?.facts?.pair === 'EUR/USD', JSON.stringify(ig.source_ref))
+  check('Instagram: caption and card URL passed to the publisher', igCalls[0].caption === IG_TEXT && igCalls[0].imageUrls?.[0] === ig.image_url, JSON.stringify(igCalls[0]))
+  check('Instagram: DM carries the permalink', dms.some(d => /Posted to Instagram/.test(d.text) && d.text.includes('https://www.instagram.com/p/ABC123/')), JSON.stringify(dms.map(d => d.text)))
+  check('X and LinkedIn rows got no permalink written', find(1).source_ref?.permalink === undefined && find(2).source_ref?.permalink === undefined)
+}
+
+// Instagram cap is its own.
+{
+  const today = new Date().toISOString().slice(0, 10)
+  const xFull = Array.from({ length: 5 }, (_, i) => row({ id: 100 + i, status: 'published', published_at: `${today}T0${i}:00:00.000Z`, text: `old x ${i}` }))
+  const liFull = [liRow({ id: 150, status: 'published', published_at: `${today}T01:00:00.000Z`, text: 'earlier li' })]
+  reset([row({ id: 1 }), liRow({ id: 2 }), igRow({ id: 3 }), ...xFull, ...liFull])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('X and LinkedIn at their caps do not stop Instagram', find(1).status === 'approved' && find(2).status === 'approved' && find(3).status === 'published', [1, 2, 3].map(id => find(id).status).join('/'))
+
+  reset([row({ id: 1 }), igRow({ id: 3 }), igRow({ id: 160, status: 'published', published_at: `${today}T02:00:00.000Z`, text: 'earlier ig' })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('Instagram cap (1/day) reached: held, not posted; X still posts', find(3).status === 'approved' && /T06:30:00\.000Z$/.test(find(3).scheduled_for) && igCalls.length === 0 && find(1).status === 'published', `${find(3).status} ${find(3).scheduled_for}`)
+  check('Instagram cap DM is its own', dms.some(d => /Daily Instagram cap reached/.test(d.text)), JSON.stringify(dms.map(d => d.text)))
+
+  reset([igRow({ id: 3 }), igRow({ id: 160, status: 'published', published_at: `${today}T02:00:00.000Z`, text: 'earlier ig' })], 'on', { IG_DAILY_CAP: 2 })
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m3 = buildModule()
+  await m3.processSocialQueue()
+  m3.restore()
+  check('IG_DAILY_CAP=2 with 1 posted: publishes', find(3).status === 'published', find(3).status)
+}
+
+// Expired Instagram token: no API call, failed, DM.
+{
+  reset([igRow({ id: 3 })])
+  await seedIgToken({ refreshedAt: '2026-06-01T00:00:00.000Z', expiresAt: '2026-08-01T00:00:00.000Z' })
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('expired IG token → publisher never called, row failed "token expired"', igCalls.length === 0 && find(3).status === 'failed' && /token expired/.test(find(3).error), `${igCalls.length} ${find(3).status} ${find(3).error}`)
+}
+
+// Publisher failure (e.g. a container that never finishes) → failed, no retry.
+{
+  reset([igRow({ id: 3 })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  igImpl = async () => { throw new Error('Instagram container C1 did not finish processing within 60s (last status IN_PROGRESS)') }
+  const m = buildModule()
+  await m.processSocialQueue()
+  await m.processSocialQueue()
+  m.restore()
+  check('IG container timeout → row failed with the message, not retried', find(3).status === 'failed' && /did not finish processing/.test(find(3).error) && igCalls.length === 1, `${find(3).status} calls=${igCalls.length}`)
+}
+
+// Token refresh: saves to app_state, and the next post uses the refreshed token.
+{
+  const realFetch = globalThis.fetch
+  let refreshUrls = []
+  globalThis.fetch = async url => {
+    refreshUrls.push(String(url))
+    return { ok: true, status: 200, json: async () => ({ access_token: 'IG_REFRESHED_TOKEN', token_type: 'bearer', expires_in: 5184000 }) }
+  }
+  reset([igRow({ id: 3 })])
+  await seedIgToken()            // freshly seeded from env: refreshedAt null → due immediately
+  const m = buildModule()
+  await m.maintainIgToken()
+  await m.processSocialQueue()
+  m.restore()
+  globalThis.fetch = realFetch
+  check('refresh called Meta\'s refresh endpoint with the seeded token', refreshUrls.length === 1 && refreshUrls[0].includes('refresh_access_token?grant_type=ig_refresh_token&access_token=IG_ENV_TOKEN'), refreshUrls.join(' '))
+  check('refreshed token and expiry saved to app_state', snap.ig_token?.token === 'IG_REFRESHED_TOKEN' && !!snap.ig_token.refreshedAt && Date.parse(snap.ig_token.expiresAt) > Date.now() + 59 * 86400e3, JSON.stringify(snap.ig_token))
+  check('the next Instagram post uses the refreshed token', igCalls[0]?.token === 'IG_REFRESHED_TOKEN' && find(3).status === 'published', `${igCalls[0]?.token} ${find(3).status}`)
+
+  // Not due yet (refreshed 2 days ago): no call.
+  refreshUrls = []
+  globalThis.fetch = async url => { refreshUrls.push(String(url)); throw new Error('should not be called') }
+  reset([])
+  await seedIgToken({ refreshedAt: new Date(Date.now() - 2 * 86400e3).toISOString(), expiresAt: new Date(Date.now() + 58 * 86400e3).toISOString() })
+  const m2 = buildModule()
+  await m2.maintainIgToken()
+  m2.restore()
+  globalThis.fetch = realFetch
+  check('token refreshed 2 days ago → no refresh call', refreshUrls.length === 0, refreshUrls.join(' '))
+
+  // Refresh failure: never throws, DMs once a day.
+  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: { message: 'Token is too new to refresh', code: 100 } }) })
+  reset([])
+  await seedIgToken()
+  const m3 = buildModule()
+  let threw = null
+  try { await m3.maintainIgToken(); await m3.maintainIgToken() } catch (e) { threw = e }
+  m3.restore()
+  globalThis.fetch = realFetch
+  check('refresh failure does not throw out of the check', threw === null, threw?.message)
+  check('refresh failure DMs once a day, with Meta\'s message', dms.filter(d => /Instagram token refresh failed/.test(d.text)).length === 1 && dms[0].text.includes('Token is too new to refresh'), JSON.stringify(dms.map(d => d.text)))
+  check('refresh failure leaves the old token in place', snap.ig_token?.token === 'IG_ENV_TOKEN', snap.ig_token?.token)
 }
 
 // Token warning DM: once a day, only from 7 days out.
