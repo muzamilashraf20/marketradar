@@ -23,14 +23,29 @@ const PLATFORM_STYLES = {
   linkedin: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
   instagram: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
 }
-// Only these types come with a card, and Instagram cannot post without one.
-const INSTAGRAM_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+// Instagram posts carousels, written by their own generator; the X content types do not apply there.
+const INSTAGRAM_TYPES = new Set(['daily_brief', 'macro_101', 'event_explainer', 'scorecard', 'called_it'])
 const POLL_MS = 30000
 
 const CONTENT_TYPES = [
   'bias_card', 'event_preview', 'news_reaction', 'weekly_scorecard',
   'macro_insight', 'trader_pain', 'contrarian', 'build_log',
 ]
+const CAROUSEL_TYPES = ['daily_brief', 'macro_101', 'event_explainer', 'scorecard', 'called_it']
+// Which surface a row is for. A carousel and a story are both Instagram, but they publish
+// differently and are capped separately, so the queue says which at a glance.
+const FORMAT_STYLES = {
+  story: 'bg-violet-500/15 text-violet-300 border-violet-500/30',
+  carousel: 'bg-fuchsia-500/10 text-fuchsia-200 border-fuchsia-500/25',
+}
+// The editable text fields of each slide kind, in the order they appear on the card.
+const SLIDE_FIELDS = {
+  cover: [['kicker', 'line'], ['title', 'line']],
+  concept: [['label', 'line'], ['title', 'line'], ['paragraphs', 'list']],
+  points: [['label', 'line'], ['title', 'line'], ['points', 'list']],
+  callout: [['label', 'line'], ['text', 'area']],
+  cta: [['line', 'line']],
+}
 
 const STATUS_STYLES = {
   draft: 'bg-slate-500/15 text-slate-300 border-slate-500/30',
@@ -95,6 +110,131 @@ function FactsBlock({ sourceRef }) {
   )
 }
 
+// One slide's editable fields. Lists (paragraphs, points) are edited one line at a time, because
+// that is how the card lays them out — a blank line is dropped on save.
+// Mounted with a key that changes whenever the stored slide does, so the draft state starts from
+// the saved slide without an effect that re-syncs it.
+function SlideEditor({ slide, index, total, busy, error, onSave, onClose }) {
+  const [draft, setDraft] = useState(slide)
+  const fields = SLIDE_FIELDS[slide.kind] || []
+  const set = (key, value) => setDraft(d => ({ ...d, [key]: value }))
+  const dirty = JSON.stringify(draft) !== JSON.stringify(slide)
+
+  return (
+    <div className="mt-3 p-3 rounded-lg bg-[#030712] border border-white/10 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+          Slide {index + 1} / {total} · {slide.kind}
+        </span>
+        <button onClick={onClose} className="text-[11px] text-slate-500 hover:text-slate-300">close</button>
+      </div>
+
+      {fields.map(([key, shape]) => (
+        <div key={key}>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">{key}</label>
+          {shape === 'list' ? (
+            <div className="space-y-1.5">
+              {[0, 1, 2].map(i => (
+                <input
+                  key={i}
+                  value={(draft[key] || [])[i] || ''}
+                  onChange={e => {
+                    const next = [...(draft[key] || [])]
+                    next[i] = e.target.value
+                    set(key, next)
+                  }}
+                  placeholder={`${key.slice(0, -1)} ${i + 1}${i ? ' (optional)' : ''}`}
+                  className="w-full px-2.5 py-1.5 rounded-md bg-[#020617] border border-white/10 text-[13px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+                />
+              ))}
+            </div>
+          ) : shape === 'area' ? (
+            <textarea
+              rows={3}
+              value={draft[key] || ''}
+              onChange={e => set(key, e.target.value)}
+              className="w-full px-2.5 py-1.5 rounded-md bg-[#020617] border border-white/10 text-[13px] text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 resize-y"
+            />
+          ) : (
+            <input
+              value={draft[key] || ''}
+              onChange={e => set(key, e.target.value)}
+              className="w-full px-2.5 py-1.5 rounded-md bg-[#020617] border border-white/10 text-[13px] text-slate-200 focus:outline-none focus:border-cyan-500/50"
+            />
+          )}
+        </div>
+      ))}
+
+      {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
+
+      <button
+        onClick={() => onSave(draft)}
+        disabled={busy || !dirty}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        {busy ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save slide &amp; re-render
+      </button>
+    </div>
+  )
+}
+
+// The deck as thumbnails. Clicking one opens its editor; saving re-renders that slide only.
+function SlideDeck({ row, editable, onChanged }) {
+  const slides = row.source_ref?.slides || []
+  const [open, setOpen] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  if (!slides.length) return null
+
+  const saveSlide = async patch => {
+    setBusy(true); setError('')
+    try {
+      const res = await authedFetch(`${API_BASE}/api/admin/social/queue/${row.id}/slide/${open}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slide: patch }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(data.error || 'Slide save failed'); return }
+      onChanged(data.row)
+    } catch (e) {
+      setError(e?.message || 'Network error')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="mb-3">
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {slides.map((s, i) => (
+          <button
+            key={i}
+            onClick={() => editable && setOpen(open === i ? null : i)}
+            className={`relative shrink-0 rounded-lg border transition-colors ${
+              open === i ? 'border-cyan-500/60' : 'border-white/10 hover:border-white/25'
+            } ${editable ? 'cursor-pointer' : 'cursor-default'}`}
+            title={editable ? `Edit slide ${i + 1}` : `Slide ${i + 1}`}
+          >
+            <img src={s.url} alt={`slide ${i + 1}`} loading="lazy" className="w-20 rounded-lg" />
+            <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] font-bold text-slate-200">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+          </button>
+        ))}
+      </div>
+      {editable && open !== null && (
+        <SlideEditor
+          key={`${open}:${slides[open].url || ''}`}
+          slide={slides[open]}
+          index={open}
+          total={slides.length}
+          busy={busy}
+          error={error}
+          onSave={saveSlide}
+          onClose={() => { setOpen(null); setError('') }}
+        />
+      )}
+    </div>
+  )
+}
+
 // Where a published row lives. Instagram's media id is not part of its URL, so the permalink the
 // publisher saved is used instead.
 function postUrl(row) {
@@ -114,7 +254,10 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
 
   const isDraft = row.status === 'draft'
   const hardFlags = flags.filter(f => f.level === 'hard')
-  const limit = LIMITS[row.platform] || null
+  const slides = row.source_ref?.slides || []
+  const isStory = (row.format || 'feed') === 'story'
+  // A carousel's "text" is its caption, which has its own 300–900 range.
+  const limit = slides.length ? 900 : LIMITS[row.platform] || null
   const overLimit = !!limit && text.length > limit
   const dirty = text !== (row.text || '')
 
@@ -160,6 +303,11 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
           {PLATFORM_LABEL[row.platform] || row.platform}
         </span>
         <StatusBadge status={row.status} />
+        {(isStory || slides.length > 0) && (
+          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${isStory ? FORMAT_STYLES.story : FORMAT_STYLES.carousel}`}>
+            {isStory ? 'Story' : `Carousel ${slides.length}`}
+          </span>
+        )}
         <span className="text-sm font-semibold text-white">{row.content_type}</span>
         {row.pillar && <span className="text-[11px] text-slate-500">· {row.pillar}</span>}
         <span className="text-[11px] text-slate-600">· {fmtTime(row.created_at)}</span>
@@ -167,19 +315,28 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
         {row.regen_count > 0 && <span className="text-[11px] text-slate-600">· regen {row.regen_count}</span>}
       </div>
 
-      {row.image_url && (
+      {slides.length > 0 ? (
+        <SlideDeck row={row} editable={isDraft} onChanged={onChanged} />
+      ) : row.image_url ? (
         <a href={row.image_url} target="_blank" rel="noreferrer" className="block mb-3">
           <img
             src={row.image_url}
             alt="card preview"
             loading="lazy"
-            className="w-32 rounded-lg border border-white/10 hover:border-cyan-500/40 transition-colors"
+            className={`${isStory ? 'w-24' : 'w-32'} rounded-lg border border-white/10 hover:border-cyan-500/40 transition-colors`}
           />
         </a>
-      )}
+      ) : null}
 
-      {isDraft ? (
+      {isStory ? (
+        <p className="text-[12px] text-slate-500 leading-relaxed">
+          Stories carry no caption — the card above is the whole post. It publishes as a story and expires after 24 hours.
+        </p>
+      ) : isDraft ? (
         <>
+          {slides.length > 0 && (
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Caption</label>
+          )}
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
@@ -224,13 +381,13 @@ function QueueRow({ row, highlight, onChanged, registerRef }) {
       <div className="flex flex-wrap gap-2 mt-3">
         {isDraft && (
           <>
-            <button
+            {!isStory && <button
               onClick={save}
               disabled={!!busy || !dirty}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {busy === 'save' ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save
-            </button>
+            </button>}
             <button
               onClick={approve}
               disabled={!!busy || dirty}
@@ -411,7 +568,7 @@ export default function ContentStudio() {
               Autopilot {autopilotOn ? 'ON' : 'OFF'}
             </span>
             <span className="text-[11px] text-slate-500">
-              X {who.dailyCap}/day · {who.minGapMin}min gap · LinkedIn {who.linkedinDailyCap ?? 1}/day · Instagram {who.igDailyCap ?? 1}/day
+              X {who.dailyCap}/day · {who.minGapMin}min gap · LinkedIn {who.linkedinDailyCap ?? 1}/day · Instagram {who.igDailyCap ?? 1} feed + {who.igStoryDailyCap ?? 3} stories/day
             </span>
             <button
               onClick={loadQueue}
@@ -477,7 +634,7 @@ export default function ContentStudio() {
               onChange={e => setContentType(e.target.value)}
               className="px-3 py-2 rounded-lg bg-[#030712] border border-white/10 text-sm text-slate-200 focus:outline-none focus:border-cyan-500/50"
             >
-              {CONTENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              {(platform === 'instagram' ? CAROUSEL_TYPES : CONTENT_TYPES).map(t => <option key={t} value={t}>{t}</option>)}
             </select>
             <input
               value={notes}
@@ -488,7 +645,7 @@ export default function ContentStudio() {
             <button
               onClick={generate}
               disabled={generating || igNoCard}
-              title={igNoCard ? 'Instagram needs a card image — pick bias_card or event_preview' : ''}
+              title={igNoCard ? 'Instagram posts carousels — pick one of the carousel types' : ''}
               className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-sm font-semibold text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {generating ? <Loader2 size={14} className="animate-spin" /> : <Megaphone size={14} />}
@@ -509,8 +666,15 @@ export default function ContentStudio() {
               </p>
             </div>
           )}
-          {generating && <p className="mt-2 text-[11px] text-slate-500">Writing three variants and fact-checking them — this takes 10–20 seconds.</p>}
-          {igNoCard && <p className="mt-2 text-[11px] text-slate-400">Instagram needs a card image, and {contentType} has none. Pick bias_card or event_preview.</p>}
+          {generating && <p className="mt-2 text-[11px] text-slate-500">
+            {platform === 'instagram' ? 'Writing a deck, checking every slide and rendering them — this takes 20–40 seconds.' : 'Writing three variants and fact-checking them — this takes 10–20 seconds.'}
+          </p>}
+          {igNoCard && <p className="mt-2 text-[11px] text-slate-400">Instagram posts carousels, and {contentType} is not one. Pick {CAROUSEL_TYPES.join(', ')}.</p>}
+          {platform === 'instagram' && contentType === 'called_it' && !igNoCard && (
+            <p className="mt-2 text-[11px] text-slate-400">
+              &ldquo;Called it&rdquo; only runs when a published call has a recorded hit and we posted about it first — there is no manual override.
+            </p>
+          )}
         </div>
 
         {loading ? (

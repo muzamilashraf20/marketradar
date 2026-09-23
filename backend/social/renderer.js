@@ -53,7 +53,7 @@ const SESSIONS = [
   { name: 'NEW YORK', from: 12, to: 21 },
 ]
 
-export const LAYOUT_COUNTS = { bias_card: 3, event_preview: 1, weekly_scorecard: 1, news_flash: 1 }
+export const LAYOUT_COUNTS = { bias_card: 3, event_preview: 1, weekly_scorecard: 1, news_flash: 1, carousel_promo: 1 }
 
 // Read once at import; every render reuses the same buffers.
 const FONTS = [
@@ -93,10 +93,10 @@ function fillText(node, texts) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const isBlank = v => v == null || (typeof v === 'string' && !v.trim())
 
-function requireFields(kind, obj, fields, where = 'data') {
-  if (!obj || typeof obj !== 'object') throw new Error(`renderCard(${kind}): ${where} must be an object`)
+function requireFields(kind, obj, fields, where = 'data', prefix = `renderCard(${kind})`) {
+  if (!obj || typeof obj !== 'object') throw new Error(`${prefix}: ${where} must be an object`)
   const missing = fields.filter(f => isBlank(obj[f]))
-  if (missing.length) throw new Error(`renderCard(${kind}): ${where} is missing required field(s): ${missing.join(', ')}`)
+  if (missing.length) throw new Error(`${prefix}: ${where} is missing required field(s): ${missing.join(', ')}`)
 }
 
 // The direction decides the card's accent colour, everywhere on it.
@@ -691,6 +691,269 @@ function newsFlash(data, fmt) {
   }
 }
 
+// ── Carousel slides ───────────────────────────────────────────────────────────
+// A carousel is a run of 1080x1350 slides in the same visual language as the cards. Only these five
+// shapes exist, so a generator cannot invent a layout, and every slide is built from text the
+// generator wrote plus true engine facts (the five inputs, the session windows, the date). Nothing
+// here draws a number, a chart or a price line that was not handed to it.
+export const SLIDE_KINDS = ['cover', 'concept', 'points', 'callout', 'cta']
+// Meta's limit: a carousel holds at most 10 items.
+export const MAX_CAROUSEL_SLIDES = 10
+// Body copy never goes below this. A slide is read at thumbnail size on a phone.
+export const SLIDE_BODY_MIN_PX = 38
+
+const CTA_LINES = { domain: 'biasforge.co', bio: 'Link in bio', handle: '@biasforge.co' }
+
+// Size a headline by its length so a long title wraps instead of overflowing.
+const fitSize = (text, tiers) => {
+  const len = String(text ?? '').length
+  for (const [max, size] of tiers) if (len <= max) return size
+  return tiers[tiers.length - 1][1]
+}
+
+const list = (v, max) => (Array.isArray(v) ? v : [v]).map(s => String(s ?? '').trim()).filter(Boolean).slice(0, max)
+
+// "03 / 07" — every slide after the cover says where the reader is.
+const slideCounter = (n, total, accent) => `<div style="display:flex;align-items:center;gap:10px;padding:10px 20px;border-radius:999px;background:${rgba(accent, 0.12)};border:1px solid ${rgba(accent, 0.45)}">
+  <div style="display:flex;${MONO};font-size:24px;font-weight:700;color:${accent}">${txt(String(n).padStart(2, '0'))}</div>
+  <div style="display:flex;${MONO};font-size:20px;color:${MUTED}">${txt(`/ ${String(total).padStart(2, '0')}`)}</div>
+</div>`
+
+const slideHeader = (label, accent, n, total) => `<div style="display:flex;align-items:center;justify-content:space-between">
+  <div style="display:flex;align-items:center;gap:14px">${neonLine(accent, '40px')}${mono(label || 'BiasForge', MUTED, 20, 5)}</div>
+  ${n > 1 ? slideCounter(n, total, accent) : mono('Swipe', accent, 20, 5, 700)}
+</div>`
+
+// True filler #3, alongside the engine and session strips: the date the slide was built, in the
+// engine's own timezone. A screenshot passed around later still says when it was made.
+const dateStrip = (date, accent) => glass(`
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    ${mono('Engine read', accent, 18, 5, 700)}
+    ${mono(date, MUTED, 22, 4)}
+  </div>`, { accent, pad: '18px 26px', bracket: false, glow: 0.1 })
+
+const swipeCue = accent => `<div style="display:flex;align-items:center;gap:16px;padding:16px 30px;border-radius:999px;background:${rgba(accent, 0.14)};border:1px solid ${rgba(accent, 0.55)};box-shadow:0 0 24px ${rgba(accent, 0.3)}">
+  ${mono('Swipe', accent, 24, 6, 700)}
+  <div style="display:flex;font-size:28px;font-weight:700;color:${accent}">→</div>
+</div>`
+
+// With one or two items the panels grow to fill the slide instead of leaving a band of empty
+// canvas: the text sits centred in a taller panel, which reads as deliberate rather than short.
+const paragraph = (text, accent, size, grow) => glass(
+  `<div style="display:flex;font-size:${size}px;line-height:1.36;color:${TEXT}">${txt(text)}</div>`,
+  { accent, pad: '26px 30px', bracket: false, glow: 0.08, extra: grow ? 'flex-grow:1;justify-content:center' : '' })
+
+const numberedPoint = (text, i, accent, size, grow) => glass(`
+  <div style="display:flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:16px;background:${rgba(accent, 0.14)};border:1px solid ${rgba(accent, 0.5)};${MONO};font-size:30px;font-weight:700;color:${accent}">${txt(String(i + 1).padStart(2, '0'))}</div>
+  <div style="display:flex;flex:1;font-size:${size}px;line-height:1.32;color:${TEXT}">${txt(text)}</div>`,
+{ accent, dir: 'row', pad: '26px 30px', gap: 24, extra: `align-items:center${grow ? ';flex-grow:1' : ''}`, bracket: false, glow: 0.1 })
+
+// Each builder returns the slide body. `m` is the carousel meta: accent, date, total.
+const SLIDE_BUILDERS = {
+  cover(slide, m, n) {
+    const title = String(slide.title).trim()
+    const size = fitSize(title, [[28, 104], [46, 88], [70, 74], [100, 62], [Infinity, 54]])
+    const tone = slide.direction ? directionTone(slide.direction) : null
+    const badge = tone || slide.pair
+      ? `<div style="display:flex;align-items:center;gap:22px;margin-top:38px">
+          ${slide.pair ? `<div style="display:flex;font-size:64px;font-weight:700;letter-spacing:-2px;color:${TEXT}">${txt(formatPair(slide.pair))}</div>` : ''}
+          ${tone ? directionBadge(tone, 38) : ''}
+        </div>`
+      : ''
+    return `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:center">
+          <div style="display:flex;align-items:center;gap:14px">${neonLine(m.accent, '56px')}${mono(slide.kicker || 'Macro engine', m.accent, 22, 6, 700)}</div>
+          <div style="display:flex;font-size:${size}px;font-weight:700;line-height:1.08;letter-spacing:-2px;margin-top:30px;color:${TEXT}">${txt(title)}</div>
+          ${badge}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            ${swipeCue(m.accent)}
+            ${mono(`${m.total} slides`, MUTED, 20, 4)}
+          </div>
+          ${sessionStrip(m.accent, m.markers || [])}
+          ${engineStrip(m.accent, { compact: true })}
+        </div>
+      </div>`
+  },
+
+  concept(slide, m, n) {
+    const paras = list(slide.paragraphs, 3)
+    if (!paras.length) throw new Error(`renderCarousel: slide ${n} (concept) needs at least one paragraph`)
+    const size = paras.length >= 3 ? SLIDE_BODY_MIN_PX : paras.length === 2 ? 42 : 46
+    return `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        <div style="display:flex;flex-direction:column">
+          ${slideHeader(slide.label, m.accent, n, m.total)}
+          <div style="display:flex;font-size:${fitSize(slide.title, [[34, 62], [60, 54], [Infinity, 46]])}px;font-weight:700;line-height:1.14;letter-spacing:-1px;margin-top:26px;color:${TEXT}">${txt(String(slide.title).trim())}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;flex-grow:1;gap:18px;margin:26px 0">${paras.map(p => paragraph(p, m.accent, size, paras.length < 3)).join('')}</div>
+        ${engineStrip(m.accent, { compact: true })}
+      </div>`
+  },
+
+  points(slide, m, n) {
+    const points = list(slide.points, 3)
+    if (!points.length) throw new Error(`renderCarousel: slide ${n} (points) needs at least one point`)
+    const size = points.length >= 3 ? SLIDE_BODY_MIN_PX : 42
+    return `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        <div style="display:flex;flex-direction:column">
+          ${slideHeader(slide.label, m.accent, n, m.total)}
+          <div style="display:flex;font-size:${fitSize(slide.title, [[34, 62], [60, 54], [Infinity, 46]])}px;font-weight:700;line-height:1.14;letter-spacing:-1px;margin-top:26px;color:${TEXT}">${txt(String(slide.title).trim())}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;flex-grow:1;gap:18px;margin:26px 0">${points.map((p, i) => numberedPoint(p, i, m.accent, size, points.length < 3)).join('')}</div>
+        ${engineStrip(m.accent, { compact: true })}
+      </div>`
+  },
+
+  callout(slide, m, n) {
+    const text = String(slide.text).trim()
+    const size = fitSize(text, [[60, 76], [110, 64], [170, 54], [Infinity, 46]])
+    return `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        ${slideHeader(slide.label || 'What traders are watching', m.accent, n, m.total)}
+        ${glass(`
+          ${neonLine(m.accent, '72px')}
+          <div style="display:flex;font-size:${size}px;font-weight:700;line-height:1.24;letter-spacing:-1px;color:${TEXT}">${txt(text)}</div>`,
+        { accent: m.accent, pad: '44px 44px', gap: 30, glow: 0.3, extra: 'flex-grow:1;justify-content:center;margin:26px 0' })}
+        <div style="display:flex;flex-direction:column;gap:18px">
+          ${dateStrip(m.date, m.accent)}
+          ${engineStrip(m.accent, { compact: true })}
+        </div>
+      </div>`
+  },
+
+  cta(slide, m, n) {
+    const line = String(slide.line || 'The macro read, every session.').trim()
+    return `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        ${slideHeader(slide.label || 'BiasForge', m.accent, n, m.total)}
+        <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:center;align-items:center">
+          ${img(LOGO_URI, 132, 132)}
+          <div style="display:flex;font-size:76px;font-weight:700;letter-spacing:-2px;margin-top:28px;color:${TEXT}">BiasForge</div>
+          <div style="display:flex;font-size:40px;line-height:1.3;margin-top:20px;text-align:center;color:${MUTED}">${txt(line)}</div>
+          <div style="display:flex;align-items:center;gap:16px;margin-top:34px">
+            ${glass(mono(CTA_LINES.domain, m.accent, 30, 4, 700), { accent: m.accent, pad: '18px 28px', bracket: false, glow: 0.2 })}
+            ${glass(mono(CTA_LINES.bio, MUTED, 26, 4), { accent: MUTED, pad: '18px 28px', bracket: false, glow: 0.06 })}
+            ${glass(mono(CTA_LINES.handle, MUTED, 26, 4), { accent: MUTED, pad: '18px 28px', bracket: false, glow: 0.06 })}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          ${dateStrip(m.date, m.accent)}
+          ${engineStrip(m.accent, { compact: true })}
+        </div>
+      </div>`
+  },
+}
+
+const SLIDE_REQUIRED = { cover: ['title'], concept: ['title'], points: ['title'], callout: ['text'], cta: [] }
+
+// Accent: an explicit colour, else the direction's colour, else cyan.
+const ACCENTS = { cyan: CYAN, emerald: EMERALD, amber: AMBER, red: RED }
+function carouselAccent(meta = {}) {
+  if (typeof meta.accent === 'string') {
+    const a = meta.accent.trim().toLowerCase()
+    if (ACCENTS[a]) return ACCENTS[a]
+    if (/^#[0-9a-f]{6}$/i.test(a)) return a
+  }
+  if (meta.direction) return directionTone(meta.direction).color
+  return CYAN
+}
+
+function slideMarkup(slide, meta, n, total) {
+  if (!slide || typeof slide !== 'object') throw new Error(`renderCarousel: slide ${n} must be an object`)
+  const kind = String(slide.kind || '').trim()
+  if (!SLIDE_BUILDERS[kind]) throw new Error(`renderCarousel: slide ${n} has unknown kind "${kind}" (expected ${SLIDE_KINDS.join(', ')})`)
+  requireFields(kind, slide, SLIDE_REQUIRED[kind], 'slide', `renderCarousel: slide ${n} (${kind})`)
+  const accent = carouselAccent(meta)
+  const m = { accent, total, date: cardDate(meta.date) }
+  const body = SLIDE_BUILDERS[kind](slide, m, n)
+  // The glow follows the eye: high on a cover, centred on a statement, low on a list.
+  const glow = kind === 'cover' ? [300, 380] : kind === 'callout' ? [540, 620] : [540, 900]
+  return frame(body, { fmt: 'post', accent, glowX: glow[0], glowY: glow[1], date: m.date })
+}
+
+function checkSlides(slides) {
+  if (!Array.isArray(slides) || !slides.length) throw new Error('renderCarousel: slides must be a non-empty array')
+  if (slides.length > MAX_CAROUSEL_SLIDES) {
+    throw new Error(`renderCarousel: ${slides.length} slides, but Instagram carousels hold at most ${MAX_CAROUSEL_SLIDES}`)
+  }
+  return slides
+}
+
+// The node tree for one slide, exported for the same reason buildCardTree is: a test can read what
+// satori was given rather than guessing from pixels.
+export function buildSlideTree(slide, meta = {}, n = 1, total = 1) {
+  TEXTS = []
+  try {
+    const markup = slideMarkup(slide, meta, n, total)
+    const node = html(Object.assign([markup], { raw: [markup] }))
+    return fillText(node, TEXTS)
+  } finally {
+    TEXTS = null
+  }
+}
+
+// One slide as a PNG buffer. Same size as a feed card (1080x1350).
+export async function renderSlide(slide, meta = {}, n = 1, total = 1) {
+  const tree = buildSlideTree(slide, meta, n, total)
+  const { width, height } = cardSize('post')
+  const svg = await satori(tree, { width, height, fonts: FONTS })
+  return new Resvg(svg, { fitTo: { mode: 'width', value: width }, font: { loadSystemFonts: false } }).render().asPng()
+}
+
+// Same, with text left as <text> elements, for the layout checks in renderCarousels.js.
+export async function renderSlideSvg(slide, meta = {}, n = 1, total = 1) {
+  const { width, height } = cardSize('post')
+  return satori(buildSlideTree(slide, meta, n, total), { width, height, fonts: FONTS, embedFont: false })
+}
+
+// Every slide, in order, as PNG buffers. Rendered one at a time: satori and resvg are synchronous
+// CPU work, and rendering ten at once on Railway's shared CPU only makes them all slower.
+export async function renderCarousel(slides, meta = {}) {
+  checkSlides(slides)
+  const out = []
+  for (const [i, slide] of slides.entries()) out.push(await renderSlide(slide, meta, i + 1, slides.length))
+  return out
+}
+
+// ── carousel_promo (story) ────────────────────────────────────────────────────
+// The story that points at a carousel: the cover's own title and kicker, plus "New post →".
+function carouselPromo(data, fmt) {
+  requireFields('carousel_promo', data, ['title'])
+  const accent = carouselAccent(data)
+  const title = String(data.title).trim()
+  const count = Number(data.slideCount)
+  return {
+    glow: [540, 760], accent,
+    body: `
+      <div style="display:flex;flex-direction:column;flex-grow:1;justify-content:space-between">
+        <div style="display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:14px">${neonLine(accent, '56px')}${mono(data.kicker || 'New on the feed', accent, 24, 6, 700)}</div>
+          <div style="display:flex;font-size:${fitSize(title, [[30, 100], [50, 86], [80, 70], [Infinity, 58]])}px;font-weight:700;line-height:1.1;letter-spacing:-2px;margin-top:30px;color:${TEXT}">${txt(title)}</div>
+        </div>
+        ${glass(`
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div style="display:flex;align-items:center;gap:20px">
+              ${img(LOGO_URI, 76, 76)}
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;font-size:46px;font-weight:700;color:${TEXT}">New post →</div>
+                ${mono(Number.isFinite(count) ? `${count} slides · on the profile` : 'On the profile', MUTED, 22, 4)}
+              </div>
+            </div>
+            ${mono(CTA_LINES.handle, accent, 26, 4, 700)}
+          </div>`, { accent, pad: '34px 38px', glow: 0.3 })}
+        <div style="display:flex;flex-direction:column;gap:20px">
+          ${dateStrip(cardDate(data.date), accent)}
+          ${engineStrip(accent, { compact: true })}
+        </div>
+      </div>`,
+  }
+  void fmt
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 function buildMarkup(kind, data, layoutIndex, fmt) {
   if (!FORMATS[fmt]) throw new Error(`renderCard: unknown format "${fmt}" (expected post or story)`)
@@ -704,8 +967,9 @@ function buildMarkup(kind, data, layoutIndex, fmt) {
     }
     case 'event_preview':
     case 'weekly_scorecard':
-    case 'news_flash': {
-      const build = { event_preview: eventPreview, weekly_scorecard: weeklyScorecard, news_flash: newsFlash }[kind]
+    case 'news_flash':
+    case 'carousel_promo': {
+      const build = { event_preview: eventPreview, weekly_scorecard: weeklyScorecard, news_flash: newsFlash, carousel_promo: carouselPromo }[kind]
       const out = build(data, fmt)
       return frame(out.body, { fmt, accent: out.accent, glowX: out.glow[0], glowY: out.glow[1] + (fmt === 'story' ? 250 : 0), date: cardDate(data.date) })
     }

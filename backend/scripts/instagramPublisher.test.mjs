@@ -7,7 +7,7 @@
 import { PNG } from 'pngjs'
 import jpeg from 'jpeg-js'
 import { renderCard } from '../social/renderer.js'
-import { pngToJpeg, publishToInstagram, createIgTokenStore, igTokenStatus, IG_GRAPH_VERSION } from '../social/instagramPublisher.js'
+import { pngToJpeg, publishToInstagram, publishStory, createIgTokenStore, igTokenStatus, IG_GRAPH_VERSION } from '../social/instagramPublisher.js'
 
 let pass = 0, fail = 0
 function check(name, ok, detail = '') {
@@ -175,6 +175,57 @@ const graph = c => c.url.startsWith('https://graph.instagram.com/')
   let e3; try { await s3.token() } catch (err) { e3 = err.message }
   check('no token anywhere → clear error', /IG_ACCESS_TOKEN/.test(e3 || ''), e3)
   check('igTokenStatus is null before the expiry is known', igTokenStatus({ token: 't', expiresAt: null }) === null)
+}
+
+// ── Stories ───────────────────────────────────────────────────────────────────
+// Per Meta's IG User Media reference (Image Story Containers, read September 2026): a story is
+// image_url + media_type=STORIES, no caption field, and the 4:5…1.91:1 feed ratio rule does not
+// apply to it.
+const STORY_CARD = await renderCard('bias_card', { pair: 'EURUSD', direction: 'BEARISH', confidence: 78, grade: 'A-', driver: 'Rate gap widening', date: '2026-09-22' }, { format: 'story' })
+{
+  reset()
+  // The fake fetch hands back the feed card by default; a story needs the 9:16 one.
+  const storyFetch = async (url, init) => (String(url).startsWith('https://bucket.example/story')
+    ? { ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => STORY_CARD.buffer.slice(STORY_CARD.byteOffset, STORY_CARD.byteOffset + STORY_CARD.byteLength) }
+    : fakeFetch(url, init))
+  statusScript = [{ status_code: 'IN_PROGRESS' }, { status_code: 'FINISHED' }]
+  const r = await publishStory({ imageUrl: 'https://bucket.example/story.png' }, deps({ fetchImpl: storyFetch }))
+  const create = calls.find(c => c.url.endsWith('/1789/media'))
+  const publish = calls.find(c => c.url.endsWith('/1789/media_publish'))
+  check('story: returns { id, permalink, story: true }', r.id === 'MEDIA_900' && r.story === true && r.permalink === 'https://www.instagram.com/p/ABC123/', JSON.stringify(r))
+  check('story: container is media_type=STORIES with the image url', create?.body?.media_type === 'STORIES' && create.body.image_url === 'https://bucket.example/social-media/cards/ig/x-0.jpg', JSON.stringify(create?.body))
+  check('story: no caption is sent — a story has no caption field', !('caption' in (create?.body || {})), JSON.stringify(create?.body))
+  check('story: the 9:16 card is accepted, converted to JPEG first', uploads.length === 1 && uploads[0].jpeg, JSON.stringify(uploads))
+  check('story: polled to FINISHED, then published with creation_id', calls.filter(c => c.url.includes('status_code')).length === 2 && publish?.body?.creation_id === 'C1', JSON.stringify(publish?.body))
+
+  // A feed-shaped card in a story is Instagram's business (it crops), not an error — but it warns.
+  reset()
+  const warned = []
+  const realWarn = console.warn
+  console.warn = (...a) => warned.push(a.join(' '))
+  await publishStory({ imageUrl: 'https://bucket.example/card.png' }, deps())
+  console.warn = realWarn
+  check('story: a non-9:16 image still posts, with a warning about cropping', warned.some(w => /recommends 9:16/.test(w)) && calls.some(c => c.url.endsWith('/media_publish')), warned.join(' | '))
+
+  // The things that must fail before any request.
+  reset()
+  let e1; try { await publishStory({}, deps()) } catch (err) { e1 = err.message }
+  check('story: no image → refused before any request', /needs an image/.test(e1 || '') && calls.length === 0, e1)
+  reset()
+  let e2; try { await publishStory({ imageUrl: 'https://bucket.example/story.png' }, deps({ userId: '' })) } catch (err) { e2 = err.message }
+  check('story: no IG_USER_ID → clear error, no request', /IG_USER_ID/.test(e2 || '') && calls.length === 0, e2)
+
+  // A Graph refusal (e.g. an account type that cannot publish stories) surfaces as a clear error
+  // rather than a silent success — the queue stores it on the row.
+  reset()
+  graphError = { status: 400, error: { message: 'Unsupported post request', code: 100, error_subcode: 33 } }
+  let e3; try { await publishStory({ imageUrl: 'https://bucket.example/story.png' }, deps()) } catch (err) { e3 = err.message }
+  check('story: a Graph refusal becomes a clear error naming the step', /story container failed \(100\/33\)/.test(e3 || '') && !calls.some(c => c.url.includes('media_publish')), e3)
+
+  reset()
+  graphError = { status: 401, error: { message: 'expired', code: 190 } }
+  let e4; try { await publishStory({ imageUrl: 'https://bucket.example/story.png' }, deps()) } catch (err) { e4 = err.message }
+  check('story: an expired token says so plainly', /token expired/.test(e4 || ''), e4)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

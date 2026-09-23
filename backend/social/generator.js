@@ -14,8 +14,10 @@ import { BANNED_PHRASES, validateSocialPost } from './guardrails.js'
 
 const MODEL = 'claude-sonnet-4-6'
 const MAX_TOKENS = 1500
+const CAROUSEL_MAX_TOKENS = 3000  // seven slides plus a caption, as JSON
 const FACTCHECK_MODEL = 'claude-haiku-4-5-20251001'
 const FACTCHECK_MAX_TOKENS = 800 // the per-entity evidence lines ran to ~370 tokens on a 3-event preview
+const CAROUSEL_FACTCHECK_MAX_TOKENS = 2200 // one entry per slide plus the caption, each with evidence lines
 // Posts built from opinion and notes only; there is nothing to check them against.
 const NO_FACT_TYPES = new Set(['trader_pain', 'contrarian'])
 
@@ -24,7 +26,7 @@ export const CONTENT_TYPES = ['bias_card', 'event_preview', 'weekly_scorecard', 
 // Shared rules first, then one PLATFORM RULES section chosen per platform (see PLATFORM_RULES).
 // Everything that differs between X and LinkedIn — length, shapes, hashtags — lives in that section,
 // so neither platform is told something that contradicts the other.
-const BASE_PROMPT = `You write social media posts for BiasForge (biasforge.co), a daily macro bias tool for funded and prop-firm forex and gold traders. You write as a trader talking to other traders.
+const BASE_RULES = `You write social media posts for BiasForge (biasforge.co), a daily macro bias tool for funded and prop-firm forex and gold traders. You write as a trader talking to other traders.
 
 VOICE
 - Trader to trader. Plainspoken, sharp, short sentences.
@@ -64,7 +66,11 @@ ${BANNED_PHRASES.map(p => `- "${p}"`).join('\n')}
 
 ORIGINALITY
 - Do not reuse sentences, openers or distinctive phrasing from PAST POSTS.
-- Do not start a variant with the same first word as any past post.
+- Do not start a variant with the same first word as any past post.`
+
+// Everything above holds for carousels too; only the output shape below is specific to the
+// three-variants-of-one-post flow.
+const BASE_PROMPT = `${BASE_RULES}
 
 OUTPUT
 - Produce exactly 3 variants. Each must be a DIFFERENT shape, chosen from the shapes listed in PLATFORM RULES.
@@ -348,12 +354,12 @@ Use "grounded": true for a draft that passes and false for one that fails. One e
 
 // Returns one { grounded, issue } per text (null where the checker gave no answer), or null if the
 // check could not run. Never throws: an API hiccup here must not block a draft.
-async function factCheck(anthropic, trackAI, facts, texts, mode = 'grounding') {
+async function factCheck(anthropic, trackAI, facts, texts, mode = 'grounding', maxTokens = FACTCHECK_MAX_TOKENS) {
   try {
     const edu = mode === 'education'
     const m = await anthropic.messages.create({
       model: FACTCHECK_MODEL,
-      max_tokens: FACTCHECK_MAX_TOKENS,
+      max_tokens: maxTokens,
       temperature: 0, // a checker should give the same answer every time
       system: edu ? EDU_CHECK_SYSTEM : FACTCHECK_SYSTEM,
       messages: [{ role: 'user', content: edu ? eduCheckPrompt(facts, texts) : factCheckPrompt(facts, texts) }],
@@ -364,7 +370,7 @@ async function factCheck(anthropic, trackAI, facts, texts, mode = 'grounding') {
     const checks = parseChecks((m.content || []).filter(b => b.type === 'text').map(b => b.text).join(''), texts.length)
     if (!checks) {
       console.warn(m.stop_reason === 'max_tokens'
-        ? `[social] fact check hit max_tokens (${FACTCHECK_MAX_TOKENS}) before finishing; continuing without it`
+        ? `[social] fact check hit max_tokens (${maxTokens}) before finishing; continuing without it`
         : '[social] fact check returned unparseable JSON; continuing without it')
     }
     return checks
@@ -440,4 +446,350 @@ export async function generateDraft({ contentType, platform = 'x', facts = {}, n
   variants = await withFlags(second)
   chosen = choose(variants)
   return { variants, chosen, failed: !chosen }
+}
+
+// ============================================================================
+// 📚 INSTAGRAM CAROUSELS
+// ============================================================================
+// A carousel is a deck of slides plus one caption, written in a single model call and then checked
+// the same way a post is: guardrails on every slide and on the caption, a Haiku fact check against
+// the same FACTS the writer saw, and — for macro_101 — the stricter claim check that refuses
+// invented specifics outright.
+//
+// The renderer owns the layouts (cover / concept / points / callout / cta); the model only fills
+// them. It never picks a slide kind that does not exist, and it never supplies a number: every
+// figure on a deck comes from FACTS, which the caller assembles.
+
+export const CAROUSEL_TYPES = ['daily_brief', 'macro_101', 'event_explainer', 'scorecard', 'called_it']
+// Meta's carousel limit. The renderer enforces it again at render time.
+export const CAROUSEL_MAX_SLIDES = 10
+const CAPTION_MIN = 300
+const CAPTION_MAX = 900
+const CAPTION_TAGS_MIN = 5
+const CAPTION_TAGS_MAX = 8
+// Field lengths the layouts can actually hold. Over-long text is not truncated silently — it is a
+// hard flag, so the model rewrites it rather than the card cutting a sentence in half.
+const SLIDE_LIMITS = { kicker: 30, label: 34, title: 80, paragraph: 240, point: 130, text: 200, line: 70 }
+// Types with no FACTS to ground against are checked for invented specifics instead.
+const CAROUSEL_EDU_TYPES = new Set(['macro_101'])
+
+const CAROUSEL_RULES = `CAROUSEL RULES — INSTAGRAM
+You write a deck of slides and one caption. The slides are drawn by our own card renderer, so you
+fill fixed layouts; you never describe a design, a colour, an emoji or an image.
+
+SLIDE KINDS — use only these, with exactly these fields:
+- {"kind":"cover","kicker":"2-3 words","title":"the hook, max ${SLIDE_LIMITS.title} chars"}
+- {"kind":"concept","label":"2-4 words","title":"max ${SLIDE_LIMITS.title} chars","paragraphs":["1 to 3 short paragraphs, each max ${SLIDE_LIMITS.paragraph} chars"]}
+- {"kind":"points","label":"2-4 words","title":"max ${SLIDE_LIMITS.title} chars","points":["1 to 3 lines, each max ${SLIDE_LIMITS.point} chars"]}
+- {"kind":"callout","label":"2-4 words","text":"ONE statement, max ${SLIDE_LIMITS.text} chars"}
+- {"kind":"cta","line":"one line about what BiasForge does, max ${SLIDE_LIMITS.line} chars"}
+
+DECK RULES
+- The FIRST slide is always a cover. The LAST slide is always a cta. Never more than ${CAROUSEL_MAX_SLIDES} slides.
+- One idea per slide. A slide is read in about two seconds on a phone.
+- Write in sentences, not fragments. No bullet symbols, no numbering, no markdown, no emoji.
+- The deck must make sense read straight through, and every middle slide must earn its place.
+- Nothing on a slide may be a number that is not in FACTS.
+
+CAPTION RULES
+- ${CAPTION_MIN} to ${CAPTION_MAX} characters, counting spaces and line breaks.
+- The FIRST LINE is the hook and must stand on its own: Instagram hides the rest behind "more".
+- Short paragraphs with blank lines between them. The caption adds context — it does not repeat the slides line by line.
+- The LAST line is ${CAPTION_TAGS_MIN} to ${CAPTION_TAGS_MAX} hashtags, all on that one line, and hashtags appear nowhere else.
+- You may write "Save this" or "Share this with" AT MOST ONCE in the whole caption, or not at all.
+- No links, no URLs and no domain names anywhere in the caption.
+
+OUTPUT
+- Output ONLY minified JSON in exactly this form: {"caption":"...","slides":[{"kind":"cover","kicker":"...","title":"..."}]}
+- No preamble, no explanation, no markdown, no code fences.`
+
+const carouselSystem = () => `${BASE_RULES}\n\n${CAROUSEL_RULES}`
+
+// What the writer is asked for per type, and which facts it may see. `slides` is the allowed slide
+// count; the checks below verify the deck's shape, never its wording.
+const CAROUSEL_TASKS = {
+  daily_brief: {
+    slides: [6, 7],
+    facts: f => ({
+      ...pick(f, ['dateLabel']),
+      bias: pick(f.bias || {}, ['pair', 'direction', 'confidence', 'grade', 'reasoning']),
+      events: pickEach(f.events, ['time', 'currency', 'title', 'forecast', 'previous', 'impact']),
+      // The raw headline is deliberately absent: the news slide is our paraphrase of what it means.
+      news: pickEach(f.news, ['oneliner', 'marketTags', 'impactScore']),
+      mover: f.mover ? pick(f.mover, ['label', 'assets']) : undefined,
+    }),
+    brief: `Write today's macro brief for Instagram.
+Slide plan, in this order (drop a slide only when FACTS has nothing for it):
+1. cover — the date and what today is about.
+2. concept — today's bias: the pair, the direction, and the ONE driver from FACTS.bias.reasoning. confidence is a 40-92 strength score for how well the inputs agree, never a percentage and never a win rate.
+3. concept — the news that matters and WHY it matters for FX. Paraphrase FACTS.news in your own words; never restate a headline and never name an outlet.
+4. points — what is still ahead on the calendar today, from FACTS.events, with each time as it appears in FACTS (UTC). Never predict a number or say whether it beats the forecast.
+5. concept — the market mover from FACTS.mover and which assets it touches.
+6. callout — one honest line on what traders are watching from here. No prediction.
+7. cta.`,
+  },
+
+  macro_101: {
+    slides: [6, 8],
+    facts: f => pick(f, ['topic', 'angle']),
+    brief: `Teach one macro idea, FACTS.topic, to funded and prop-firm traders.
+Slide plan, in this order:
+1. cover — the idea as a question a trader would actually ask.
+2-4. concept — build the mechanism one step at a time. FACTS.angle says what the deck must make clear. Define every technical term the first time you use it.
+5. points — how traders use it, in their analysis or their risk, never as a trade call.
+6. callout — the common mistake people make with this idea.
+7. cta.
+- NO specific historical numbers, dates, years, named events, statistics or percentages anywhere, including the caption. Explain the mechanism in general terms; the lesson must hold without them.
+- No predictions about current markets, no mention of today's prices or today's bias.`,
+  },
+
+  event_explainer: {
+    slides: [5, 7],
+    facts: f => ({ ...pick(f, ['dateLabel']), event: pick(f.event || {}, ['time', 'currency', 'title', 'forecast', 'previous', 'impact']) }),
+    brief: `Explain one high-impact event on today's calendar, FACTS.event.
+Slide plan, in this order:
+1. cover — the event and its time, exactly as FACTS gives it (UTC).
+2. concept — what the release actually measures, in plain English.
+3. points — which pairs and assets tend to react, and through what mechanism.
+4. concept — what traders watch when it lands: the gap between the forecast and the release, and what separates a lasting repricing from a knee-jerk move.
+5. callout — one honest line. Say plainly that this is not a prediction of the number or the direction.
+6. cta.
+- You may quote FACTS.event.forecast and FACTS.event.previous, labelled plainly as forecast and previous so they cannot be read as results.
+- NEVER predict the number, the direction, or whether it beats or misses.`,
+  },
+
+  scorecard: {
+    slides: [5, 7],
+    facts: f => ({ ...pick(f, ['rangeLabel']), rows: pickEach(f.rows, ['date', 'pair', 'direction', 'outcome']) }),
+    brief: `Show the week's calls, hits and misses alike, from FACTS.rows.
+Slide plan:
+1. cover — the week's range from FACTS.rangeLabel.
+2-3. points — the calls, at most three per slide, one honest line each: the date, the pair, the direction, and how it resolved. A miss is written as plainly as a hit.
+4. callout — one honest line about the week. A week is a small sample and says little either way.
+5. cta.
+- NO aggregate anywhere, including the caption: no percentage, no win rate, no hit count, no "X of Y", no totals, no streak.
+- outcome "open" means the call has not resolved yet. Say so; do not guess how it will end.`,
+  },
+
+  called_it: {
+    slides: [5, 7],
+    facts: f => ({
+      call: pick(f.call || {}, ['pair', 'direction', 'publishedAt', 'reasoning', 'outcome']),
+      priorPost: pick(f.priorPost || {}, ['contentType', 'publishedAt', 'subject']),
+    }),
+    brief: `Show one call that was published before the move and later recorded as a hit.
+Slide plan:
+1. cover — that we flagged this before the move. No boast beyond that.
+2. concept — what we posted and when, using the exact date and time in FACTS.priorPost.publishedAt.
+3. concept — what the reasoning said, from FACTS.call.reasoning.
+4. concept — what the outcome was, stated plainly as the recorded outcome in FACTS.call.outcome and nothing more.
+5. callout — that not every call lands, and that the misses are published every week in the scorecard.
+6. cta.
+- NEVER describe what the market did beyond the recorded outcome. No pips, no percentage, no "ran X", no size of move, no streak, no "again".
+- Do not re-interpret, re-forecast or extend the call. It resolved; that is the whole story.
+- No gloating. The honest line on slide 5 is not optional.`,
+  },
+}
+
+// ── Parsing and shape checks ──────────────────────────────────────────────────
+// Over-long text is kept (up to a sane ceiling) rather than cut, so deckFlags can flag it and the
+// model rewrites it. Silently truncating would put half a sentence on a card.
+const str = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max * 3)
+const strList = (v, max, limit) => (Array.isArray(v) ? v : [v]).map(s => str(s, limit)).filter(Boolean).slice(0, max)
+
+// Returns { caption, slides } with each slide reduced to the fields its layout reads, or null when
+// nothing usable parsed.
+function parseCarousel(raw) {
+  const obj = parseLooseJson(raw)
+  if (!obj || !Array.isArray(obj.slides)) return null
+  const slides = []
+  for (const s of obj.slides) {
+    const kind = String(s?.kind || '').trim().toLowerCase()
+    if (kind === 'cover') slides.push({ kind, kicker: str(s.kicker, SLIDE_LIMITS.kicker), title: str(s.title, SLIDE_LIMITS.title) })
+    else if (kind === 'concept') slides.push({ kind, label: str(s.label, SLIDE_LIMITS.label), title: str(s.title, SLIDE_LIMITS.title), paragraphs: strList(s.paragraphs, 3, SLIDE_LIMITS.paragraph) })
+    else if (kind === 'points') slides.push({ kind, label: str(s.label, SLIDE_LIMITS.label), title: str(s.title, SLIDE_LIMITS.title), points: strList(s.points, 3, SLIDE_LIMITS.point) })
+    else if (kind === 'callout') slides.push({ kind, label: str(s.label, SLIDE_LIMITS.label), text: str(s.text, SLIDE_LIMITS.text) })
+    else if (kind === 'cta') slides.push({ kind, line: str(s.line, SLIDE_LIMITS.line) })
+    else slides.push({ kind: kind || 'unknown' })
+  }
+  const caption = String(obj.caption ?? '').trim()
+  if (!slides.length || !caption) return null
+  return { caption, slides }
+}
+
+// Everything a reader sees on one slide, as one string, for the guardrails and the fact check.
+export function slideText(slide) {
+  if (!slide || typeof slide !== 'object') return ''
+  const parts = [slide.kicker, slide.label, slide.title, slide.text, slide.line, ...(slide.paragraphs || []), ...(slide.points || [])]
+  return parts.filter(Boolean).join(' ').trim()
+}
+
+// Deck shape: the kinds that exist, the cover/cta bookends, the slide count, and every field within
+// the length its layout can hold. All hard — a deck that fails here cannot be rendered as written.
+function deckFlags(slides, [min, max]) {
+  const out = []
+  const hard = msg => out.push({ level: 'hard', code: 'deck_shape', msg })
+  if (slides.length > CAROUSEL_MAX_SLIDES) hard(`${slides.length} slides; Instagram carousels hold at most ${CAROUSEL_MAX_SLIDES}`)
+  else if (slides.length < min || slides.length > max) hard(`${slides.length} slides; this deck needs ${min}-${max}`)
+  if (slides[0]?.kind !== 'cover') hard(`the first slide is "${slides[0]?.kind || 'missing'}"; it must be a cover`)
+  if (slides[slides.length - 1]?.kind !== 'cta') hard(`the last slide is "${slides[slides.length - 1]?.kind || 'missing'}"; it must be a cta`)
+  slides.forEach((s, i) => {
+    const at = `slide ${i + 1}`
+    if (!['cover', 'concept', 'points', 'callout', 'cta'].includes(s.kind)) { hard(`${at}: unknown kind "${s.kind}"`); return }
+    if (s.kind === 'cover' && !s.title) hard(`${at}: the cover has no title`)
+    if (s.kind === 'concept' && (!s.title || !s.paragraphs.length)) hard(`${at}: a concept slide needs a title and at least one paragraph`)
+    if (s.kind === 'points' && (!s.title || !s.points.length)) hard(`${at}: a points slide needs a title and at least one point`)
+    if (s.kind === 'callout' && !s.text) hard(`${at}: the callout has no text`)
+    if (s.kind === 'cover' && i > 0) hard(`${at}: only the first slide may be a cover`)
+    if (s.kind === 'cta' && i < slides.length - 1) hard(`${at}: only the last slide may be a cta`)
+    for (const [field, limit] of Object.entries(SLIDE_LIMITS)) {
+      for (const v of [s[field]].flat().filter(x => typeof x === 'string')) {
+        if (v.length > limit) hard(`${at}: ${field} is ${v.length} chars, the layout holds ${limit}`)
+      }
+    }
+  })
+  return out
+}
+
+// Caption rules specific to a carousel caption, on top of validateSocialPost.
+export function captionFlags(caption) {
+  const out = []
+  const hard = (code, msg) => out.push({ level: 'hard', code, msg })
+  const text = String(caption ?? '')
+  const tagRe = /(?<![\p{L}\p{N}_&])#\p{L}[\p{L}\p{N}_]*/gu
+
+  if (text.trim().length < CAPTION_MIN) hard('caption_length', `caption is ${text.trim().length} chars; the minimum is ${CAPTION_MIN}`)
+  else if (text.length > CAPTION_MAX) hard('caption_length', `caption is ${text.length} chars; the maximum is ${CAPTION_MAX}`)
+
+  const nonEmpty = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const last = nonEmpty[nonEmpty.length - 1] || ''
+  const lastTags = (last.match(tagRe) || []).length
+  const allTags = (text.match(tagRe) || []).length
+  if (allTags !== lastTags) hard('caption_hashtags', `${allTags - lastTags} hashtag(s) outside the last line; they all belong on the final line`)
+  else if (lastTags < CAPTION_TAGS_MIN || lastTags > CAPTION_TAGS_MAX) hard('caption_hashtags', `${lastTags} hashtag(s) on the last line; the caption needs ${CAPTION_TAGS_MIN}-${CAPTION_TAGS_MAX}`)
+
+  // "Save this" / "share with" is fine once. Twice is the tone of an engagement-bait account.
+  const asks = (text.match(/\b(save (this|it)|share (this|it) with|send (this|it) to)\b/gi) || []).length
+  if (asks > 1) hard('caption_ask', `${asks} "save this" / "share with" asks; at most one`)
+
+  // Instagram makes no link in a caption clickable, and the publisher refuses one outright.
+  if (/https?:\/\//i.test(text) || /biasforge\.(co|ai)/i.test(text)) hard('caption_link', 'the caption contains a link or a domain; neither is clickable on Instagram — say "link in bio"')
+  return out
+}
+
+// One call, plus one more if the reply does not parse.
+async function generateDeck(anthropic, trackAI, user, system) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const m = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: CAROUSEL_MAX_TOKENS,
+      system,
+      messages: [{ role: 'user', content: user }],
+    })
+    if (typeof trackAI === 'function') {
+      try { trackAI('social-carousel', MODEL, m.usage) } catch {}
+    }
+    const deck = parseCarousel((m.content || []).filter(b => b.type === 'text').map(b => b.text).join(''))
+    if (deck) return deck
+  }
+  return null
+}
+
+function carouselUserMessage({ carouselType, facts, topic, notes, pastTexts }) {
+  const task = CAROUSEL_TASKS[carouselType]
+  const modelFacts = task.facts(facts)
+  const parts = [
+    'PLATFORM: instagram (carousel)',
+    `CAROUSEL TYPE: ${carouselType}`,
+    `TASK:\n${task.brief}`,
+    `FACTS:\n${JSON.stringify(modelFacts)}`,
+  ]
+  if (topic?.title) parts.push(`TOPIC: ${topic.title}${topic.angle ? `\nANGLE: ${topic.angle}` : ''}`)
+  if (notes && String(notes).trim()) parts.push(`NOTES:\n${String(notes).trim()}`)
+  parts.push(pastTexts.length
+    ? `PAST POSTS (do not reuse their sentences, openers or phrasing):\n${pastTexts.map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+    : 'PAST POSTS: none')
+  return { user: parts.join('\n\n'), modelFacts }
+}
+
+// Checks a parsed deck and returns its flags. Exported so a deck edited in the Studio can be
+// re-checked without another model call.
+export function checkCarousel({ carouselType, slides, caption, facts = {}, pastTexts = [] }) {
+  const task = CAROUSEL_TASKS[carouselType]
+  if (!task) throw new Error(`checkCarousel: unknown carouselType "${carouselType}"`)
+  const list = Array.isArray(slides) ? slides : []
+  const flags = [...deckFlags(list, task.slides), ...captionFlags(caption)]
+  const edu = CAROUSEL_EDU_TYPES.has(carouselType)
+
+  // The caption is a post in its own right: full guardrails, including the duplicate check.
+  for (const f of validateSocialPost(caption, { platform: 'instagram', contentType: carouselType, facts, pastTexts }).flags) {
+    flags.push({ ...f, msg: `caption — ${f.msg}` })
+  }
+  // Every slide goes through the same guardrails (levels, guarantees, banned phrases, .ai domains).
+  // No pastTexts there: a slide is a handful of words and would read as a duplicate of everything.
+  list.forEach((s, i) => {
+    const text = slideText(s)
+    if (!text) return
+    for (const f of validateSocialPost(text, { platform: 'instagram', contentType: carouselType, facts }).flags) {
+      flags.push({ ...f, msg: `slide ${i + 1} — ${f.msg}` })
+    }
+    if (edu) for (const why of eduSpecificClaims(text)) flags.push({ level: 'hard', code: 'claim_check', msg: `slide ${i + 1} — ${why}` })
+  })
+  if (edu) for (const why of eduSpecificClaims(caption)) flags.push({ level: 'hard', code: 'claim_check', msg: `caption — ${why}` })
+  return flags
+}
+
+// Writes one carousel: { slides, caption, flags, factcheck, failed }.
+// `failed` means it must not be used — either nothing parsed, twice over, or a hard rule was broken
+// twice over. Everything else comes back with its flags for the admin to see.
+export async function generateCarousel({ carouselType, facts = {}, topic = null, notes = '', pastTexts = [], anthropic, trackAI } = {}) {
+  const task = CAROUSEL_TASKS[carouselType]
+  if (!task) throw new Error(`generateCarousel: unknown carouselType "${carouselType}" (expected ${CAROUSEL_TYPES.join(', ')})`)
+  if (!anthropic?.messages?.create) throw new Error('generateCarousel: an Anthropic client is required')
+
+  const safeFacts = facts && typeof facts === 'object' ? facts : {}
+  const past = Array.isArray(pastTexts) ? pastTexts.filter(t => typeof t === 'string' && t.trim()) : []
+  const { user, modelFacts } = carouselUserMessage({ carouselType, facts: safeFacts, topic, notes, pastTexts: past })
+  const system = carouselSystem()
+  const edu = CAROUSEL_EDU_TYPES.has(carouselType)
+  const doFactCheck = Object.keys(modelFacts).length > 0
+
+  const check = async deck => {
+    const flags = checkCarousel({ carouselType, slides: deck.slides, caption: deck.caption, facts: safeFacts, pastTexts: past })
+    // One check over the caption and every slide, against the same facts the writer saw.
+    const texts = [deck.caption, ...deck.slides.map(slideText)]
+    const checks = doFactCheck
+      ? await factCheck(anthropic, trackAI, modelFacts, texts, edu ? 'education' : 'grounding', CAROUSEL_FACTCHECK_MAX_TOKENS)
+      : null
+    let factcheck = { status: doFactCheck ? 'unavailable' : 'skipped', issue: null }
+    if (checks) {
+      const bad = checks.map((c, i) => (c && !c.grounded ? { where: i === 0 ? 'caption' : `slide ${i}`, issue: c.issue } : null)).filter(Boolean)
+      if (bad.length) {
+        factcheck = { status: 'ungrounded', issue: bad.map(b => `${b.where}: ${b.issue}`).join('; ') }
+        for (const b of bad) flags.push({ level: 'hard', code: edu ? 'claim_check' : 'ungrounded', msg: `${b.where} — ${b.issue}` })
+      } else if (checks.some(Boolean)) factcheck = { status: 'grounded', issue: null }
+    }
+    return { ...deck, flags, factcheck, failed: flags.some(f => f.level === 'hard') }
+  }
+
+  const first = await generateDeck(anthropic, trackAI, user, system)
+  if (!first) {
+    return {
+      slides: [], caption: '', failed: true, factcheck: { status: 'skipped', issue: null },
+      flags: [{ level: 'hard', code: 'unparseable', msg: 'the model reply could not be parsed as a carousel' }],
+    }
+  }
+
+  const deck = await check(first)
+  if (!deck.failed) return deck
+
+  // Tell the model exactly which rules it broke and try once more.
+  const hardOf = d => d.flags.filter(f => f.level === 'hard')
+  const broken = [...new Set(hardOf(deck).map(f => `${f.code}: ${f.msg}`))]
+  const retryUser = `${user}\n\nYour previous attempt broke these rules. The new deck must avoid all of them:\n${broken.map(b => `- ${b}`).join('\n')}`
+  const second = await generateDeck(anthropic, trackAI, retryUser, system)
+  if (!second) return deck
+  const retried = await check(second)
+  // Keep whichever deck is cleaner, so the admin sees the better of the two even when both failed.
+  return !retried.failed || hardOf(retried).length < hardOf(deck).length ? retried : deck
 }

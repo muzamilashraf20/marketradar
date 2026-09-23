@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { validateSocialPost } from '../social/guardrails.js'
 import { createIgTokenStore as realCreateIgTokenStore, igTokenStatus } from '../social/instagramPublisher.js'
+import { checkCarousel, CAROUSEL_TYPES } from '../social/generator.js'
 
 const INDEX = fileURLToPath(new URL('../index.js', import.meta.url))
 const src = readFileSync(INDEX, 'utf8')
@@ -28,7 +29,11 @@ const pastSrc = cut('// excludeId keeps a row', "// The engine's reasoning")
 const pubSrc = cut('// 🚀 SOCIAL PUBLISHER', '// 📧 EMAIL TEMPLATE')
 // The past-event safety net lives with the triggers; the publisher calls it.
 const pastEventSrc = cut('function eventsAllPast', '// ── Scorecard')
-for (const [name, text] of [['processSocialQueue', pubSrc], ['socialPastTexts', pastSrc], ['esc', escSrc]]) {
+// The publisher's guardrail re-check, and the row shape helpers it leans on (story vs carousel vs
+// single post). Both live in the drafts section, above the publisher.
+const flagsSrc = cut('// The hard flags on a row', '// Approve / skip, shared')
+const rowShapeSrc = cut('const isStoryRow =', '// Instagram rows created today')
+for (const [name, text] of [['processSocialQueue', pubSrc], ['socialPastTexts', pastSrc], ['esc', escSrc], ['socialHardFlags', flagsSrc], ['isCarouselRow', rowShapeSrc]]) {
   if (!text.includes(name)) throw new Error(`extraction sanity check failed: ${name} not found`)
 }
 
@@ -95,6 +100,8 @@ let liCalls = []
 let liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
 let liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
 let igCalls = []
+let igStoryCalls = []
+let igStoryImpl = async () => ({ id: '17900000000000009', permalink: 'https://www.instagram.com/stories/biasforge.co/17900000000000009/', story: true })
 let igImpl = async (args, deps) => ({ id: '17900000000000001', permalink: 'https://www.instagram.com/p/ABC123/' })
 let igEnvToken = 'IG_ENV_TOKEN'
 const snap = {}
@@ -125,12 +132,15 @@ function buildModule() {
   console.log = (...a) => { logs.push(a.join(' ')) }
   console.error = (...a) => { logs.push(a.join(' ')) }
   console.warn = (...a) => { logs.push(a.join(' ')) }
+  const publishStory = async (args, deps) => { const token = await deps.token(); igStoryCalls.push({ ...args, token }); return igStoryImpl(args, deps) }
   const mod = new Function(
     'supabase', 'sendTG', 'v2AdminChat', 'v2LoadSnapshot', 'v2SaveSnapshot', 'publishToX', 'validateSocialPost', 'app', 'requireUser', 'isAdmin',
     'publishToLinkedIn', 'linkedinTokenStatus', 'utcDay', 'createIgTokenStore', 'igTokenStatus', 'publishToInstagram', 'SOCIAL_BUCKET',
-    `${escSrc}\n${pastSrc}\n${pastEventSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken, maintainIgToken }`,
+    'publishStory', 'checkCarousel', 'CAROUSEL_TYPES', 'EVENT_ROW_TYPES',
+    `${escSrc}\n${pastSrc}\n${pastEventSrc}\n${rowShapeSrc}\n${flagsSrc}\n${pubSrc}\nreturn { processSocialQueue, checkLinkedInToken, maintainIgToken, socialHardFlags }`,
   )(supabase, sendTG, v2AdminChat, v2LoadSnapshot, v2SaveSnapshot, publishToX, validateSocialPost, app, requireUser, isAdmin,
-    publishToLinkedIn, linkedinTokenStatus, utcDay, createIgTokenStore, igTokenStatus, publishToInstagram, 'social-media')
+    publishToLinkedIn, linkedinTokenStatus, utcDay, createIgTokenStore, igTokenStatus, publishToInstagram, 'social-media',
+    publishStory, checkCarousel, CAROUSEL_TYPES, new Set(['event_preview', 'event_story']))
   return { ...mod, restore: () => { console.log = REAL_LOG; console.error = REAL_ERR; console.warn = REAL_WARN } }
 }
 
@@ -149,6 +159,8 @@ function reset(rows, autopilot = 'on', extra = {}) {
   liImpl = async () => ({ id: 'urn:li:share:7000000000000000001' })
   liToken = { expiresOn: '2026-11-20', daysLeft: 60, expired: false }
   igCalls = []
+  igStoryCalls = []
+  igStoryImpl = async () => ({ id: '17900000000000009', permalink: 'https://www.instagram.com/stories/biasforge.co/17900000000000009/', story: true })
   igImpl = async () => ({ id: '17900000000000001', permalink: 'https://www.instagram.com/p/ABC123/' })
   igEnvToken = 'IG_ENV_TOKEN'
   publishImpl = async () => ({ id: '1770000000000000001' })
@@ -438,7 +450,9 @@ const liRow = (over = {}) => row({ platform: 'linkedin', text: LI_TEXT, ...over 
 
 // ── 9. Instagram ──────────────────────────────────────────────────────────────
 const IG_TEXT = 'EUR/USD leans lower today.\n\nThe rate gap between US and German 2Y yields keeps widening in the dollar\'s favour.\n\n#forex #eurusd #macro #trading #fx'
-const igRow = (over = {}) => row({ platform: 'instagram', text: IG_TEXT, ...over })
+// Every row carries a format once the social_queue migration has run: 'feed' for a post or a
+// carousel, 'story' for a story card.
+const igRow = (over = {}) => row({ platform: 'instagram', text: IG_TEXT, format: 'feed', ...over })
 const seedIgToken = async (over = {}) => {
   const s = realCreateIgTokenStore({ load: async () => snap.ig_token, save: async v => { snap.ig_token = v }, env: () => igEnvToken })
   await s.current()
@@ -486,6 +500,89 @@ const seedIgToken = async (over = {}) => {
   await m3.processSocialQueue()
   m3.restore()
   check('IG_DAILY_CAP=2 with 1 posted: publishes', find(3).status === 'published', find(3).status)
+}
+
+// ── Instagram stories and carousels ───────────────────────────────────────────
+// A story is a different surface with its own cap: three stories a day must never use up the one
+// carousel slot, and a posted carousel must never hold back a story.
+// A real macro_101 deck: six slides, cover first, cta last.
+const SLIDES = [
+  { kind: 'cover', kicker: 'Macro 101', title: 'Why do real yields move gold?' },
+  { kind: 'concept', label: 'The idea', title: 'Gold pays you nothing', paragraphs: ['Holding gold costs whatever you could have earned elsewhere.'] },
+  { kind: 'concept', label: 'The mechanism', title: 'Nominal is not the number that matters', paragraphs: ['A real yield is the nominal yield minus the inflation the market expects.'] },
+  { kind: 'points', label: 'How traders use it', title: 'Three ways this shows up', points: ['Read the real yield direction first.', 'Treat a fight against it as another driver.', 'Use it as context, not a trigger.'] },
+  { kind: 'callout', label: 'Common mistake', text: 'Reading a rate rise as bearish for gold without checking what inflation expectations did.' },
+  { kind: 'cta', line: 'The macro read, every session.' },
+].map((s, i) => ({ ...s, url: `https://x.supabase.co/s${i + 1}.png`, path: `cards/ig/s${i + 1}.png` }))
+const storyRow = (over = {}) => igRow({
+  format: 'story', content_type: 'bias_story', text: '', image_url: 'https://x.supabase.co/story.png',
+  source_ref: { facts: { pair: 'EUR/USD', direction: 'BEARISH', confidence: 78, grade: 'A-', driver: 'The rate gap keeps widening.' }, cardKind: 'bias_card' },
+  ...over,
+})
+{
+  const today = new Date().toISOString().slice(0, 10)
+  reset([storyRow({ id: 10 })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m = buildModule()
+  await m.processSocialQueue()
+  m.restore()
+  check('story: published through publishStory, not the feed publisher', igStoryCalls.length === 1 && igCalls.length === 0 && find(10).status === 'published', `${igStoryCalls.length}/${igCalls.length} ${find(10).status}`)
+  check('story: only the image is sent — a story carries no caption', igStoryCalls[0]?.imageUrl === 'https://x.supabase.co/story.png' && !('caption' in (igStoryCalls[0] || {})), JSON.stringify(igStoryCalls[0]))
+  check('story: an empty caption is not treated as a guardrail failure', find(10).error === null, find(10).error)
+
+  // Story cap: independent of the feed cap in both directions.
+  reset([storyRow({ id: 10 }), igRow({ id: 11, status: 'published', published_at: `${today}T02:00:00.000Z`, text: 'the day\'s carousel' })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m2 = buildModule()
+  await m2.processSocialQueue()
+  m2.restore()
+  check('a posted feed carousel (cap 1/1) does not block a story', find(10).status === 'published' && igStoryCalls.length === 1, `${find(10).status} ${igStoryCalls.length}`)
+
+  reset([
+    igRow({ id: 12 }),
+    ...[0, 1, 2].map(i => storyRow({ id: 20 + i, status: 'published', published_at: `${today}T0${i + 1}:00:00.000Z` })),
+  ])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m3 = buildModule()
+  await m3.processSocialQueue()
+  m3.restore()
+  check('three posted stories (story cap 3/3) do not block the day\'s feed post', find(12).status === 'published' && igCalls.length === 1, `${find(12).status} ${igCalls.length}`)
+
+  // The story cap still applies to stories.
+  reset([
+    storyRow({ id: 13 }),
+    ...[0, 1, 2].map(i => storyRow({ id: 30 + i, status: 'published', published_at: `${today}T0${i + 1}:00:00.000Z` })),
+  ])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m4 = buildModule()
+  await m4.processSocialQueue()
+  m4.restore()
+  check('story cap (3/day) reached: held, not posted', find(13).status === 'approved' && igStoryCalls.length === 0 && /T06:30:00\.000Z$/.test(find(13).scheduled_for), `${find(13).status} ${find(13).scheduled_for}`)
+
+  reset([storyRow({ id: 14 }), ...[0, 1, 2].map(i => storyRow({ id: 40 + i, status: 'published', published_at: `${today}T0${i + 1}:00:00.000Z` }))], 'on', { IG_STORY_DAILY_CAP: 4 })
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m5 = buildModule()
+  await m5.processSocialQueue()
+  m5.restore()
+  check('IG_STORY_DAILY_CAP=4 with 3 posted: publishes', find(14).status === 'published', find(14).status)
+
+  // A carousel posts every slide, in order.
+  const caption = `Gold does not pay you anything, and that is the whole reason it cares about real yields.\n\nWhen the return on a government bond rises after inflation, the cost of holding an asset that pays nothing rises with it. That is the mechanism, and it works in both directions.\n\nNothing here is a trade call.\n\n#forex #trading #macro #gold #propfirm`
+  reset([igRow({ id: 15, content_type: 'macro_101', text: caption, source_ref: { facts: { topic: 'Real yields' }, slides: SLIDES } })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m6 = buildModule()
+  await m6.processSocialQueue()
+  m6.restore()
+  check('carousel: every slide URL goes to the publisher, in order', JSON.stringify(igCalls[0]?.imageUrls) === JSON.stringify(SLIDES.map(s => s.url)), JSON.stringify(igCalls[0]?.imageUrls))
+  check('carousel: the caption is the row text, and it published', igCalls[0]?.caption === caption && find(15).status === 'published', `${find(15).status} ${find(15).error || ''}`)
+
+  // A caption edited past the carousel rules never reaches Instagram.
+  reset([igRow({ id: 16, content_type: 'macro_101', text: 'Too short, and no hashtags.', source_ref: { facts: { topic: 'Real yields' }, slides: SLIDES } })])
+  await seedIgToken({ refreshedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 50 * 86400e3).toISOString() })
+  const m7 = buildModule()
+  await m7.processSocialQueue()
+  m7.restore()
+  check('carousel: a caption that breaks the caption rules fails at publish time', find(16).status === 'failed' && /caption_length|caption_hashtags/.test(find(16).error) && igCalls.length === 0, `${find(16).status} ${find(16).error}`)
 }
 
 // Expired Instagram token: no API call, failed, DM.

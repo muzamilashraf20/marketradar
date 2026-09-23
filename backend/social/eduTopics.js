@@ -57,16 +57,20 @@ export const EDU_TOPIC_IDS = EDU_TOPICS.map(t => t.id)
 export const EDU_REPEAT_DAYS = 45
 
 // Picks the next topic. `history` is [{ id, date: 'YYYY-MM-DD' }]. Prefers topics never used, then
-// the least recently used among those outside the 45-day window. If every topic was used inside
+// the least recently used among those outside the no-repeat window. If every topic was used inside
 // the window (the list was trimmed below what the cadence needs), falls back to the least recently
 // used overall and says so, rather than posting nothing.
-export function pickEduTopic(history = [], today = new Date().toISOString().slice(0, 10), topics = EDU_TOPICS) {
+//
+// `repeatDays` is per lane: LinkedIn posts education six days a week and uses the 45-day default;
+// Instagram's macro_101 runs about three times a week and asks for 60, which the same 40 topics
+// can carry at that cadence.
+export function pickEduTopic(history = [], today = new Date().toISOString().slice(0, 10), topics = EDU_TOPICS, repeatDays = EDU_REPEAT_DAYS) {
   const lastUsed = new Map()
   for (const h of history) {
     if (!h?.id || !h?.date) continue
     if (!lastUsed.has(h.id) || h.date > lastUsed.get(h.id)) lastUsed.set(h.id, h.date)
   }
-  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - EDU_REPEAT_DAYS * 86400000).toISOString().slice(0, 10)
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - repeatDays * 86400000).toISOString().slice(0, 10)
   const byAge = [...topics].sort((a, b) => (lastUsed.get(a.id) || '').localeCompare(lastUsed.get(b.id) || ''))
   const eligible = byAge.filter(t => !lastUsed.has(t.id) || lastUsed.get(t.id) <= cutoff)
   if (eligible.length) return { topic: eligible[0], relaxed: false }

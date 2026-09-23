@@ -16,10 +16,16 @@ const cutOut = (from, to) => {
   if (a === -1 || b === -1 || b <= a) throw new Error(`index.js extraction failed at "${from}" — did the section move?`)
   return src.slice(a, b)
 }
-const block = cutOut('// ⏰ SOCIAL TRIGGERS', '// 🚀 SOCIAL PUBLISHER')
-for (const n of ['enqueueBiasCardDraft', 'runSocialPlanner', 'enqueueNewsReactions', 'nextEventPreview', 'eventsAllPast', 'draftEducation']) {
-  if (!block.includes(n)) throw new Error(`extraction sanity check failed: ${n} not found`)
+const rawBlock = cutOut('// ⏰ SOCIAL TRIGGERS', '// 🚀 SOCIAL PUBLISHER')
+for (const n of ['enqueueBiasCardDraft', 'runSocialPlanner', 'enqueueNewsReactions', 'nextEventPreview', 'eventsAllPast', 'draftEducation', 'runIgLanes']) {
+  if (!rawBlock.includes(n)) throw new Error(`extraction sanity check failed: ${n} not found`)
 }
+// The renderer loader is the one line of the block this file replaces: left as shipped it would
+// import the real satori/resvg renderer and draw a PNG on every planner run. Everything else runs
+// as written.
+const LOADER = "const loadRenderer = () => import('./social/renderer.js')"
+if (!rawBlock.includes(LOADER)) throw new Error('extraction sanity check failed: the renderer loader moved')
+const block = rawBlock.replace(LOADER, '')
 
 let pass = 0, fail = 0
 const REAL = { log: console.log, error: console.error, warn: console.warn }
@@ -31,6 +37,8 @@ function check(name, ok, detail = '') {
 // ── Fakes ─────────────────────────────────────────────────────────────────────
 let NOW = new Date('2026-09-22T09:00:00.000Z')      // a Tuesday
 let queue = [], history = [], snap = {}, drafts = [], dms = [], logs = [], calendar = [], nextQueueId = 1
+// Instagram: the decks the lanes asked for, the feed cap, and the scored news the daily brief reads.
+let carousels = [], igFeedCap = 1, scoredNews = []
 let draftImpl = null
 
 class FakeDate extends Date {
@@ -79,11 +87,22 @@ function build() {
     'supabase', 'createDraftAndNotify', 'v2LoadSnapshot', 'v2SaveSnapshot', 'sendTG', 'v2AdminChat', 'esc',
     'getEconomicCalendar', 'SOCIAL_PILLARS', 'utcDay', 'app', 'requireUser', 'isAdmin', 'Date',
     'matchMoverSrv', 'pickEduTopic', 'EDU_REPEAT_DAYS',
-    `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, enqueueNewsReactions, nextEventPreview, eventsAllPast, isSameStory, NEWS_DAILY_MAX }`,
+    // The Instagram lanes live in this same block. Their own helpers come with it; what they reach
+    // for outside it — the caps, the renderer, storage, the writer, the DM plumbing — is faked here.
+    // igLanes below decides whether this run does any Instagram work at all.
+    'igDailyCap', 'igStoryDailyCap', 'loadRenderer', 'socialUploadPng', 'socialPastTexts', 'generateCarousel',
+    'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence',
+    `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, enqueueNewsReactions, nextEventPreview, eventsAllPast, isSameStory, NEWS_DAILY_MAX, calledItCandidate, planIgCarousel }`,
   )(supabase, createDraftAndNotify, async k => snap[k] ?? null, (k, v) => { snap[k] = v }, async (c, t) => { dms.push({ text: t }) }, () => '111', s => String(s ?? ''),
     async () => calendar, { macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology' },
     () => new FakeDate().toISOString().slice(0, 10), { get: () => {} }, async () => null, () => false, FakeDate,
-    text => (/tariff/i.test(text) ? { assets: ['USD', 'Gold'] } : null), pickEduTopic, EDU_REPEAT_DAYS)
+    text => (/tariff/i.test(text) ? { assets: ['USD', 'Gold'] } : null), pickEduTopic, EDU_REPEAT_DAYS,
+    () => igFeedCap, () => 3,
+    async () => ({ renderCard: async () => Buffer.from('png'), renderCarousel: async slides => slides.map(() => Buffer.from('png')) }),
+    async () => ({ path: 'cards/ig/x.png', url: 'https://x.supabase.co/x.png' }),
+    async () => [], async args => { carousels.push(args); return { failed: false, slides: [{ kind: 'cover', title: 'x' }, { kind: 'cta', line: 'y' }], caption: 'c', flags: [], factcheck: { status: 'grounded', issue: null } } },
+    {}, () => {}, async () => 1, () => 'dm', id => ({ inline_keyboard: [[{ text: 'ok', callback_data: `sq:ap:${id}` }]] }), async () => null,
+    () => scoredNews, s => String(s || '').split('.')[0])
 }
 const restore = () => { console.log = REAL.log; console.error = REAL.error; console.warn = REAL.warn }
 const run = async fn => { const m = build(); try { return await fn(m) } finally { restore() } }
@@ -91,7 +110,7 @@ const run = async fn => { const m = build(); try { return await fn(m) } finally 
 const iso = d => new Date(d).toISOString()
 const at = (dateStr, time) => { NOW = new Date(`${dateStr}T${time}:00.000Z`) }
 const minsFromNow = m => iso(NOW.getTime() + m * 60000)
-function reset() { queue = []; history = []; snap = {}; drafts = []; dms = []; logs = []; calendar = []; nextQueueId = 1; draftImpl = null }
+function reset() { queue = []; history = []; snap = {}; drafts = []; dms = []; logs = []; calendar = []; nextQueueId = 1; draftImpl = null; carousels = []; igFeedCap = 1; scoredNews = [] }
 const qrow = over => { const r = { id: nextQueueId++, platform: 'x', content_type: 'bias_card', status: 'draft', created_at: iso(NOW), source_ref: {}, ...over }; queue.push(r); return r }
 const hist = over => history.push({ id: history.length + 1, engine: 'v2', pair: 'EURUSD', direction: 'Bearish', generated_at: iso(NOW), performance: null, reasoning: 'Rate gap.', ...over })
 const news = (over = {}) => ({ source: 'Wire', title: 'Fed holds rates and signals no cuts before December', summary: '', url: 'https://example.com/a', publishedAt: minsFromNow(-(over.minutesAgo ?? 1)), impact: 9, marketTags: ['USD↑', 'Gold↓'], oneliner: '', ...over })
@@ -327,8 +346,77 @@ const plannerLine = () => logs.filter(l => l.startsWith('[social planner]')).pop
   calendar = [cal('EUR', 120)]
   await run(m => m.runSocialPlanner())
   const line = plannerLine()
-  check('one summary line per run with every lane', /^\[social planner\] bias:done news:1\/3 event:none-ahead\(USD\) rotation:skipped\(2 drafts\) li:li-edu:drafted\(topic: .+\)$/.test(line), line)
+  check('one summary line per run with every lane', /^\[social planner\] bias:done news:1\/3 event:none-ahead\(USD\) rotation:skipped\(2 drafts\) li:li-edu:drafted\(topic: [^)]+\) ig:\S+ ig-story:.+$/.test(line), line)
+  check('the summary names both Instagram lanes', / ig:/.test(line) && / ig-story:/.test(line), line)
+  check('neither Instagram lane errored', !/ig:error/.test(line) && !/ig-story:error/.test(line), line)
   check('exactly one summary line', logs.filter(l => l.startsWith('[social planner]')).length === 1)
+}
+
+// ── 8. Which carousel Instagram gets today ────────────────────────────────────
+// One carousel a day. called_it wins when it qualifies, a USD event ahead takes the slot next, and
+// the weekday plan decides the rest — with macro_101 standing in whenever the day's own type has
+// nothing real to say.
+{
+  const pick = async () => run(m => m.planIgCarousel(new FakeDate(), NOW.getTime()))
+  const goodBias = () => hist({ trade_grade: 'A-', reasoning: 'The rate gap keeps widening. Specs are long euro.' })
+
+  // Monday, a qualifying bias, nothing on the calendar.
+  reset(); at('2026-09-21', '07:00'); goodBias()
+  let plan = await pick()
+  check('Monday with a qualifying bias → daily_brief', plan.type === 'daily_brief' && plan.facts.bias.pair === 'EURUSD', JSON.stringify(plan.type))
+  check('daily_brief facts carry the bias, the calendar and the news lane', 'bias' in plan.facts && 'events' in plan.facts && 'news' in plan.facts, Object.keys(plan.facts).join(','))
+
+  // Monday, but the day's bias is graded below B.
+  reset(); at('2026-09-21', '07:00'); hist({ trade_grade: 'D' })
+  plan = await pick()
+  check('Monday without a qualifying bias → macro_101, with the reason', plan.type === 'macro_101' && /no qualifying bias/.test(plan.reason || ''), JSON.stringify(plan))
+
+  // Tuesday teaches, whatever the bias looks like.
+  reset(); at('2026-09-22', '07:00'); goodBias()
+  plan = await pick()
+  check('Tuesday → macro_101 even with a good bias', plan.type === 'macro_101', JSON.stringify(plan.type))
+
+  // Saturday needs three resolved calls.
+  reset(); at('2026-09-26', '07:00')
+  for (const o of ['hit', 'miss', 'hit']) hist({ performance: { status: 'final', correct: o === 'hit' }, generated_at: iso(NOW.getTime() - 2 * 86400000) })
+  plan = await pick()
+  check('Saturday with 3 resolved calls → scorecard', plan.type === 'scorecard' && plan.facts.rows.length === 3, JSON.stringify(plan.type))
+
+  reset(); at('2026-09-26', '07:00')
+  hist({ performance: { status: 'final', correct: true }, generated_at: iso(NOW.getTime() - 2 * 86400000) })
+  plan = await pick()
+  check('Saturday with only 1 resolved call → macro_101, with the reason', plan.type === 'macro_101' && /only 1 resolved/.test(plan.reason || ''), JSON.stringify(plan))
+
+  // A high-impact USD event ahead takes the slot on any day.
+  reset(); at('2026-09-21', '07:00'); goodBias()
+  calendar = [cal('USD', 120)]
+  plan = await pick()
+  check('a high-impact USD event ahead takes the day\'s slot', plan.type === 'event_explainer' && plan.facts.event.currency === 'USD', JSON.stringify(plan.type))
+  check('the explainer carries that event\'s own time and numbers', plan.facts.event.title === 'CPI y/y' && plan.facts.event.forecast === '3.1%', JSON.stringify(plan.facts.event))
+
+  // A non-USD event does not.
+  reset(); at('2026-09-21', '07:00'); goodBias()
+  calendar = [cal('EUR', 120)]
+  plan = await pick()
+  check('a EUR event does not take the slot', plan.type === 'daily_brief', JSON.stringify(plan.type))
+
+  // called_it overrides everything when a resolved hit had a post before it.
+  reset(); at('2026-09-21', '07:00'); goodBias()
+  calendar = [cal('USD', 120)]
+  hist({ id: 99, performance: { status: 'final', correct: true }, generated_at: iso(NOW.getTime() - 2 * 86400000) })
+  qrow({
+    id: 90, content_type: 'news_reaction', status: 'published',
+    published_at: iso(NOW.getTime() - 2 * 86400000 - 3600000),
+    source_ref: { facts: { marketTags: ['EUR', 'USD'] } },
+  })
+  plan = await pick()
+  check('called_it overrides the day\'s slot when it qualifies', plan.type === 'called_it' && plan.facts.call.outcome === 'hit', JSON.stringify(plan.type))
+  check('the called_it plan is marked as such in source_ref', plan.sourceRef?.calledIt === true, JSON.stringify(plan.sourceRef))
+
+  // …but not twice in a week.
+  snap.ig_called_it_week = { at: iso(NOW.getTime() - 3 * 86400000) }
+  plan = await pick()
+  check('called_it does not override again within the week', plan.type === 'event_explainer', JSON.stringify(plan.type))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

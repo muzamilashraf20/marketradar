@@ -67,7 +67,11 @@ const loud = () => { console.log = REAL.log; console.warn = REAL.warn; console.e
 {
   const escSrc = cut('function esc(s)', '// Resolve the caller')
   const dmSrc = cut('// The source values the draft was written from', 'const socialKeyboard')
-  const { socialDraftMessage } = new Function('SOCIAL_MAX_REGENS', `${escSrc}\n${dmSrc}\nreturn { socialDraftMessage }`)(3)
+  // The DM builder asks what shape a row is (story / carousel / post) and what the story cap is.
+  const { socialDraftMessage } = new Function(
+    'SOCIAL_MAX_REGENS', 'isStoryRow', 'carouselSlidesOf', 'igStoryDailyCap',
+    `${escSrc}\n${dmSrc}\nreturn { socialDraftMessage }`,
+  )(3, row => String(row?.format || 'feed') === 'story', row => (Array.isArray(row?.source_ref?.slides) ? row.source_ref.slides : []), () => 3)
   const news = socialDraftMessage({ id: 7, platform: 'x', content_type: 'news_reaction', pillar: 'macro_news', text: 'Take.', source_ref: { facts: { headline: 'Fed holds' }, chosen: {} } })
   check('news DM header starts with "⚡ NEWS ·"', news.startsWith('⚡ NEWS · <b>X · news_reaction</b>'), news.slice(0, 60))
   const bias = socialDraftMessage({ id: 8, platform: 'x', content_type: 'bias_card', pillar: 'daily_bias', text: 'Take.', source_ref: { facts: { pair: 'EURUSD' }, chosen: {} } })
@@ -91,10 +95,16 @@ const loud = () => { console.log = REAL.log; console.warn = REAL.warn; console.e
     return b
   } }
   let transitions = 0
+  // socialHardFlags picks the right check per row shape; here every row is a plain X post, so it
+  // is the ordinary guardrail pass. EVENT_ROW_TYPES is what makes the past-event skip cover the
+  // Instagram event story as well as the X preview.
   const { socialApproveById } = new Function(
     'supabase', 'validateSocialPost', 'socialPastTexts', 'socialTransition', 'processSocialQueue', 'v2AdminChat', 'sendTG',
+    'socialHardFlags', 'EVENT_ROW_TYPES',
     `${escSrc}\n${pastEventSrc}\n${approveSrc}\nreturn { socialApproveById }`,
-  )(supabase, validateSocialPost, async () => [], async (id, status) => { transitions++; const r = rows.find(x => x.id === id); r.status = status; return { ...r } }, async () => {}, () => '111', async (c, t) => { dms.push(t) })
+  )(supabase, validateSocialPost, async () => [], async (id, status) => { transitions++; const r = rows.find(x => x.id === id); r.status = status; return { ...r } }, async () => {}, () => '111', async (c, t) => { dms.push(t) },
+    async (row, pastTexts) => validateSocialPost(row.text, { platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts }).flags.filter(f => f.level === 'hard'),
+    new Set(['event_preview', 'event_story']))
 
   const past = new Date(Date.now() - 3600e3).toISOString()
   rows = [{ id: 5, platform: 'x', content_type: 'event_preview', status: 'draft', text: 'Two USD prints today.', created_at: new Date().toISOString(), source_ref: { facts: { events: [{ at: past, time: past.slice(11, 16), currency: 'USD', title: 'CPI' }] } } }]

@@ -29,6 +29,11 @@ const RATIO_MIN = 4 / 5               // Meta: aspect ratio must be within 4:5 �
 const RATIO_MAX = 1.91
 const POLL_TIMEOUT_MS = 60000
 const MEDIA_FETCH_TIMEOUT_MS = 20000
+// Stories: Meta's IG User Media reference gives JPEG, 8MB, and "we recommended 9:16 to avoid
+// cropping or blank space" — the 4:5…1.91:1 feed rule does not apply to them. Anything far from
+// 9:16 is still worth saying out loud, because Instagram will crop it.
+const STORY_RATIO = 9 / 16
+const STORY_RATIO_TOLERANCE = 0.02
 
 // ── PNG → JPEG ────────────────────────────────────────────────────────────────
 // Instagram's content publishing accepts JPEG only ("JPEG is the only image format supported").
@@ -172,6 +177,26 @@ async function waitFinished(api, id, sleep, clock) {
   }
 }
 
+// Fetch one image, make sure it is a JPEG Instagram will accept, and report its size. `surface` is
+// 'feed' (the 4:5…1.91:1 rule) or 'story' (9:16 recommended, no hard rule).
+async function prepareImage(url, i, fetchImpl, surface = 'feed') {
+  const bytes = await fetchBytes(url, fetchImpl)
+  let buffer, width, height
+  if (isPng(bytes)) ({ buffer, width, height } = pngToJpeg(bytes))
+  else if (isJpeg(bytes)) { const d = jpeg.decode(bytes, { useTArray: true }); ({ width, height } = d); buffer = bytes }
+  else throw new Error(`image ${i + 1} is neither PNG nor JPEG`)
+  if (buffer.length > MAX_IMAGE_BYTES) throw new Error(`image ${i + 1} is ${(buffer.length / 1048576).toFixed(1)}MB as JPEG, over Instagram's 8MB limit`)
+  const ratio = width / height
+  if (surface === 'story') {
+    if (Math.abs(ratio - STORY_RATIO) > STORY_RATIO_TOLERANCE) {
+      console.warn(`⚠️ [instagram] story image is ${width}x${height} (${ratio.toFixed(3)}); Instagram recommends 9:16 and will crop or letterbox anything else`)
+    }
+  } else if (ratio < RATIO_MIN - 0.001 || ratio > RATIO_MAX + 0.001) {
+    throw new Error(`image ${i + 1} is ${width}x${height}; Instagram needs an aspect ratio between 4:5 and 1.91:1`)
+  }
+  return { buffer, width, height, ratio }
+}
+
 // ── Publish ───────────────────────────────────────────────────────────────────
 // Posts `caption` with one image, or a carousel when several are given. Returns { id, permalink }.
 // `deps` carries what the publisher cannot do by itself:
@@ -194,17 +219,7 @@ export async function publishToInstagram({ caption, imageUrls } = {}, deps = {})
 
   // Convert every image before touching the API, so a bad image fails the post cleanly.
   const jpegs = []
-  for (const [i, url] of urls.entries()) {
-    const bytes = await fetchBytes(url, fetchImpl)
-    let buffer, width, height
-    if (isPng(bytes)) ({ buffer, width, height } = pngToJpeg(bytes))
-    else if (isJpeg(bytes)) { const d = jpeg.decode(bytes, { useTArray: true }); ({ width, height } = d); buffer = bytes }
-    else throw new Error(`image ${i + 1} is neither PNG nor JPEG`)
-    if (buffer.length > MAX_IMAGE_BYTES) throw new Error(`image ${i + 1} is ${(buffer.length / 1048576).toFixed(1)}MB as JPEG, over Instagram's 8MB limit`)
-    const ratio = width / height
-    if (ratio < RATIO_MIN - 0.001 || ratio > RATIO_MAX + 0.001) throw new Error(`image ${i + 1} is ${width}x${height}; Instagram needs an aspect ratio between 4:5 and 1.91:1`)
-    jpegs.push({ buffer, width, height, ratio })
-  }
+  for (const [i, url] of urls.entries()) jpegs.push(await prepareImage(url, i, fetchImpl, 'feed'))
   // Meta crops every carousel item to the first item's ratio, so mixed ratios would be cut.
   if (jpegs.some(j => Math.abs(j.ratio - jpegs[0].ratio) > 0.001)) {
     throw new Error(`carousel images must share one aspect ratio (got ${jpegs.map(j => `${j.width}x${j.height}`).join(', ')})`)
@@ -236,4 +251,42 @@ export async function publishToInstagram({ caption, imageUrls } = {}, deps = {})
   let permalink = null
   try { permalink = (await api.get(mediaId, 'permalink', 'permalink')).permalink || null } catch { /* keep null */ }
   return { id: String(mediaId), permalink }
+}
+
+// Posts one image as a story. Same three steps as a feed post — container, poll, publish — with
+// media_type=STORIES, per Meta's IG User Media reference (Image Story Containers) and the content
+// publishing guide's "Story posts" section, both read September 2026.
+//
+// Differences from a feed post, all from those docs:
+//   · no caption: a story carries no caption field, so nothing is sent and nothing is lost;
+//   · no aspect-ratio rule: 9:16 is recommended, and prepareImage warns instead of refusing;
+//   · the story itself expires after 24 hours, which is Instagram's behaviour, not an error here.
+// Whether the account may publish stories at all is decided by Meta at container time: an account
+// type or permission problem comes back as a Graph error, which igError turns into a clear message
+// the queue stores on the row.
+export async function publishStory({ imageUrl } = {}, deps = {}) {
+  const {
+    uploadJpeg, token: getToken, userId = process.env.IG_USER_ID,
+    fetchImpl = fetch, sleep = ms => new Promise(r => setTimeout(r, ms)), clock = Date.now,
+  } = deps
+  const url = String(imageUrl || '').trim()
+  if (!url) throw new Error('Instagram story needs an image — this row has no card')
+  if (!String(userId || '').trim()) throw new Error('Instagram credentials missing: IG_USER_ID')
+  if (typeof uploadJpeg !== 'function' || typeof getToken !== 'function') throw new Error('publishStory: uploadJpeg and token dependencies are required')
+
+  const image = await prepareImage(url, 0, fetchImpl, 'story')
+  const publicUrl = await uploadJpeg(image.buffer, 0)
+
+  const api = makeApi(await getToken(), fetchImpl)
+  const user = String(userId).trim()
+  const { id: creationId } = await api.post(`${user}/media`, { image_url: publicUrl, media_type: 'STORIES' }, 'story container')
+  if (!creationId) throw new Error('Instagram returned no container id for the story')
+  await waitFinished(api, creationId, sleep, clock)
+
+  const { id: mediaId } = await api.post(`${user}/media_publish`, { creation_id: creationId }, 'story media_publish')
+  if (!mediaId) throw new Error('Instagram published the story but returned no media id')
+  // Live from here on: a failed permalink lookup must not turn a published story into a failure.
+  let permalink = null
+  try { permalink = (await api.get(mediaId, 'permalink', 'permalink')).permalink || null } catch { /* keep null */ }
+  return { id: String(mediaId), permalink, story: true }
 }

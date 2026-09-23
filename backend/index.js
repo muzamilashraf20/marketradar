@@ -6,11 +6,11 @@ import {
   expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import { withBudget } from './lib/withBudget.js'
-import { generateDraft } from './social/generator.js'
+import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
 import { publishToLinkedIn, linkedinTokenStatus } from './social/linkedinPublisher.js'
-import { publishToInstagram, createIgTokenStore, igTokenStatus } from './social/instagramPublisher.js'
+import { publishToInstagram, publishStory, createIgTokenStore, igTokenStatus } from './social/instagramPublisher.js'
 import { pickEduTopic, EDU_REPEAT_DAYS } from './social/eduTopics.js'
 import cors from 'cors'
 import { createClient } from '@supabase/supabase-js'
@@ -435,6 +435,9 @@ const SOCIAL_BUCKET = 'social-media'
 const SOCIAL_LAYOUT_KEY = 'social_layout_idx'
 const SOCIAL_MAX_REGENS = 3
 const SOCIAL_CARD_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+// Rows whose facts carry calendar events: a preview of events that have all happened is worse than
+// no post, on the feed and in a story alike.
+const EVENT_ROW_TYPES = new Set(['event_preview', 'event_story'])
 const SOCIAL_PILLARS = {
   bias_card: 'daily_bias', event_preview: 'calendar', weekly_scorecard: 'accountability',
   macro_insight: 'education', news_reaction: 'macro_news', trader_pain: 'trader_psychology', contrarian: 'trader_psychology', build_log: 'build_in_public',
@@ -463,7 +466,7 @@ const firstSentence = s => (String(s || '').match(/^.*?[.!?](?=\s|$)/) || [Strin
 
 // Card data per kind. bias_card gets exactly the five fields the renderer reads — invalidation stays out.
 function socialCardData(contentType, facts) {
-  if (contentType === 'bias_card') {
+  if (contentType === 'bias_card' || contentType === 'bias_story') {
     return { pair: facts.pair, direction: facts.direction, confidence: facts.confidence, grade: facts.grade, driver: facts.driver || firstSentence(facts.reasoning) }
   }
   if (contentType === 'event_preview') return { events: facts.events, dateLabel: facts.dateLabel }
@@ -498,15 +501,35 @@ function socialFactsBlock(contentType, facts = {}) {
     lines.push(`${esc(facts.pair)} · ${esc(facts.direction)} · conf ${esc(facts.confidence)} · grade ${esc(facts.grade)}`)
     const driver = facts.driver || facts.reasoning
     if (driver) lines.push(`<i>${esc(String(driver).slice(0, 400))}</i>`)
-  } else if (contentType === 'event_preview') {
+  } else if (contentType === 'event_preview' || contentType === 'event_story') {
     if (facts.dateLabel) lines.push(esc(facts.dateLabel))
     for (const e of (facts.events || []).slice(0, 6)) {
       const nums = [e.forecast && `f ${e.forecast}`, e.previous && `p ${e.previous}`].filter(Boolean).join(', ')
       lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}${e.impact ? ` [${esc(e.impact)}]` : ''}${nums ? ` (${esc(nums)})` : ''}`)
     }
-  } else if (contentType === 'weekly_scorecard') {
+  } else if (contentType === 'weekly_scorecard' || contentType === 'scorecard') {
     if (facts.rangeLabel) lines.push(esc(facts.rangeLabel))
     for (const r of (facts.rows || []).slice(0, 7)) lines.push(`• ${esc(r.date)} ${esc(r.pair)} ${esc(r.direction)} → ${esc(r.outcome)}`)
+  } else if (contentType === 'daily_brief') {
+    const b = facts.bias || {}
+    lines.push(`${esc(b.pair)} · ${esc(b.direction)} · conf ${esc(b.confidence)} · grade ${esc(b.grade)}`)
+    if (b.reasoning) lines.push(`<i>${esc(String(b.reasoning).slice(0, 300))}</i>`)
+    for (const e of (facts.events || []).slice(0, 4)) lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}`)
+    for (const n of (facts.news || []).slice(0, 2)) lines.push(`📰 ${esc(String(n.oneliner || '').slice(0, 160))} [${esc(n.impactScore)}/10]`)
+    if (facts.mover) lines.push(`🎯 ${esc(facts.mover.label)} — ${esc((facts.mover.assets || []).join(' · '))}`)
+  } else if (contentType === 'event_explainer') {
+    const e = facts.event || {}
+    const nums = [e.forecast && `f ${e.forecast}`, e.previous && `p ${e.previous}`].filter(Boolean).join(', ')
+    lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}${e.impact ? ` [${esc(e.impact)}]` : ''}${nums ? ` (${esc(nums)})` : ''}`)
+  } else if (contentType === 'called_it') {
+    const c = facts.call || {}
+    const p = facts.priorPost || {}
+    lines.push(`${esc(c.pair)} · ${esc(c.direction)} · outcome <b>${esc(c.outcome)}</b> · called ${esc(String(c.publishedAt || '').slice(0, 16))}`)
+    lines.push(`posted first: ${esc(p.contentType)} #${esc(p.rowId)} at ${esc(String(p.publishedAt || '').slice(0, 16))} (${esc(p.subject)})`)
+    if (c.reasoning) lines.push(`<i>${esc(String(c.reasoning).slice(0, 300))}</i>`)
+  } else if (contentType === 'news_flash' || contentType === 'news_story') {
+    lines.push(`<i>${esc(String(facts.summary || '').slice(0, 300))}</i>`)
+    if (facts.impactScore != null) lines.push(`impact ${esc(facts.impactScore)}/10${facts.time ? ` · ${esc(String(facts.time).slice(0, 16))}` : ''}`)
   } else {
     const keys = Object.keys(facts)
     if (keys.length) lines.push(`<code>${esc(JSON.stringify(facts).slice(0, 500))}</code>`)
@@ -514,25 +537,43 @@ function socialFactsBlock(contentType, facts = {}) {
   return lines.length ? lines.join('\n') : '<i>none</i>'
 }
 
+// One line per slide, so the deck can be checked against the album above it in the chat.
+const SLIDE_ICONS = { cover: '🅰', concept: '¶', points: '№', callout: '❝', cta: '→' }
+function carouselSlidesBlock(slides) {
+  return slides.map((s, i) => {
+    const head = s.kind === 'cta' ? s.line : s.title || s.text || ''
+    const body = s.kind === 'concept' ? (s.paragraphs || []).join(' ') : s.kind === 'points' ? (s.points || []).join(' · ') : s.kind === 'callout' ? s.text : ''
+    return `${esc(String(i + 1).padStart(2, '0'))} ${SLIDE_ICONS[s.kind] || '·'} <b>${esc(head)}</b>${body && body !== head ? `\n   <i>${esc(String(body).slice(0, 220))}</i>` : ''}`
+  }).join('\n')
+}
+
 // The whole admin DM, rebuilt from the row every time so edits after a button tap stay consistent.
 function socialDraftMessage(row, statusLine = '') {
   const ref = row.source_ref || {}
   const chosen = ref.chosen || {}
   const soft = (chosen.flags || []).filter(f => f.level === 'soft').map(f => f.code)
+  const slides = carouselSlidesOf(row)
+  const story = isStoryRow(row)
+  // Platform first, in caps: an X draft and its LinkedIn sibling come from the same facts and
+  // would otherwise look alike in the chat. News drafts are time-sensitive, so they lead with
+  // ⚡ NEWS; stories and carousels say which surface they are for, because approving one posts to
+  // a different place than the other.
+  const icon = story ? '📲 STORY · ' : slides.length ? `📚 CAROUSEL (${slides.length}) · ` : row.content_type === 'news_reaction' ? '⚡ NEWS · ' : '📝 '
   const parts = [
-    // Platform first, in caps: an X draft and its LinkedIn sibling come from the same facts and
-    // would otherwise look alike in the chat.
-    // News drafts are time-sensitive, so they lead with ⚡ NEWS and stand out in the chat.
-    `${row.content_type === 'news_reaction' ? '⚡ NEWS · ' : '📝 '}<b>${esc(String(row.platform || 'x').toUpperCase())} · ${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
-    esc(row.text),
-    // Education has no facts to check against — the topic is what to judge it by.
-    row.content_type === 'education'
-      ? `topic: ${esc(ref.facts?.topic || '—')}`
+    `${icon}<b>${esc(String(row.platform || 'x').toUpperCase())} · ${esc(row.content_type)}</b> · ${esc(row.pillar || '—')} · #${esc(row.id)}`,
+  ]
+  if (story) parts.push('<i>No caption — Instagram stories carry none. The card above is the whole post.</i>')
+  else parts.push(`${slides.length ? '<b>CAPTION</b>\n' : ''}${esc(row.text)}`)
+  if (slides.length) parts.push(`<b>SLIDES</b>\n${carouselSlidesBlock(slides)}`)
+  parts.push(
+    // Education and macro_101 have no facts to check against — the topic is what to judge them by.
+    row.content_type === 'education' || row.content_type === 'macro_101'
+      ? `topic: ${esc(ref.facts?.topic || ref.topic?.title || '—')}`
       : `<b>FACTS</b>\n${socialFactsBlock(row.content_type, ref.facts)}`,
     [soft.length ? `⚠️ soft: ${esc(soft.join(', '))}` : null,
       chosen.factcheck?.status ? `🔎 fact check: ${esc(chosen.factcheck.status)}` : null,
-      `${String(row.text || '').length} chars · regen ${esc(row.regen_count || 0)}/${SOCIAL_MAX_REGENS}`].filter(Boolean).join('\n'),
-  ]
+      story ? `story card · cap ${esc(igStoryDailyCap())}/day` : `${String(row.text || '').length} chars · regen ${esc(row.regen_count || 0)}/${SOCIAL_MAX_REGENS}`].filter(Boolean).join('\n'),
+  )
   if (statusLine) parts.push(statusLine)
   return parts.join('\n\n')
 }
@@ -628,7 +669,10 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
 // Saturday results from the planner, not copies of X drafts. Add a type here to bring siblings back.
 const LINKEDIN_SIBLING_TYPES = new Set([])
 // Instagram needs an image, and these are the types that render a card.
-const INSTAGRAM_SIBLING_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+// Empty by design since Instagram got its own content plan: the feed slot is one carousel a day
+// and the story lane is planned separately, so a sibling of an X draft would only compete with
+// them for IG_DAILY_CAP. Add a type here to bring single-card siblings back.
+const INSTAGRAM_SIBLING_TYPES = new Set([])
 
 // Up to IG_DAILY_CAP Instagram drafts a day, reusing the X draft's card. No card on the X draft
 // (the render failed) means no Instagram draft: Meta will not publish a caption without an image.
@@ -691,6 +735,21 @@ async function socialTransition(id, status) {
   return data
 }
 
+// The hard flags on a row as it stands right now, whatever shape it is. Used at approve time and
+// again at publish time, because the text can be edited in between.
+//   · a story carries no caption at all (Instagram has no caption field for one), so there is no
+//     text to check — the card was rendered from the engine's own fields;
+//   · a carousel is checked as a deck: the caption, every slide, and the deck's shape;
+//   · everything else is a single post.
+async function socialHardFlags(row, pastTexts = []) {
+  if (isStoryRow(row)) return []
+  const facts = row.source_ref?.facts || {}
+  const flags = isCarouselRow(row)
+    ? checkCarousel({ carouselType: row.content_type, slides: carouselSlidesOf(row), caption: row.text, facts, pastTexts })
+    : validateSocialPost(row.text, { platform: row.platform, contentType: row.content_type, facts, pastTexts }).flags
+  return flags.filter(f => f.level === 'hard')
+}
+
 // Approve / skip, shared by the Telegram buttons and the Studio page so the two can never drift.
 // Returns { ok } or { ok: false, code, reason } where code doubles as the HTTP status.
 async function socialApproveById(id) {
@@ -700,16 +759,13 @@ async function socialApproveById(id) {
   if (row.status !== 'draft') return { ok: false, code: 409, reason: `Already ${row.status}`, row }
   // A preview of events that have all happened is worse than no post. Caught here and again in the
   // publisher, since approval and publishing can be hours apart.
-  if (row.content_type === 'event_preview' && eventsAllPast(row)) {
+  if (EVENT_ROW_TYPES.has(row.content_type) && eventsAllPast(row)) {
     const skipped = await skipPastEventRow(row, 'approve')
     return { ok: false, code: 410, reason: 'Event already happened — draft skipped', row: skipped || { ...row, status: 'skipped' } }
   }
   // The text may have been edited since the draft was made, here or in Studio.
-  const { flags } = validateSocialPost(row.text, {
-    platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id, row.platform),
-  })
-  const hard = flags.filter(f => f.level === 'hard')
-  if (hard.length) return { ok: false, code: 422, reason: hard.map(f => `${f.code}: ${f.msg}`).join('; '), flags, row }
+  const hard = await socialHardFlags(row, await socialPastTexts(row.id, row.platform))
+  if (hard.length) return { ok: false, code: 422, reason: hard.map(f => `${f.code}: ${f.msg}`).join('; '), flags: hard, row }
   const done = await socialTransition(id, 'approved')
   if (!done) return { ok: false, code: 409, reason: 'Already handled' }
   // Don't wait up to 5 minutes for the next tick. Not awaited: the caller should return now, and the
@@ -766,6 +822,9 @@ async function handleSocialCallback(cq) {
   }
 
   // rg
+  // A story has no text to rewrite — the card is rendered from the engine's own fields, so the
+  // only sensible actions are approve and skip.
+  if (isStoryRow(row)) return answer('A story has no text to regenerate — approve it or skip it', true)
   const next = (row.regen_count || 0) + 1
   if (next > SOCIAL_MAX_REGENS) return answer(`Regen limit reached (${SOCIAL_MAX_REGENS})`, true)
   const done = await socialTransition(id, 'skipped')
@@ -773,7 +832,18 @@ async function handleSocialCallback(cq) {
   await answer('Regenerating…')
   await socialFinishMessage(cq, done, `🔄 Regenerating (${next}/${SOCIAL_MAX_REGENS}) — new draft coming`)
   // Not awaited: a generation takes 10–20s and polling must not stall for every other bot user.
-  const { facts = {}, notes = '', chosen, alternatives, ...rest } = row.source_ref || {}
+  const { facts = {}, notes = '', chosen, alternatives, topic, slides, meta, ...rest } = row.source_ref || {}
+  // A carousel is written and rendered by its own path; everything else goes through the draft path.
+  if (CAROUSEL_TYPES.includes(row.content_type)) {
+    createCarouselDraft({
+      carouselType: row.content_type, facts, topic: topic || null, notes: notes || '',
+      sourceRef: { ...rest, regenerated_from: row.id },
+    }).catch(async e => {
+      console.error(`❌ [social] carousel regen of #${row.id} failed: ${e?.message || e}`)
+      await sendTG(admin, `❌ Regenerate of #${esc(row.id)} failed: ${esc(e?.message || e)}`)
+    })
+    return
+  }
   createDraftAndNotify({
     contentType: row.content_type, platform: row.platform, facts, notes: notes || '',
     sourceRef: { ...rest, regenerated_from: row.id }, regenCount: next,
@@ -802,6 +872,45 @@ const socialGenerateHandler = async (req, res) => {
 
   const { contentType, notes = '', platform = 'x' } = req.body || {}
   if (!['x', 'linkedin', 'instagram'].includes(platform)) return res.status(400).json({ error: 'platform must be x, linkedin or instagram' })
+
+  // Instagram carousels have their own writer, facts and renderer.
+  if (platform === 'instagram' && CAROUSEL_TYPES.includes(contentType)) {
+    try {
+      const now = new Date()
+      let facts = {}
+      let topic = null
+      if (contentType === 'daily_brief') {
+        facts = await dailyBriefFacts(now.getTime())
+        if (!facts) return res.status(400).json({ error: 'No qualifying v2 bias today (grade B or better), so there is nothing to brief' })
+      } else if (contentType === 'macro_101') {
+        const r = await draftMacro101('manual')
+        if (!r.row) return res.status(422).json({ error: 'The deck was blocked by the guardrails — see the admin Telegram DM' })
+        return res.json({ success: true, row: r.row, topic: r.topic.title })
+      } else if (contentType === 'event_explainer') {
+        const { events, why } = await nextEventPreview([])
+        if (!events.length) return res.status(400).json({ error: why === 'none-ahead(USD)' ? 'No upcoming high-impact USD events today' : `The next high-impact USD event is too far off (${why.replace('next-in-', '')})` })
+        facts = { dateLabel: dateLabel(now), event: events[0] }
+      } else if (contentType === 'scorecard') {
+        const rows = await socialScorecardRows()
+        const resolved = rows.filter(r => r.outcome !== 'open')
+        if (resolved.length < 3) return res.status(400).json({ error: `Only ${resolved.length} resolved call(s) this week; a scorecard needs 3` })
+        facts = scorecardFacts(rows, now)
+      } else if (contentType === 'called_it') {
+        // Deliberately the same check the planner uses. If nothing qualifies, nothing is written:
+        // there is no manual override, because the whole point is that the outcome decides.
+        const { candidate, why } = await calledItCandidate(now.getTime())
+        if (!candidate) return res.status(400).json({ error: `No call qualifies for "called it" — ${why}` })
+        facts = candidate
+      }
+      const row = await createCarouselDraft({ carouselType: contentType, facts, topic, notes, sourceRef: { trigger: 'manual-test' } })
+      if (!row) return res.status(422).json({ error: 'The deck was blocked by the guardrails — see the admin Telegram DM' })
+      return res.json({ success: true, row })
+    } catch (e) {
+      console.error(`❌ [social ig] manual ${contentType}: ${e?.message || e}`)
+      return res.status(500).json({ error: e?.message || 'carousel generation failed' })
+    }
+  }
+
   // Instagram cannot post a caption without an image, and only these types render a card.
   if (platform === 'instagram' && !INSTAGRAM_SIBLING_TYPES.has(contentType)) {
     return res.status(400).json({ error: `Instagram needs a card image, and ${contentType || 'that content type'} has none. Use bias_card or event_preview for Instagram.` })
@@ -855,6 +964,7 @@ app.get('/api/admin/whoami', async (req, res) => {
       minGapMin: xMinGapMin(),
       linkedinDailyCap: linkedinDailyCap(),
       igDailyCap: igDailyCap(),
+      igStoryDailyCap: igStoryDailyCap(),
     }
     // Token health is admin-only. Every page load calls this route for every visitor, and the
     // Instagram status needs an app_state read — neither should happen for someone who is not the admin.
@@ -869,7 +979,7 @@ app.get('/api/admin/whoami', async (req, res) => {
       igTokenExpired: igTokenStatusCache?.expired ?? null,
     })
   } catch {
-    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin(), linkedinDailyCap: linkedinDailyCap(), igDailyCap: igDailyCap() })
+    res.json({ admin: false, autopilot: 'off', dailyCap: xDailyCap(), minGapMin: xMinGapMin(), linkedinDailyCap: linkedinDailyCap(), igDailyCap: igDailyCap(), igStoryDailyCap: igStoryDailyCap() })
   }
 })
 
@@ -887,10 +997,15 @@ app.patch('/api/admin/social/queue/:id', async (req, res) => {
     if (error) throw new Error(error.message)
     if (!row) return res.status(404).json({ error: 'Not found' })
     if (row.status !== 'draft') return res.status(400).json({ error: `Cannot edit a ${row.status} row` })
+    if (isStoryRow(row)) return res.status(400).json({ error: 'A story has no caption to edit — edit its card fields or skip it' })
 
-    const { flags } = validateSocialPost(text, {
-      platform: row.platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(id, row.platform),
-    })
+    // A carousel's text is its caption, checked as part of the deck so the caption rules
+    // (length, hashtags on the last line, one "save this") apply here too.
+    const pastTexts = await socialPastTexts(id, row.platform)
+    const facts = row.source_ref?.facts || {}
+    const flags = isCarouselRow(row)
+      ? checkCarousel({ carouselType: row.content_type, slides: carouselSlidesOf(row), caption: text, facts, pastTexts })
+      : validateSocialPost(text, { platform: row.platform, contentType: row.content_type, facts, pastTexts }).flags
     const { data: saved, error: upErr } = await supabase.from('social_queue')
       .update({ text, updated_at: new Date().toISOString() })
       .eq('id', id).eq('status', 'draft').select().maybeSingle()
@@ -900,6 +1015,56 @@ app.patch('/api/admin/social/queue/:id', async (req, res) => {
   } catch (e) {
     console.error(`❌ [social] edit #${req.params.id}: ${e?.message || e}`)
     res.status(500).json({ error: e?.message || 'edit failed' })
+  }
+})
+
+// Edit one slide of a carousel from the Studio: check the whole deck with the new slide in place,
+// re-render just that slide, and store it. The old image is left in the bucket — it costs nothing
+// and keeps the previous version recoverable if a re-render goes wrong.
+app.patch('/api/admin/social/queue/:id/slide/:index', async (req, res) => {
+  const user = await requireUser(req, res)
+  if (!user) return
+  if (!isAdmin(user)) return res.status(403).json({ error: 'Admin only' })
+  try {
+    const id = Number(req.params.id)
+    const index = Number(req.params.index)
+    const { data: row, error } = await supabase.from('social_queue').select('*').eq('id', id).maybeSingle()
+    if (error) throw new Error(error.message)
+    if (!row) return res.status(404).json({ error: 'Not found' })
+    if (row.status !== 'draft') return res.status(400).json({ error: `Cannot edit a ${row.status} row` })
+    const slides = carouselSlidesOf(row)
+    if (!slides.length) return res.status(400).json({ error: 'That row is not a carousel' })
+    if (!Number.isInteger(index) || index < 0 || index >= slides.length) return res.status(400).json({ error: `slide index must be 0-${slides.length - 1}` })
+
+    const patch = req.body?.slide && typeof req.body.slide === 'object' ? req.body.slide : null
+    if (!patch) return res.status(400).json({ error: 'slide object is required' })
+    // The kind and the stored image belong to the deck, not to the edit.
+    const { kind, path, url, ...fields } = patch
+    const next = slides.map((s, i) => (i === index ? { ...s, ...fields } : s))
+
+    const flags = checkCarousel({
+      carouselType: row.content_type, slides: next, caption: row.text,
+      facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(id, row.platform),
+    })
+    const hard = flags.filter(f => f.level === 'hard')
+    if (hard.length) return res.status(422).json({ error: hard.map(f => `${f.code}: ${f.msg}`).join('; '), flags })
+
+    const { renderSlide } = await loadRenderer()
+    const meta = row.source_ref?.meta || { date: row.created_at }
+    const png = await renderSlide(next[index], meta, index + 1, next.length)
+    const stored = await socialUploadPng(png, `ig/${row.content_type}-${index + 1}-edit`)
+    next[index] = { ...next[index], path: stored.path, url: stored.url }
+
+    const update = { source_ref: { ...(row.source_ref || {}), slides: next }, updated_at: new Date().toISOString() }
+    if (index === 0) { update.image_path = stored.path; update.image_url = stored.url }
+    const { data: saved, error: upErr } = await supabase.from('social_queue')
+      .update(update).eq('id', id).eq('status', 'draft').select().maybeSingle()
+    if (upErr) throw new Error(upErr.message)
+    if (!saved) return res.status(400).json({ error: 'Row stopped being a draft while saving' })
+    res.json({ success: true, row: saved, slide: next[index], flags })
+  } catch (e) {
+    console.error(`❌ [social] slide edit #${req.params.id}/${req.params.index}: ${e?.message || e}`)
+    res.status(500).json({ error: e?.message || 'slide edit failed' })
   }
 })
 
@@ -1061,8 +1226,22 @@ async function enqueueNewsReactions(items) {
       const facts = await newsReactionFacts(item)
       const row = await createDraftAndNotify({ contentType: 'news_reaction', pillar: 'macro_news', facts, sourceRef: { trigger: 'news', newsUrl: item.url || null } })
       seen.push({ headline: item.title, tags: item.marketTags })   // even if blocked: don't retry the same story this batch
-      if (row) { count++; console.log(`📰 [social news] drafted #${row.id} from ${label} (${count}/${NEWS_DAILY_MAX} today)`) }
-      else console.log(`📰 [social news] ${label} — every variant was blocked by the guardrails`)
+      if (row) {
+        count++
+        console.log(`📰 [social news] drafted #${row.id} from ${label} (${count}/${NEWS_DAILY_MAX} today)`)
+        // Instagram gets the same story as a story card. Its text is our own one-liner, never the
+        // headline. Contained: a story that fails, or that hits the story cap, leaves the X draft
+        // exactly as it is.
+        await createStoryDraft({
+          storyType: 'news_story', cardKind: 'news_flash',
+          cardData: {
+            summary: facts.oneliner || row.text, assets: facts.instruments || [],
+            impactScore: facts.impactScore, time: facts.publishedAt || new Date().toISOString(), date: new Date().toISOString(),
+          },
+          pillar: 'macro_news',
+          sourceRef: { trigger: 'news', xRowId: row.id, newsUrl: item.url || null },
+        }).catch(e => console.error(`⚠️ [social ig] news story for #${row.id} failed: ${e?.message || e}`))
+      } else console.log(`📰 [social news] ${label} — every variant was blocked by the guardrails`)
     }
   } catch (e) {
     console.error(`❌ [social news] enqueue failed: ${e?.message || e}`)
@@ -1174,15 +1353,467 @@ async function draftEducation(reason = null) {
   return { row, topic }
 }
 
+// ── Instagram: carousels and stories ─────────────────────────────────────────
+// Instagram runs on its own content plan, not on copies of X drafts:
+//   feed    ONE carousel a day — daily_brief / macro_101 / event_explainer / scorecard, with
+//           called_it taking the slot on the rare day one qualifies.
+//   stories up to IG_STORY_DAILY_CAP a day, a separate lane with its own cap: the bias story each
+//           weekday before the London open, a news story whenever a news reaction is drafted, and
+//           an event story on days with a qualifying USD event.
+// Every path still ends at a 'draft' row plus an admin DM. Nothing here publishes.
+const IG_EDU_ROTATION_KEY = 'ig_edu_rotation'      // separate from LinkedIn's li_edu_rotation
+const IG_EDU_REPEAT_DAYS = 60                      // macro_101 runs ~3x a week; 40 topics carry that
+const IG_CALLED_IT_KEY = 'ig_called_it_week'
+const CALLED_IT_LOOKBACK_DAYS = 5                  // the call must be recent enough to still be news
+const CALLED_IT_PRIOR_WINDOW_H = 24                // and we must have posted about it first, within this window
+const IG_STORY_TYPES = new Set(['bias_story', 'news_story', 'event_story', 'carousel_promo'])
+const IG_CAROUSEL_PILLARS = {
+  daily_brief: 'daily_bias', macro_101: 'education', event_explainer: 'calendar',
+  scorecard: 'accountability', called_it: 'accountability',
+}
+// London opens at 07:00 UTC; the bias story goes out 60–90 minutes before that.
+const IG_BIAS_STORY_FROM_MIN = 5 * 60 + 30
+const IG_BIAS_STORY_TO_MIN = 6 * 60 + 30
+
+// The renderer is loaded lazily, like the X card path does it: a broken native resvg binary can
+// then only break cards, never the backend's boot. One loader for every caller, so a test can
+// swap it for a fake instead of rendering real PNGs.
+const loadRenderer = () => import('./social/renderer.js')
+
+const isStoryRow = row => String(row?.format || 'feed') === 'story'
+const carouselSlidesOf = row => (Array.isArray(row?.source_ref?.slides) ? row.source_ref.slides : [])
+const isCarouselRow = row => CAROUSEL_TYPES.includes(row?.content_type) && carouselSlidesOf(row).length > 0
+
+// Instagram rows created today in one lane. 'feed' and 'story' are counted separately on purpose:
+// a story must never eat the day's carousel slot, or the other way round.
+async function igRowsToday(format = 'feed', { allStatuses = false } = {}) {
+  let q = supabase.from('social_queue').select('id,content_type,status,format,created_at,source_ref')
+    .eq('platform', 'instagram').gte('created_at', utcDayStart())
+  if (!allStatuses) q = q.in('status', SOCIAL_LIVE_STATUSES)
+  const { data, error } = await q
+  if (error) throw new Error(`instagram today read failed: ${error.message}`)
+  // Rows written before social_queue had a format column are feed posts.
+  return (data || []).filter(r => String(r.format || 'feed') === format)
+}
+
+// Store one rendered PNG and return { path, url }. Throws: the caller decides what a failed upload
+// means (for a carousel it means no draft at all — Instagram cannot post a caption without images).
+async function socialUploadPng(png, name) {
+  const path = `cards/${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`
+  const { error } = await supabase.storage.from(SOCIAL_BUCKET).upload(path, png, { contentType: 'image/png', upsert: false })
+  if (error) throw new Error(`card upload failed: ${error.message}`)
+  const { data } = supabase.storage.from(SOCIAL_BUCKET).getPublicUrl(path)
+  if (!data?.publicUrl) throw new Error('card upload returned no public URL')
+  return { path, url: data.publicUrl }
+}
+
+// Renders a deck and stores every slide. Returns the slides with their image, in order.
+async function renderCarouselAndUpload(carouselType, slides, meta) {
+  const { renderCarousel } = await loadRenderer()
+  const pngs = await renderCarousel(slides, meta)
+  const out = []
+  for (const [i, png] of pngs.entries()) {
+    const { path, url } = await socialUploadPng(png, `ig/${carouselType}-${i + 1}`)
+    out.push({ ...slides[i], path, url })
+  }
+  return out
+}
+
+// The admin DM for a carousel: the slides as an album, then the caption, facts and buttons.
+// Telegram fetches each image by URL, so nothing is uploaded twice.
+async function sendCarouselDM(admin, row) {
+  const slides = carouselSlidesOf(row)
+  const media = slides.slice(0, 10).map(s => ({ type: 'photo', media: s.url })).filter(m => m.media)
+  if (media.length) await tgCall('sendMediaGroup', { chat_id: admin, media })
+  const text = socialDraftMessage(row)
+  return (await sendTG(admin, text, { reply_markup: socialKeyboard(row.id) }))?.message_id ?? null
+}
+
+// Generate → guardrails/fact check → render every slide → upload → row → admin DM.
+// Returns the row, or null when the deck was blocked or could not be rendered.
+async function createCarouselDraft({ carouselType, facts = {}, topic = null, notes = '', sourceRef = {} }) {
+  const admin = v2AdminChat()
+  if (!admin) throw new Error('TG_ADMIN_CHAT_ID is not set — drafts need an admin to approve them')
+
+  const pastTexts = await socialPastTexts(null, 'instagram')
+  const deck = await generateCarousel({ carouselType, facts, topic, notes, pastTexts, anthropic, trackAI })
+  if (deck.failed) {
+    const reasons = [...new Set(deck.flags.filter(f => f.level === 'hard').map(f => `${f.code}: ${f.msg}`))]
+    await sendTG(admin, `🚫 <b>Carousel blocked</b> · ${esc(carouselType)}\n\n${reasons.slice(0, 8).map(r => `• ${esc(r)}`).join('\n') || 'the model reply could not be parsed'}`)
+    console.warn(`⚠️ [social ig] ${carouselType} carousel blocked: ${reasons.join(' | ') || 'unparseable'}`)
+    return null
+  }
+
+  const meta = { date: new Date().toISOString(), accent: facts.accent || null, direction: facts.bias?.direction || facts.call?.direction || null }
+  let slides
+  try {
+    slides = await renderCarouselAndUpload(carouselType, deck.slides, meta)
+  } catch (e) {
+    // Unlike a text post, a carousel without images is not publishable at all, so this is fatal.
+    console.error(`❌ [social ig] ${carouselType} render/upload failed: ${e?.message || e}`)
+    await sendTG(admin, `❌ <b>Carousel render failed</b> · ${esc(carouselType)}\n\n${esc(e?.message || e)}`)
+    return null
+  }
+
+  const { data: row, error } = await supabase.from('social_queue').insert({
+    platform: 'instagram',
+    format: 'feed',
+    content_type: carouselType,
+    pillar: IG_CAROUSEL_PILLARS[carouselType] || null,
+    text: deck.caption,
+    image_path: slides[0]?.path || null,
+    image_url: slides[0]?.url || null,
+    source_ref: {
+      ...sourceRef,
+      facts,
+      topic: topic || null,
+      notes: notes || null,
+      slides,
+      meta,
+      chosen: { shape: `carousel:${slides.length} slides`, flags: deck.flags, factcheck: deck.factcheck },
+    },
+    status: 'draft',
+    regen_count: 0,
+  }).select().single()
+  if (error) throw new Error(`social_queue insert failed: ${error.message}`)
+
+  const messageId = await sendCarouselDM(admin, row)
+  if (messageId) {
+    await supabase.from('social_queue').update({ tg_message_id: messageId, updated_at: new Date().toISOString() }).eq('id', row.id)
+    row.tg_message_id = messageId
+  } else console.error(`⚠️ [social ig] carousel #${row.id} saved but the admin DM failed`)
+  console.log(`📚 [social ig] carousel #${row.id} ${carouselType} → admin (${slides.length} slides)`)
+  return row
+}
+
+// One story: render the card at 1080x1920, store it, queue it, DM it. Stories carry no caption —
+// Instagram has no caption field for them — so the row's text is the internal label only, and the
+// publisher never sends it anywhere.
+async function createStoryDraft({ storyType, cardKind, cardData, pillar = null, sourceRef = {} }) {
+  const admin = v2AdminChat()
+  if (!admin) throw new Error('TG_ADMIN_CHAT_ID is not set — drafts need an admin to approve them')
+  if (!IG_STORY_TYPES.has(storyType)) throw new Error(`createStoryDraft: unknown storyType "${storyType}"`)
+
+  const today = await igRowsToday('story', { allStatuses: true })
+  if (today.length >= igStoryDailyCap()) {
+    console.log(`⏭️ [social ig] no ${storyType} — today already has ${today.length} story draft(s) (cap ${igStoryDailyCap()})`)
+    return null
+  }
+
+  let png, stored
+  try {
+    const { renderCard } = await loadRenderer()
+    png = await renderCard(cardKind, cardData, { format: 'story' })
+    stored = await socialUploadPng(png, `ig/story-${storyType}`)
+  } catch (e) {
+    console.error(`❌ [social ig] ${storyType} render failed: ${e?.message || e}`)
+    return null
+  }
+
+  const { data: row, error } = await supabase.from('social_queue').insert({
+    platform: 'instagram',
+    format: 'story',
+    content_type: storyType,
+    pillar,
+    text: '',
+    image_path: stored.path,
+    image_url: stored.url,
+    source_ref: { ...sourceRef, facts: cardData, cardKind },
+    status: 'draft',
+    regen_count: 0,
+  }).select().single()
+  if (error) throw new Error(`social_queue insert failed: ${error.message}`)
+
+  const caption = socialDraftMessage(row)
+  const messageId = await sendTGPhoto(admin, png, caption, { reply_markup: socialKeyboard(row.id) })
+  if (messageId) {
+    await supabase.from('social_queue').update({ tg_message_id: messageId, updated_at: new Date().toISOString() }).eq('id', row.id)
+    row.tg_message_id = messageId
+  } else console.error(`⚠️ [social ig] story #${row.id} saved but the admin DM failed`)
+  console.log(`📲 [social ig] story #${row.id} ${storyType} → admin`)
+  return row
+}
+
+// ── Facts for each carousel type ─────────────────────────────────────────────
+const dateLabel = (d = new Date()) => d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' })
+
+// Today's v2 bias, only if it is good enough to spend a post on (the same bar the X card uses).
+async function todaysBiasFacts() {
+  const { data, error } = await supabase.from('bias_history')
+    .select('id,pair,direction,confidence,trade_grade,reasoning,generated_at')
+    .eq('engine', 'v2').gte('generated_at', utcDayStart()).order('generated_at', { ascending: false }).limit(1).maybeSingle()
+  if (error) { console.warn(`⚠️ [social ig] bias read failed: ${error.message}`); return null }
+  if (!data) return null
+  if (!BIAS_CARD_GRADES.has(String(data.trade_grade || '').toUpperCase())) return null
+  return {
+    id: data.id, pair: data.pair, direction: data.direction, confidence: data.confidence,
+    grade: data.trade_grade, reasoning: data.reasoning, generatedAt: data.generated_at,
+  }
+}
+
+// The top scored news of the day, as the model may see it: our own one-liner and tags, never the
+// headline (the same rule the X news reaction follows).
+function topScoredNews(limit = 2) {
+  const cached = getCached('latest_news') || []
+  return [...cached]
+    .filter(a => Number(a.impact) >= 6)
+    .sort((a, b) => b.impact - a.impact)
+    .slice(0, limit)
+    .map(a => ({ oneliner: a.oneliner || '', marketTags: a.marketTags || [], impactScore: a.impact }))
+}
+
+// The market mover behind today's top story, if one matches. assets come from MOVERS_SRV, so they
+// are a fixed list, never invented.
+function topMover() {
+  const cached = getCached('latest_news') || []
+  for (const a of [...cached].sort((x, y) => y.impact - x.impact).slice(0, 5)) {
+    const m = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+    if (m) return { label: m.name, assets: m.assets.slice(0, 4) }
+  }
+  return null
+}
+
+async function dailyBriefFacts(nowMs = Date.now()) {
+  const bias = await todaysBiasFacts()
+  if (!bias) return null
+  return {
+    dateLabel: dateLabel(new Date(nowMs)),
+    bias: { pair: bias.pair, direction: bias.direction, confidence: bias.confidence, grade: bias.grade, reasoning: bias.reasoning },
+    events: await socialUpcomingUsdEvents(nowMs),     // upcoming only, by construction
+    news: topScoredNews(),
+    mover: topMover(),
+    biasHistoryId: bias.id,
+  }
+}
+
+// Instagram's own topic rotation: the same list LinkedIn teaches from, a different key, and a
+// longer no-repeat window because Instagram posts it less often.
+async function pickIgTopic() {
+  const rot = (await v2LoadSnapshot(IG_EDU_ROTATION_KEY)) || { history: [] }
+  const { topic, relaxed } = pickEduTopic(rot.history || [], utcDay(), undefined, IG_EDU_REPEAT_DAYS)
+  if (relaxed) console.warn(`⚠️ [social ig] every macro_101 topic was used in the last ${IG_EDU_REPEAT_DAYS} days — reusing the oldest, "${topic.title}"`)
+  return { topic, rot }
+}
+
+async function draftMacro101(reason = null) {
+  const { topic, rot } = await pickIgTopic()
+  const row = await createCarouselDraft({
+    carouselType: 'macro_101',
+    facts: { topic: topic.title, angle: topic.angle },
+    topic,
+    sourceRef: { trigger: 'planner', topicId: topic.id, ...(reason ? { reason } : {}) },
+  })
+  // The history only advances on a real draft, so a blocked deck does not burn a topic.
+  if (row) v2SaveSnapshot(IG_EDU_ROTATION_KEY, { history: [...(rot.history || []), { id: topic.id, date: utcDay() }].slice(-200) })
+  return { row, topic }
+}
+
+// ── called_it ────────────────────────────────────────────────────────────────
+// Built ONLY from a verified outcome, never from a story someone picked afterwards. It qualifies
+// when all of these hold:
+//   · a v2 bias published in the last 5 days has a RESOLVED outcome of 'hit' in the performance data
+//   · a news_reaction or event_preview row was PUBLISHED for the same currency or pair in the 24h
+//     before that call went out
+//   · no called_it has run in the last 7 days
+// A miss, an unresolved call, or a week that already had one means the type simply does not run.
+// There is no substitute and no loosening: returning null here is the expected outcome most days.
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'XAU']
+const pairCurrencies = pair => {
+  const p = String(pair || '').toUpperCase().replace(/[^A-Z]/g, '')
+  return CURRENCIES.filter(c => p.includes(c))
+}
+// What a published row was about, as currency codes: its facts, not its wording.
+function rowSubjects(row) {
+  const f = row?.source_ref?.facts || {}
+  const text = [
+    ...(Array.isArray(f.instruments) ? f.instruments : []),
+    ...(Array.isArray(f.marketTags) ? f.marketTags : []),
+    ...(Array.isArray(f.events) ? f.events.map(e => e.currency) : []),
+    f.biasPair || '', f.pair || '',
+  ].join(' ').toUpperCase()
+  return CURRENCIES.filter(c => text.includes(c) || (c === 'XAU' && /GOLD/.test(text)))
+}
+
+async function calledItCandidate(nowMs = Date.now()) {
+  // One a week at most, tracked in app_state so a restart cannot repeat it.
+  const last = await v2LoadSnapshot(IG_CALLED_IT_KEY)
+  if (last?.at && nowMs - Date.parse(last.at) < 7 * 86400000) {
+    return { candidate: null, why: `already ran ${Math.round((nowMs - Date.parse(last.at)) / 86400000)}d ago (one a week)` }
+  }
+  const since = new Date(nowMs - CALLED_IT_LOOKBACK_DAYS * 86400000).toISOString()
+  const { data, error } = await supabase.from('bias_history')
+    .select('id,pair,direction,reasoning,generated_at,performance')
+    .eq('engine', 'v2').gte('generated_at', since).order('generated_at', { ascending: false })
+  if (error) throw new Error(`called_it bias read failed: ${error.message}`)
+
+  // Only calls the performance record scored as a hit. 'live' (unresolved) and 'miss' never qualify.
+  const hits = (data || []).filter(r => scorecardOutcome(r.performance) === 'hit')
+  if (!hits.length) return { candidate: null, why: 'no resolved hit in the last 5 days' }
+
+  const { data: posts, error: postErr } = await supabase.from('social_queue')
+    .select('id,platform,content_type,published_at,source_ref')
+    .in('content_type', ['news_reaction', 'event_preview']).eq('status', 'published')
+    .gte('published_at', new Date(nowMs - (CALLED_IT_LOOKBACK_DAYS + 1) * 86400000).toISOString())
+  if (postErr) throw new Error(`called_it post read failed: ${postErr.message}`)
+
+  for (const hit of hits) {
+    const callMs = Date.parse(hit.generated_at)
+    const subjects = pairCurrencies(hit.pair)
+    const prior = (posts || []).find(p => {
+      const postMs = Date.parse(p.published_at)
+      if (!Number.isFinite(postMs) || postMs > callMs || callMs - postMs > CALLED_IT_PRIOR_WINDOW_H * 3600000) return false
+      return rowSubjects(p).some(c => subjects.includes(c))
+    })
+    if (!prior) continue
+    return {
+      candidate: {
+        call: {
+          pair: hit.pair, direction: String(hit.direction || '').toUpperCase(), reasoning: hit.reasoning,
+          publishedAt: hit.generated_at, outcome: 'hit', biasHistoryId: hit.id,
+        },
+        priorPost: {
+          contentType: prior.content_type, publishedAt: prior.published_at,
+          subject: rowSubjects(prior).join(', '), rowId: prior.id,
+        },
+      },
+      why: null,
+    }
+  }
+  return { candidate: null, why: `${hits.length} resolved hit(s), but none had a news or event post in the 24h before it` }
+}
+
 // ── Planner ───────────────────────────────────────────────────────────────────
 // Every 15 minutes. Restart-safe: what has run today lives in app_state, so a Railway restart cannot
 // draft the same slot twice. Each lane is independent and each run logs one summary line.
 function freshPlannerState(day) {
-  return { date: day, done: { saturday: false, rotation: false, linkedin: false }, attempts: { rotation: 0, linkedin: 0 }, eventKeys: [], eventPreviews: 0 }
+  return {
+    date: day,
+    done: { saturday: false, rotation: false, linkedin: false, igCarousel: false, igBiasStory: false, igEventStory: false },
+    attempts: { rotation: 0, linkedin: 0, igCarousel: 0 },
+    eventKeys: [], eventPreviews: 0,
+  }
+}
+
+// Which carousel the day gets. called_it wins when it qualifies (rare by design); otherwise a
+// qualifying USD event ahead takes the slot; otherwise the weekday plan, with macro_101 as the
+// stand-in whenever the day's own type has nothing real to say.
+//   Mon/Wed/Fri  daily_brief (needs a qualifying bias, else macro_101)
+//   Tue/Thu/Sun  macro_101
+//   Sat          scorecard (needs 3+ resolved calls, else macro_101)
+const IG_WEEKDAY_PLAN = { 0: 'macro_101', 1: 'daily_brief', 2: 'macro_101', 3: 'daily_brief', 4: 'macro_101', 5: 'daily_brief', 6: 'scorecard' }
+
+async function planIgCarousel(now, nowMs) {
+  const dow = now.getUTCDay()
+
+  // 1. called_it — only from a verified outcome, and never more than one a week.
+  let called = { candidate: null, why: 'not checked' }
+  try { called = await calledItCandidate(nowMs) } catch (e) { called = { candidate: null, why: `check failed: ${e?.message || e}` } }
+  if (called.candidate) return { type: 'called_it', facts: called.candidate, sourceRef: { trigger: 'planner', calledIt: true } }
+  console.log(`📚 [social ig] called_it not today — ${called.why}`)
+
+  // 2. A high-impact USD event still ahead takes the day's slot.
+  const { events } = await nextEventPreview([], nowMs)
+  if (events.length) {
+    return { type: 'event_explainer', facts: { dateLabel: dateLabel(now), event: events[0] }, sourceRef: { trigger: 'planner', eventKey: eventKey(events[0]) } }
+  }
+
+  // 3. The weekday plan, with its own conditions.
+  const planned = IG_WEEKDAY_PLAN[dow] || 'macro_101'
+  if (planned === 'daily_brief') {
+    const facts = await dailyBriefFacts(nowMs)
+    if (facts) return { type: 'daily_brief', facts, sourceRef: { trigger: 'planner', biasHistoryId: facts.biasHistoryId } }
+    return { type: 'macro_101', reason: 'no qualifying bias for a daily brief today' }
+  }
+  if (planned === 'scorecard') {
+    const rows = await socialScorecardRows()
+    const resolved = rows.filter(r => r.outcome !== 'open')
+    if (resolved.length >= 3) return { type: 'scorecard', facts: scorecardFacts(rows, now), sourceRef: { trigger: 'planner' } }
+    return { type: 'macro_101', reason: `only ${resolved.length} resolved call(s) this week, need 3` }
+  }
+  return { type: 'macro_101' }
+}
+
+// The Instagram lanes of the planner. Feed and stories are independent: one blocked deck never
+// costs the day its stories, and a full story cap never costs the day its carousel.
+async function runIgLanes(state, save, now, nowMs) {
+  const status = { ig: '-', igStory: '-' }
+  const mins = utcMinutes(now)
+  const weekday = now.getUTCDay() >= 1 && now.getUTCDay() <= 5
+
+  // ── Feed: one carousel a day ──
+  if (state.done.igCarousel) status.ig = 'done'
+  else if (mins < SOCIAL_FALLBACK_UTC_MIN) status.ig = 'not-yet'
+  else if (state.attempts.igCarousel >= SOCIAL_PLANNER_MAX_ATTEMPTS) { state.done.igCarousel = true; save(); status.ig = 'gave-up' }
+  else if ((await igRowsToday('feed')).length >= igDailyCap()) { state.done.igCarousel = true; save(); status.ig = 'cap' }
+  else {
+    state.attempts.igCarousel++; save()
+    const plan = await planIgCarousel(now, nowMs)
+    const row = plan.type === 'macro_101'
+      ? (await draftMacro101(plan.reason)).row
+      : await createCarouselDraft({ carouselType: plan.type, facts: plan.facts, sourceRef: plan.sourceRef })
+    if (row) {
+      state.done.igCarousel = true; save()
+      status.ig = `${plan.type}(#${row.id})`
+      if (plan.type === 'called_it') await v2SaveSnapshot(IG_CALLED_IT_KEY, { at: new Date(nowMs).toISOString(), rowId: row.id })
+      // The story that points at the new post. Under the story cap, like every other story.
+      const cover = carouselSlidesOf(row)[0]
+      if (cover) {
+        await createStoryDraft({
+          storyType: 'carousel_promo', cardKind: 'carousel_promo',
+          cardData: { title: cover.title, kicker: cover.kicker || plan.type.replace(/_/g, ' '), slideCount: carouselSlidesOf(row).length, date: new Date(nowMs).toISOString(), direction: plan.facts?.bias?.direction || null },
+          pillar: IG_CAROUSEL_PILLARS[plan.type] || null,
+          sourceRef: { trigger: 'planner', carouselRowId: row.id },
+        }).catch(e => console.error(`⚠️ [social ig] promo story for #${row.id} failed: ${e?.message || e}`))
+      }
+    } else status.ig = `${plan.type}:blocked(${state.attempts.igCarousel}/${SOCIAL_PLANNER_MAX_ATTEMPTS})`
+  }
+
+  // ── Stories: bias before the London open, event story on a qualifying day ──
+  if (!weekday) status.igStory = 'weekend'
+  else {
+    const parts = []
+    if (state.done.igBiasStory) parts.push('bias:done')
+    else if (mins < IG_BIAS_STORY_FROM_MIN || mins > IG_BIAS_STORY_TO_MIN) parts.push('bias:not-in-window')
+    else {
+      const bias = await todaysBiasFacts()
+      if (!bias) parts.push('bias:none-yet')
+      else {
+        const row = await createStoryDraft({
+          storyType: 'bias_story', cardKind: 'bias_card',
+          // Five fields only. The invalidation level is never passed, so it cannot reach the card.
+          cardData: { pair: bias.pair, direction: bias.direction, confidence: bias.confidence, grade: bias.grade, driver: firstSentence(bias.reasoning), date: new Date(nowMs).toISOString() },
+          pillar: 'daily_bias',
+          sourceRef: { trigger: 'planner', biasHistoryId: bias.id },
+        })
+        // Marked done either way: a story that hit the cap should not retry every 15 minutes.
+        state.done.igBiasStory = true; save()
+        parts.push(row ? `bias:#${row.id}` : 'bias:skipped')
+      }
+    }
+
+    if (state.done.igEventStory) parts.push('event:done')
+    else {
+      const { events } = await nextEventPreview([], nowMs)
+      if (!events.length) parts.push('event:none-ahead')
+      else {
+        const row = await createStoryDraft({
+          storyType: 'event_story', cardKind: 'event_preview',
+          cardData: { dateLabel: dateLabel(now), date: new Date(nowMs).toISOString(), events: events.slice(0, 3) },
+          pillar: 'calendar',
+          sourceRef: { trigger: 'planner', eventKeys: events.map(eventKey) },
+        })
+        state.done.igEventStory = true; save()
+        parts.push(row ? `event:#${row.id}` : 'event:skipped')
+      }
+    }
+    const storiesToday = (await igRowsToday('story', { allStatuses: true })).length
+    status.igStory = `${parts.join(' ')} (${storiesToday}/${igStoryDailyCap()})`
+  }
+  return status
 }
 
 async function runSocialPlanner() {
-  const status = { bias: '-', news: '-', event: '-', rotation: '-', li: '-' }
+  const status = { bias: '-', news: '-', event: '-', rotation: '-', li: '-', ig: '-', igStory: '-' }
   try {
     const now = new Date()
     const nowMs = now.getTime()
@@ -1287,11 +1918,21 @@ async function runSocialPlanner() {
       }
       if (row) { state.done.linkedin = true; save() }
     }
+
+    // ── Instagram: one carousel a day, plus its own story lane ──
+    // Contained: an Instagram failure must not stop the planner from logging, and must never
+    // affect the X or LinkedIn lanes above, which have already run by now.
+    try {
+      Object.assign(status, await runIgLanes(state, save, now, nowMs))
+    } catch (e) {
+      status.ig = `error(${e?.message || e})`
+      console.error(`❌ [social ig] lane error: ${e?.message || e}`)
+    }
   } catch (e) {
     // Never let the interval die.
     console.error(`❌ [social] planner error: ${e?.message || e}`)
   } finally {
-    console.log(`[social planner] bias:${status.bias} news:${status.news} event:${status.event} rotation:${status.rotation} li:${status.li}`)
+    console.log(`[social planner] bias:${status.bias} news:${status.news} event:${status.event} rotation:${status.rotation} li:${status.li} ig:${status.ig} ig-story:${status.igStory}`)
   }
 }
 
@@ -1327,6 +1968,9 @@ const xDailyCap = () => Number(process.env.X_DAILY_CAP) || 5
 const xMinGapMin = () => Number(process.env.X_MIN_GAP_MIN) || 90
 const linkedinDailyCap = () => Number(process.env.LINKEDIN_DAILY_CAP) || 1
 const igDailyCap = () => Number(process.env.IG_DAILY_CAP) || 1
+// Stories have their own cap, separate from the feed's: three stories a day is a normal day on
+// Instagram and must not use up the one carousel slot, or be limited by it.
+const igStoryDailyCap = () => Number(process.env.IG_STORY_DAILY_CAP) || 3
 
 // Instagram's long-lived token is refreshed by the server itself, so the live copy lives in
 // app_state ('ig_token'); IG_ACCESS_TOKEN only seeds it. The save is awaited, unlike the
@@ -1374,12 +2018,19 @@ const SOCIAL_PLATFORMS = {
   },
   instagram: {
     // No minimum gap, like LinkedIn: at one post a day the cap is the pacing.
-    label: 'Instagram', cap: igDailyCap, capDmKey: 'social_cap_dm_date_instagram', minGapMin: null,
+    label: 'Instagram', cap: row => (isStoryRow(row) ? igStoryDailyCap() : igDailyCap()), capDmKey: 'social_cap_dm_date_instagram', minGapMin: null,
+    // Feed and stories are separate lanes with separate caps, so the cap count is per format too.
+    capByFormat: true,
     blocked: () => (igTokenStatusCache?.expired ? `token expired on ${igTokenStatusCache.expiresAt.slice(0, 10)} — regenerate it in the Meta app dashboard` : null),
-    publish: ({ text, imageUrl }) => publishToInstagram(
-      { caption: text, imageUrls: imageUrl ? [imageUrl] : [] },
-      { uploadJpeg: uploadIgJpeg, token: igTokens.token },
-    ),
+    // Three shapes on one platform: a story (no caption), a carousel (every slide, in order), and
+    // a single-image post. The row says which.
+    publish: ({ text, imageUrl, row }) => {
+      const deps = { uploadJpeg: uploadIgJpeg, token: igTokens.token }
+      if (isStoryRow(row)) return publishStory({ imageUrl }, deps)
+      const slides = carouselSlidesOf(row).map(s => s.url).filter(Boolean)
+      const imageUrls = slides.length ? slides : imageUrl ? [imageUrl] : []
+      return publishToInstagram({ caption: text, imageUrls }, deps)
+    },
     // Instagram's media id is not a URL fragment; the permalink comes back from the publisher.
     url: (id, result) => result?.permalink || `https://www.instagram.com/ (media ${id})`,
   },
@@ -1454,26 +2105,29 @@ async function publishNextFor(platform) {
     try {
       // Approved hours ago for events that have since happened: never post it. Checked before the
       // pacing so a dead preview does not hold up or use a slot.
-      if (row.content_type === 'event_preview' && eventsAllPast(row)) {
+      if (EVENT_ROW_TYPES.has(row.content_type) && eventsAllPast(row)) {
         await skipPastEventRow(row, 'publish')
         return
       }
 
-      // (a) Daily cap, UTC day. News counts toward it like everything else.
+      // (a) Daily cap, UTC day. News counts toward it like everything else. On Instagram the feed
+      // and the story lane are counted apart, so three stories never block the day's carousel.
       const dayStart = `${nowISO.slice(0, 10)}T00:00:00.000Z`
-      const { count: postedToday, error: capErr } = await supabase.from('social_queue')
+      let capQuery = supabase.from('social_queue')
         .select('id', { count: 'exact', head: true })
         .eq('platform', platform).eq('status', 'published').gte('published_at', dayStart)
+      if (cfg.capByFormat) capQuery = capQuery.eq('format', row.format || 'feed')
+      const { count: postedToday, error: capErr } = await capQuery
       if (capErr) throw new Error(`daily cap check failed: ${capErr.message}`)
-      if ((postedToday ?? 0) >= cfg.cap()) {
+      if ((postedToday ?? 0) >= cfg.cap(row)) {
         const t = new Date(Date.now() + 24 * 3600 * 1000)
         const tomorrow = `${t.toISOString().slice(0, 10)}T06:30:00.000Z`
-        await socialRelease(row.id, tomorrow, `${cfg.label} daily cap ${postedToday}/${cfg.cap()} reached`)
+        await socialRelease(row.id, tomorrow, `${cfg.label} daily cap ${postedToday}/${cfg.cap(row)} reached`)
         const today = nowISO.slice(0, 10)
         if ((await v2LoadSnapshot(cfg.capDmKey)) !== today) {   // one DM per day per platform, not per run
           v2SaveSnapshot(cfg.capDmKey, today)
           const admin = v2AdminChat()
-          if (admin) await sendTG(admin, `📵 <b>Daily ${esc(cfg.label)} cap reached</b> (${esc(postedToday)}/${esc(cfg.cap())})\n\nRemaining approved posts are held until 06:30 UTC tomorrow.`)
+          if (admin) await sendTG(admin, `📵 <b>Daily ${esc(cfg.label)} cap reached</b> (${esc(postedToday)}/${esc(cfg.cap(row))})\n\nRemaining approved posts are held until 06:30 UTC tomorrow.`)
         }
         return
       }
@@ -1497,10 +2151,7 @@ async function publishNextFor(platform) {
       }
 
       // Last line of defence: the text may have been edited after approval.
-      const { flags } = validateSocialPost(row.text, {
-        platform, contentType: row.content_type, facts: row.source_ref?.facts || {}, pastTexts: await socialPastTexts(row.id, platform),
-      })
-      const hard = flags.filter(f => f.level === 'hard')
+      const hard = (await socialHardFlags(row, await socialPastTexts(row.id, platform)))
       if (hard.length) {
         const why = `blocked by guardrails at publish time — ${hard.map(f => `${f.code}: ${f.msg}`).join('; ')}`
         console.error(`🚫 [social] #${row.id} ${why}`)
@@ -1516,7 +2167,7 @@ async function publishNextFor(platform) {
         return
       }
 
-      const result = await cfg.publish({ text: row.text, imageUrl: row.image_url || null })
+      const result = await cfg.publish({ text: row.text, imageUrl: row.image_url || null, row })
       const externalId = result.id
       const url = cfg.url(externalId, result)
       const done = { status: 'published', external_id: String(externalId), published_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() }
@@ -7353,7 +8004,7 @@ app.listen(5000, () => {
   // and covers anything that fell due while the process was down. One post per run, paced inside.
   setTimeout(() => { processSocialQueue().catch(e => console.error(`❌ [social] boot run error: ${e?.message}`)) }, 60 * 1000)
   setInterval(() => { processSocialQueue().catch(e => console.error(`❌ [social] run error: ${e?.message}`)) }, 5 * 60 * 1000)
-  console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X + LinkedIn' : 'OFF — logs only'}, X cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min, LinkedIn cap ${linkedinDailyCap()}/day)`)
+  console.log(`🚀 Social publisher (5min, autopilot ${socialAutopilotOn() ? 'ON — posts to X + LinkedIn + Instagram' : 'OFF — logs only'}, X cap ${xDailyCap()}/day, min gap ${xMinGapMin()}min, LinkedIn cap ${linkedinDailyCap()}/day, Instagram cap ${igDailyCap()} feed + ${igStoryDailyCap()} stories/day)`)
   // LinkedIn token expiry: checked hourly, DMs at most once a day from 7 days out.
   setTimeout(() => { checkLinkedInToken() }, 2 * 60 * 1000)
   setInterval(() => { checkLinkedInToken() }, 60 * 60 * 1000)
