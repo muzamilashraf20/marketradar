@@ -218,5 +218,70 @@ for (const [contentType, facts] of [
   check('cap 1: the second Instagram draft of the day is refused', second === null && rows.filter(r => r.platform === 'instagram').length === 1 && logs.some(l => /today already has 1 Instagram draft/.test(l)), JSON.stringify(rows.map(r => r.platform)))
 }
 
+// ── 6. Every card-carrying type actually gets its card on X ───────────────────
+// The regression this exists for: news_reaction was missing from SOCIAL_CARD_TYPES, so news drafts
+// went out text-only while every other type had a card. The renderer here is the real one, so a
+// card that cannot be drawn from the facts fails this too, not just a missing wiring entry.
+{
+  const CARD_TYPES = [
+    ['bias_card', FACTS],
+    ['event_preview', { dateLabel: 'Monday, 21 September', events: [{ time: '12:30', currency: 'USD', title: 'CPI y/y', forecast: '3.1%', previous: '3.0%', impact: 'High' }] }],
+    ['weekly_scorecard', { rangeLabel: '15 – 19 September', rows: [{ date: 'Mon 15', pair: 'EURUSD', direction: 'BEARISH', outcome: 'hit' }, { date: 'Tue 16', pair: 'GBPUSD', direction: 'BULLISH', outcome: 'miss' }] }],
+    ['news_reaction', {
+      headline: 'US inflation runs hotter than expected', oneliner: 'A firmer inflation print pushes rate-cut pricing further out.',
+      instruments: ['USD↑', 'Gold↓'], marketTags: ['USD↑', 'Gold↓'], impactScore: 9, publishedAt: new Date().toISOString(),
+    }],
+  ]
+  for (const [contentType, facts] of CARD_TYPES) {
+    reset(); genImpl = genWithIg()
+    const m = build()
+    const x = await m.createDraftAndNotify({ contentType, facts })
+    await settle()
+    restore()
+    const saved = rows.find(r => r.id === x?.id)
+    check(`X ${contentType}: the row carries a card (image_url + image_path)`,
+      !!saved?.image_url && !!saved.image_path && uploads.length === 1,
+      `url=${saved?.image_url} path=${saved?.image_path} uploads=${uploads.length} ${logs.filter(l => /card for/.test(l)).join(' | ')}`)
+    check(`X ${contentType}: the DM carries the card, not text only`,
+      tg.some(t => t.m === 'sendPhoto' || t.photo || t.buffer),
+      JSON.stringify(tg.map(t => t.m)))
+  }
+
+  // A type with no card is unaffected: still text-only, still DM'd.
+  reset(); genImpl = genWithIg()
+  const m = build()
+  const x = await m.createDraftAndNotify({ contentType: 'trader_pain', facts: {}, notes: 'n' })
+  await settle()
+  restore()
+  check('X trader_pain: no card, and that is correct', !x.image_url && uploads.length === 0 && tg.some(t => t.m === 'sendMessage'), `${x.image_url} uploads=${uploads.length}`)
+}
+
+// The news card is drawn from the scored item, and its fields are stored on the row so the
+// Instagram story can redraw the same ones instead of writing them again.
+{
+  const facts = {
+    headline: 'US inflation runs hotter than expected', oneliner: 'A firmer inflation print pushes rate-cut pricing further out.',
+    instruments: ['USD↑', 'Gold↓'], impactScore: 9, publishedAt: '2026-09-24T12:30:00.000Z',
+  }
+  reset(); genImpl = genWithIg()
+  const m = build()
+  const x = await m.createDraftAndNotify({ contentType: 'news_reaction', facts })
+  await settle()
+  restore()
+  const cd = rows.find(r => r.id === x.id)?.source_ref?.cardData
+  check('news card data is stored on the row', !!cd, JSON.stringify(rows.find(r => r.id === x.id)?.source_ref && Object.keys(rows.find(r => r.id === x.id).source_ref)))
+  check('news card summary is our one-liner, never the headline', cd?.summary === facts.oneliner && !JSON.stringify(cd).includes(facts.headline), JSON.stringify(cd))
+  check('news card carries the assets, impact and time from the item', JSON.stringify(cd?.assets) === JSON.stringify(facts.instruments) && cd?.impactScore === 9 && cd?.time === facts.publishedAt, JSON.stringify(cd))
+
+  // No one-liner from the scorer: the card falls back to the post's own words, still not the headline.
+  reset(); genImpl = genWithIg()
+  const m2 = build()
+  const x2 = await m2.createDraftAndNotify({ contentType: 'news_reaction', facts: { ...facts, oneliner: '' } })
+  await settle()
+  restore()
+  const cd2 = rows.find(r => r.id === x2.id)?.source_ref?.cardData
+  check('with no one-liner, the card falls back to the post text', cd2?.summary === x2.text && !!rows.find(r => r.id === x2.id)?.image_url, JSON.stringify(cd2))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

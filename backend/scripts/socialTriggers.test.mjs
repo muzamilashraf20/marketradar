@@ -91,7 +91,7 @@ function build() {
     // for outside it — the caps, the renderer, storage, the writer, the DM plumbing — is faked here.
     // igLanes below decides whether this run does any Instagram work at all.
     'igDailyCap', 'igStoryDailyCap', 'loadRenderer', 'socialUploadPng', 'socialPastTexts', 'generateCarousel',
-    'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence',
+    'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence', 'newsCardData',
     `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, enqueueNewsReactions, nextEventPreview, eventsAllPast, isSameStory, NEWS_DAILY_MAX, calledItCandidate, planIgCarousel }`,
   )(supabase, createDraftAndNotify, async k => snap[k] ?? null, (k, v) => { snap[k] = v }, async (c, t) => { dms.push({ text: t }) }, () => '111', s => String(s ?? ''),
     async () => calendar, { macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology' },
@@ -102,7 +102,10 @@ function build() {
     async () => ({ path: 'cards/ig/x.png', url: 'https://x.supabase.co/x.png' }),
     async () => [], async args => { carousels.push(args); return { failed: false, slides: [{ kind: 'cover', title: 'x' }, { kind: 'cta', line: 'y' }], caption: 'c', flags: [], factcheck: { status: 'grounded', issue: null } } },
     {}, () => {}, async () => 1, () => 'dm', id => ({ inline_keyboard: [[{ text: 'ok', callback_data: `sq:ap:${id}` }]] }), async () => null,
-    () => scoredNews, s => String(s || '').split('.')[0])
+    () => scoredNews, s => String(s || '').split('.')[0],
+    // The real one lives in the drafts section; the news lane falls back to it when a card was
+    // not rendered, which is always the case here because createDraftAndNotify is faked.
+    (facts = {}, postText = '') => ({ summary: facts.oneliner || postText, assets: facts.instruments || [], impactScore: facts.impactScore, time: facts.publishedAt || null, date: new Date(NOW).toISOString() }))
 }
 const restore = () => { console.log = REAL.log; console.error = REAL.error; console.warn = REAL.warn }
 const run = async fn => { const m = build(); try { return await fn(m) } finally { restore() } }

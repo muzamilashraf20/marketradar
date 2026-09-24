@@ -434,7 +434,16 @@ async function pollTelegram() {
 const SOCIAL_BUCKET = 'social-media'
 const SOCIAL_LAYOUT_KEY = 'social_layout_idx'
 const SOCIAL_MAX_REGENS = 3
-const SOCIAL_CARD_TYPES = new Set(['bias_card', 'event_preview', 'weekly_scorecard'])
+// Content types that carry a card on X, and which renderer kind draws each one. The name usually
+// matches; news is the exception, because the content type is what we write (a reaction) and the
+// card kind is what it looks like (a news flash).
+const SOCIAL_CARD_KINDS = {
+  bias_card: 'bias_card',
+  event_preview: 'event_preview',
+  weekly_scorecard: 'weekly_scorecard',
+  news_reaction: 'news_flash',
+}
+const SOCIAL_CARD_TYPES = new Set(Object.keys(SOCIAL_CARD_KINDS))
 // Rows whose facts carry calendar events: a preview of events that have all happened is worse than
 // no post, on the feed and in a story alike.
 const EVENT_ROW_TYPES = new Set(['event_preview', 'event_story'])
@@ -465,29 +474,51 @@ async function socialPastTexts(excludeId = null, platform = 'x') {
 const firstSentence = s => (String(s || '').match(/^.*?[.!?](?=\s|$)/) || [String(s || '')])[0].trim()
 
 // Card data per kind. bias_card gets exactly the five fields the renderer reads — invalidation stays out.
-function socialCardData(contentType, facts) {
+function socialCardData(contentType, facts, postText = '') {
   if (contentType === 'bias_card' || contentType === 'bias_story') {
     return { pair: facts.pair, direction: facts.direction, confidence: facts.confidence, grade: facts.grade, driver: facts.driver || firstSentence(facts.reasoning) }
   }
   if (contentType === 'event_preview') return { events: facts.events, dateLabel: facts.dateLabel }
   if (contentType === 'weekly_scorecard') return { rows: facts.rows, rangeLabel: facts.rangeLabel }
+  if (contentType === 'news_reaction' || contentType === 'news_story') return newsCardData(facts, postText)
   return null
+}
+
+// The news card's fields, derived from the scored item plus the post we already wrote. Nothing here
+// is generated a second time: the feed card (1080x1350) and the Instagram story card (1080x1920)
+// are different formats of the SAME fields, so both must be drawn from this one object.
+//
+// `summary` is our own one-liner from the news scorer, falling back to the approved post text. The
+// headline is deliberately never used — the same rule the writer follows.
+function newsCardData(facts = {}, postText = '') {
+  return {
+    summary: String(facts.oneliner || '').trim() || String(postText || '').trim(),
+    assets: Array.isArray(facts.instruments) && facts.instruments.length ? facts.instruments : facts.marketTags || [],
+    impactScore: facts.impactScore,
+    time: facts.publishedAt || null,
+    date: new Date().toISOString(),
+  }
 }
 
 // Render → upload → public URL. Any failure returns null and the draft goes out text-only: a card is
 // nice to have, a missing one must not cost the draft. The renderer is imported lazily so a broken
 // native resvg binary can only break cards, never the backend's boot.
-async function socialRenderAndUpload(contentType, facts) {
+// `postText` is the approved draft text, which the news card falls back to when the scorer gave no
+// one-liner. The card data used is returned too, so the row can store it and the Instagram story
+// can redraw the same fields in its own format instead of deriving them again.
+async function socialRenderAndUpload(contentType, facts, postText = '') {
   try {
     const { renderCard, LAYOUT_COUNTS } = await import('./social/renderer.js')
+    const kind = SOCIAL_CARD_KINDS[contentType] || contentType
+    const cardData = socialCardData(contentType, facts, postText)
     const idx = Number(await v2LoadSnapshot(SOCIAL_LAYOUT_KEY)) || 0
     v2SaveSnapshot(SOCIAL_LAYOUT_KEY, idx + 1)
-    const png = await renderCard(contentType, socialCardData(contentType, facts), idx % (LAYOUT_COUNTS[contentType] || 1))
+    const png = await renderCard(kind, cardData, idx % (LAYOUT_COUNTS[kind] || 1))
     const path = `cards/${contentType}-${Date.now()}.png`
     const { error } = await supabase.storage.from(SOCIAL_BUCKET).upload(path, png, { contentType: 'image/png', upsert: false })
     if (error) throw new Error(`upload: ${error.message}`)
     const { data } = supabase.storage.from(SOCIAL_BUCKET).getPublicUrl(path)
-    return { png, path, url: data?.publicUrl || null }
+    return { png, path, url: data?.publicUrl || null, cardData }
   } catch (e) {
     console.error(`⚠️ [social] card for ${contentType} failed, continuing text-only: ${e?.message || e}`)
     return null
@@ -603,10 +634,12 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
     return null
   }
 
+  const { chosen } = draft
+  // The card is rendered after the text is chosen, because a news card falls back to the post's own
+  // words when the scorer gave no one-liner.
   const card = reuseImage?.url
     ? { path: reuseImage.path || null, url: reuseImage.url, png: null }
-    : SOCIAL_CARD_TYPES.has(contentType) ? await socialRenderAndUpload(contentType, facts) : null
-  const { chosen } = draft
+    : SOCIAL_CARD_TYPES.has(contentType) ? await socialRenderAndUpload(contentType, facts, chosen.text) : null
   const { data: row, error } = await supabase.from('social_queue').insert({
     platform,
     content_type: contentType,
@@ -620,6 +653,9 @@ async function createDraftAndNotify({ contentType, platform = 'x', facts = {}, n
       notes: notes || null,
       chosen: { shape: chosen.shape, flags: chosen.flags, factcheck: chosen.factcheck },
       alternatives: draft.variants.filter(v => v !== chosen).map(v => ({ shape: v.shape, text: v.text, flags: v.flags, factcheck: v.factcheck })),
+      // What the card was drawn from. A sibling in another format (the Instagram news story)
+      // redraws these exact fields rather than deriving its own.
+      ...(card?.cardData ? { cardData: card.cardData } : {}),
     },
     status: 'draft',
     regen_count: regenCount,
@@ -1229,15 +1265,13 @@ async function enqueueNewsReactions(items) {
       if (row) {
         count++
         console.log(`📰 [social news] drafted #${row.id} from ${label} (${count}/${NEWS_DAILY_MAX} today)`)
-        // Instagram gets the same story as a story card. Its text is our own one-liner, never the
-        // headline. Contained: a story that fails, or that hits the story cap, leaves the X draft
-        // exactly as it is.
+        // Instagram gets the same news as a story card: the SAME fields the X card was drawn from
+        // (source_ref.cardData, written when that card was rendered), re-drawn at 1080x1920. Only
+        // the format differs — the summary, assets, impact and time are never written twice.
+        // Contained: a story that fails, or that hits the story cap, leaves the X draft as it is.
         await createStoryDraft({
           storyType: 'news_story', cardKind: 'news_flash',
-          cardData: {
-            summary: facts.oneliner || row.text, assets: facts.instruments || [],
-            impactScore: facts.impactScore, time: facts.publishedAt || new Date().toISOString(), date: new Date().toISOString(),
-          },
+          cardData: row.source_ref?.cardData || newsCardData(facts, row.text),
           pillar: 'macro_news',
           sourceRef: { trigger: 'news', xRowId: row.id, newsUrl: item.url || null },
         }).catch(e => console.error(`⚠️ [social ig] news story for #${row.id} failed: ${e?.message || e}`))
