@@ -1,8 +1,14 @@
 {
   "day": "2026-09-25",
-  "mode": "upcoming",
-  "summary": "1 high-impact release row(s) ahead",
+  "mode": "recap",
+  "summary": "recap of 7 row(s), next week not yet published",
   "releases": [
+    "2026-09-22T03:10:00.000Z|AUD|RBA Gov Bullock Speaks|-|-",
+    "2026-09-24T01:30:00.000Z|AUD|Employment Change|21.5K|-15.8K",
+    "2026-09-24T01:30:00.000Z|AUD|Unemployment Rate|4.5%|4.5%",
+    "2026-09-24T07:30:00.000Z|CHF|SNB Monetary Policy Assessment|-|-",
+    "2026-09-24T07:30:00.000Z|CHF|SNB Policy Rate|0.00%|0.00%",
+    "2026-09-24T08:00:00.000Z|CHF|SNB Press Conference|-|-",
     "2026-09-25T09:15:00.000Z|GBP|BOE Gov Bailey Speaks|-|-"
   ]
 }
