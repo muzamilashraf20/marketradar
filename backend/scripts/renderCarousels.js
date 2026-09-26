@@ -128,7 +128,7 @@ const DECKS = {
         'Wed 17 — AUD/USD bearish. Resolved as a miss.',
         'Thu 18 — USD/CAD bullish. Still open at the time of writing.',
       ] },
-      { kind: 'callout', label: 'The honest part', text: 'Two misses this week, listed the same way as the hits. A week is far too small a sample to mean anything either way.' },
+      { kind: 'callout', label: 'The honest part', text: 'The misses are listed the same way as the hits. A week is far too small a sample to mean anything either way.' },
       { kind: 'cta', line: 'Every call, published as it was made.' },
     ],
   },

@@ -136,7 +136,7 @@ const TASKS = {
     facts: f => ({ ...pick(f, ['rangeLabel']), rows: pickEach(f.rows, ['date', 'pair', 'direction', 'outcome']) }),
     brief: `Write an honest scoreboard post for the week's calls.
 - Name the misses as plainly as the hits. Do not bury them, excuse them or spin them.
-- NO aggregate anywhere: no percentage, no win rate, no hit count, no "X of Y", no totals. Talk about individual calls.
+- NO aggregate anywhere: no percentage, no win rate, no totals, and no counting of any kind — never "three calls", "one miss", "twice", "three sessions", "mostly", "most of it", "every one of those hit", "one didn't", "X of Y". Talk about individual calls.
 - outcome "open" means the call has not resolved yet.
 - When PLATFORM is linkedin, close with what the week taught — a lesson about process or reading the macro picture, not a claim about performance.`,
   },
@@ -559,15 +559,17 @@ Slide plan, in this order:
   },
 
   scorecard: {
-    slides: [5, 7],
+    // Sized by the week, not fixed: every call needs its own line, three to a points slide.
+    slides: f => scorecardSlideRange(f?.rows),
     facts: f => ({ ...pick(f, ['rangeLabel']), rows: pickEach(f.rows, ['date', 'pair', 'direction', 'outcome']) }),
     brief: `Show the week's calls, hits and misses alike, from FACTS.rows.
 Slide plan:
 1. cover — the week's range from FACTS.rangeLabel.
-2-3. points — the calls, at most three per slide, one honest line each: the date, the pair, the direction, and how it resolved. A miss is written as plainly as a hit.
-4. callout — one honest line about the week. A week is a small sample and says little either way.
-5. cta.
-- NO aggregate anywhere, including the caption: no percentage, no win rate, no hit count, no "X of Y", no totals, no streak.
+2. points — the calls in date order, at most three per slide, one honest line each: the date exactly as FACTS gives it (for example "Mon 21"), the pair, the direction, and how it resolved. EVERY row in FACTS.rows gets its own line; none may be left out, merged or summarised. Use as many points slides as that takes. A miss is written as plainly as a hit. Label and title each points slide by its day or days (for example "Wednesday"), never by how many calls it holds.
+3. callout — one honest line about the week. A week is a small sample and says little either way. The callout counts nothing: no "one miss", no "a single call"; if it names a call, name it by pair and day.
+4. cta.
+- The caption describes only the rows in FACTS. Do not mention open calls unless a row's outcome is "open".
+- NO aggregate anywhere, including the caption: no percentage, no win rate, no totals, no streak, and no counting of any kind — never "three calls", "one miss", "two hits", "twice", "three sessions", "mostly", "X of Y" or "4 for 5". Name the calls; never count them.
 - outcome "open" means the call has not resolved yet. Say so; do not guess how it will end.`,
   },
 
@@ -651,6 +653,41 @@ function deckFlags(slides, [min, max]) {
   return out
 }
 
+// The scorecard deck's slide range: cover + callout + cta, plus enough points slides for every call.
+// The fewest is three calls to a slide; the most is one run of slides per day (a day's calls never
+// need to share a slide with another day's). Capped at Instagram's limit.
+export function scorecardSlideRange(rows) {
+  const list = Array.isArray(rows) ? rows : []
+  const perDay = new Map()
+  for (const r of list) perDay.set(r?.date, (perDay.get(r?.date) || 0) + 1)
+  const fewest = Math.max(1, Math.ceil(list.length / 3))
+  const most = Math.max(fewest, [...perDay.values()].reduce((s, k) => s + Math.ceil(k / 3), 0))
+  return [3 + fewest, Math.min(CAROUSEL_MAX_SLIDES, 3 + most)]
+}
+
+// Every call in FACTS.rows must appear on its own points line: its pair, its day and its direction.
+// The fact check sees what is written, not what was left out, so an omitted call — the Monday that
+// used to fall off — needs a check of its own. Returns hard flags naming each missing call.
+export function scorecardCoverageFlags(slides, rows) {
+  const lines = (Array.isArray(slides) ? slides : []).filter(s => s?.kind === 'points').flatMap(s => s.points || [])
+  const used = new Set()
+  const out = []
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const pair = String(r?.pair || '').toUpperCase().replace(/[^A-Z]/g, '')
+    const day = (String(r?.date || '').match(/\d+/) || [])[0]
+    const dirRe = /BULL|BUY|LONG/i.test(r?.direction || '') ? /\b(bull\w*|buy|long)\b/i : /\b(bear\w*|sell|short)\b/i
+    const i = lines.findIndex((line, n) => {
+      if (used.has(n)) return false
+      const flat = line.toUpperCase().replace(/[^A-Z]/g, '')
+      const pairOk = flat.includes(pair) || (pair === 'XAUUSD' && flat.includes('GOLD'))
+      return pairOk && (!day || new RegExp(`\\b${day}\\b`).test(line)) && dirRe.test(line)
+    })
+    if (i === -1) out.push({ level: 'hard', code: 'scorecard_coverage', msg: `the deck leaves out a call: ${r?.date} ${r?.pair} ${r?.direction} — every call in FACTS.rows needs its own line` })
+    else used.add(i)
+  }
+  return out
+}
+
 // Caption rules specific to a carousel caption, on top of validateSocialPost.
 export function captionFlags(caption) {
   const out = []
@@ -704,6 +741,11 @@ function carouselUserMessage({ carouselType, facts, topic, notes, pastTexts }) {
     `TASK:\n${task.brief}`,
     `FACTS:\n${JSON.stringify(modelFacts)}`,
   ]
+  // A deck sized by its facts (the scorecard) states the count it will be held to.
+  if (typeof task.slides === 'function') {
+    const [min, max] = task.slides(facts)
+    parts.push(`SLIDE COUNT: ${min === max ? `exactly ${min}` : `${min} to ${max}`} slides in total, cover and cta included.`)
+  }
   if (topic?.title) parts.push(`TOPIC: ${topic.title}${topic.angle ? `\nANGLE: ${topic.angle}` : ''}`)
   if (notes && String(notes).trim()) parts.push(`NOTES:\n${String(notes).trim()}`)
   parts.push(pastTexts.length
@@ -718,7 +760,9 @@ export function checkCarousel({ carouselType, slides, caption, facts = {}, pastT
   const task = CAROUSEL_TASKS[carouselType]
   if (!task) throw new Error(`checkCarousel: unknown carouselType "${carouselType}"`)
   const list = Array.isArray(slides) ? slides : []
-  const flags = [...deckFlags(list, task.slides), ...captionFlags(caption)]
+  const range = typeof task.slides === 'function' ? task.slides(facts) : task.slides
+  const flags = [...deckFlags(list, range), ...captionFlags(caption)]
+  if (carouselType === 'scorecard') flags.push(...scorecardCoverageFlags(list, facts?.rows))
   const edu = CAROUSEL_EDU_TYPES.has(carouselType)
 
   // The caption is a post in its own right: full guardrails, including the duplicate check.

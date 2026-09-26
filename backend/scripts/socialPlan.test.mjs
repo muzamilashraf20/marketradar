@@ -125,7 +125,8 @@ const loud = () => { console.log = REAL.log; console.warn = REAL.warn; console.e
 
 // ── 4. Outcome scoring runs on a schedule, without the endpoint ───────────────
 {
-  const scoringSrc = cut('// Score the v2 biases of the last `days` days', "app.get('/api/bias-performance'")
+  // From the dedupe helper on: scoreBiasHistory collapses duplicate rows before scoring them.
+  const scoringSrc = cut('// Collapse bias_history rows that record the SAME', "app.get('/api/bias-performance'")
   let history = [], scored = []
   const supabase = { from: () => {
     const st = { f: [], op: 'select', p: null }

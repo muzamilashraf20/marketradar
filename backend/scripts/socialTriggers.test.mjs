@@ -26,6 +26,10 @@ for (const n of ['enqueueBiasCardDraft', 'runSocialPlanner', 'enqueueNewsReactio
 const LOADER = "const loadRenderer = () => import('./social/renderer.js')"
 if (!rawBlock.includes(LOADER)) throw new Error('extraction sanity check failed: the renderer loader moved')
 const block = rawBlock.replace(LOADER, '')
+// The scorecard collapses duplicate bias_history rows with the tracker's helper, which lives
+// outside the social block — the real one is passed in rather than faked.
+const dedupeBiasRows = new Function(`${cutOut('// Collapse bias_history rows that record the SAME', '// The Bias History banner')}
+return dedupeBiasRows`)()
 
 let pass = 0, fail = 0
 const REAL = { log: console.log, error: console.error, warn: console.warn }
@@ -91,7 +95,7 @@ function build() {
     // for outside it — the caps, the renderer, storage, the writer, the DM plumbing — is faked here.
     // igLanes below decides whether this run does any Instagram work at all.
     'igDailyCap', 'igStoryDailyCap', 'loadRenderer', 'socialUploadPng', 'socialPastTexts', 'generateCarousel',
-    'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence', 'newsCardData',
+    'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence', 'newsCardData', 'dedupeBiasRows',
     `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, enqueueNewsReactions, nextEventPreview, eventsAllPast, isSameStory, NEWS_DAILY_MAX, calledItCandidate, planIgCarousel }`,
   )(supabase, createDraftAndNotify, async k => snap[k] ?? null, (k, v) => { snap[k] = v }, async (c, t) => { dms.push({ text: t }) }, () => '111', s => String(s ?? ''),
     async () => calendar, { macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology' },
@@ -105,7 +109,8 @@ function build() {
     () => scoredNews, s => String(s || '').split('.')[0],
     // The real one lives in the drafts section; the news lane falls back to it when a card was
     // not rendered, which is always the case here because createDraftAndNotify is faked.
-    (facts = {}, postText = '') => ({ summary: facts.oneliner || postText, assets: facts.instruments || [], impactScore: facts.impactScore, time: facts.publishedAt || null, date: new Date(NOW).toISOString() }))
+    (facts = {}, postText = '') => ({ summary: facts.oneliner || postText, assets: facts.instruments || [], impactScore: facts.impactScore, time: facts.publishedAt || null, date: new Date(NOW).toISOString() }),
+    dedupeBiasRows)
 }
 const restore = () => { console.log = REAL.log; console.error = REAL.error; console.warn = REAL.warn }
 const run = async fn => { const m = build(); try { return await fn(m) } finally { restore() } }
@@ -328,13 +333,13 @@ const plannerLine = () => logs.filter(l => l.startsWith('[social planner]')).pop
   // Saturday.
   const fin = correct => ({ status: 'final', correct })
   reset(); at('2026-09-26', '07:00')
-  hist({ performance: fin(true) }); hist({ performance: fin(false) }); hist({ performance: { status: 'live' } })
+  hist({ performance: fin(true) }); hist({ pair: 'GBPUSD', performance: fin(false) }); hist({ pair: 'AUDUSD', performance: { status: 'live' } })
   await run(m => m.runSocialPlanner())
   const sat2 = drafts.filter(d => d.platform === 'linkedin')
   check('Saturday with 2 resolved calls → LinkedIn education instead, reason logged', sat2.length === 1 && sat2[0].contentType === 'education' && logs.some(l => /LinkedIn Saturday results skipped — only 2 resolved/.test(l)) && /saturday results skipped/.test(sat2[0].sourceRef.reason), JSON.stringify(sat2))
 
   reset(); at('2026-09-26', '07:00')
-  hist({ performance: fin(true) }); hist({ performance: fin(false) }); hist({ pair: 'GBPUSD', performance: fin(true) }); hist({ pair: 'AUDUSD', performance: fin(false) })
+  hist({ performance: fin(true) }); hist({ pair: 'USDJPY', performance: fin(false) }); hist({ pair: 'GBPUSD', performance: fin(true) }); hist({ pair: 'AUDUSD', performance: fin(false) })
   await run(m => m.runSocialPlanner())
   const sat4 = drafts.filter(d => d.platform === 'linkedin')
   check('Saturday with 4 resolved calls → LinkedIn weekly_scorecard', sat4.length === 1 && sat4[0].contentType === 'weekly_scorecard' && sat4[0].pillar === 'accountability', JSON.stringify(sat4.map(d => d.contentType)))
@@ -381,7 +386,7 @@ const plannerLine = () => logs.filter(l => l.startsWith('[social planner]')).pop
 
   // Saturday needs three resolved calls.
   reset(); at('2026-09-26', '07:00')
-  for (const o of ['hit', 'miss', 'hit']) hist({ performance: { status: 'final', correct: o === 'hit' }, generated_at: iso(NOW.getTime() - 2 * 86400000) })
+  for (const [pair, o] of [['EURUSD', 'hit'], ['GBPUSD', 'miss'], ['USDJPY', 'hit']]) hist({ pair, performance: { status: 'final', correct: o === 'hit' }, generated_at: iso(NOW.getTime() - 2 * 86400000) })
   plan = await pick()
   check('Saturday with 3 resolved calls → scorecard', plan.type === 'scorecard' && plan.facts.rows.length === 3, JSON.stringify(plan.type))
 

@@ -584,25 +584,35 @@ const OUTCOMES = {
   open: { text: 'OPEN', color: MUTED },
 }
 
-function scorecardRow(row, story) {
+// Up to SCORECARD_ROOMY_ROWS rows at full size; past that, rows go dense so a busy week still fits.
+// The card says "Every call", so it never drops one: more than SCORECARD_MAX_ROWS is an error (the
+// caller then posts text-only and logs it) rather than a card that quietly lists part of the week.
+export const SCORECARD_MAX_ROWS = 12
+const SCORECARD_ROOMY_ROWS = 7
+
+function scorecardRow(row, story, dense = false) {
   const tone = directionTone(row.direction)
   const o = OUTCOMES[String(row.outcome).trim().toLowerCase()]
   // Hit and miss badges are the same size, weight and glow — only the colour differs.
   return glass(`
-    <div style="display:flex;width:140px;${MONO};font-size:${story ? 24 : 22}px;color:${MUTED}">${txt(row.date)}</div>
-    <div style="display:flex;width:240px;font-size:${story ? 40 : 36}px;font-weight:700;color:${TEXT}">${txt(formatPair(row.pair))}</div>
+    <div style="display:flex;width:140px;${MONO};font-size:${story ? 24 : dense ? 20 : 22}px;color:${MUTED}">${txt(row.date)}</div>
+    <div style="display:flex;width:240px;font-size:${story ? (dense ? 34 : 40) : dense ? 28 : 36}px;font-weight:700;color:${TEXT}">${txt(formatPair(row.pair))}</div>
     <div style="display:flex;flex:1;align-items:center;gap:12px">
-      ${arrow(tone.color, tone.up, 28)}
-      <div style="display:flex;font-size:26px;font-weight:700;color:${tone.color}">${txt(tone.word)}</div>
+      ${arrow(tone.color, tone.up, dense ? 22 : 28)}
+      <div style="display:flex;font-size:${dense ? 22 : 26}px;font-weight:700;color:${tone.color}">${txt(tone.word)}</div>
     </div>
-    <div style="display:flex;justify-content:center;width:150px;padding:12px 0;border-radius:10px;background:${rgba(o.color, 0.14)};border:1px solid ${rgba(o.color, 0.7)};box-shadow:0 0 16px ${rgba(o.color, 0.35)};${MONO};font-size:24px;font-weight:700;letter-spacing:4px;color:${o.color}">${txt(o.text)}</div>`,
-  { accent: o.color === MUTED ? MUTED : o.color, dir: 'row', pad: story ? '20px 26px' : '14px 24px', gap: 22, extra: 'align-items:center', bracket: false, glow: 0.08 })
+    <div style="display:flex;justify-content:center;width:150px;padding:${dense ? 6 : 12}px 0;border-radius:10px;background:${rgba(o.color, 0.14)};border:1px solid ${rgba(o.color, 0.7)};box-shadow:0 0 16px ${rgba(o.color, 0.35)};${MONO};font-size:${dense ? 20 : 24}px;font-weight:700;letter-spacing:4px;color:${o.color}">${txt(o.text)}</div>`,
+  { accent: o.color === MUTED ? MUTED : o.color, dir: 'row', pad: story ? (dense ? '12px 26px' : '20px 26px') : dense ? '6px 24px' : '14px 24px', gap: 22, extra: 'align-items:center', bracket: false, glow: 0.08 })
 }
 
 function weeklyScorecard(data, fmt) {
   requireFields('weekly_scorecard', data, ['rangeLabel'])
   if (!Array.isArray(data.rows) || !data.rows.length) throw new Error('renderCard(weekly_scorecard): data.rows must be a non-empty array')
-  const rows = data.rows.slice(0, 7)
+  if (data.rows.length > SCORECARD_MAX_ROWS) {
+    throw new Error(`renderCard(weekly_scorecard): ${data.rows.length} calls; the card holds ${SCORECARD_MAX_ROWS} and will not drop any`)
+  }
+  const rows = data.rows
+  const dense = rows.length > SCORECARD_ROOMY_ROWS
   rows.forEach((r, i) => {
     requireFields('weekly_scorecard', r, ['date', 'pair', 'direction', 'outcome'], `rows[${i}]`)
     if (!OUTCOMES[String(r.outcome).trim().toLowerCase()]) {
@@ -620,7 +630,7 @@ function weeklyScorecard(data, fmt) {
           <div style="display:flex;font-size:${story ? 76 : 66}px;font-weight:700;letter-spacing:-2px;margin-top:16px;color:${TEXT}">${txt(data.rangeLabel)}</div>
           <div style="display:flex;font-size:26px;margin-top:12px;color:${MUTED}">Every call as it was made. Hits and misses alike.</div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:${story ? 16 : 12}px">${rows.map(r => scorecardRow(r, story)).join('')}</div>
+        <div style="display:flex;flex-direction:column;gap:${story ? (dense ? 12 : 16) : dense ? 8 : 12}px">${rows.map(r => scorecardRow(r, story, dense)).join('')}</div>
         ${engineStrip(accent, { compact: true })}
       </div>`,
   }

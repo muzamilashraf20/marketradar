@@ -540,7 +540,7 @@ function socialFactsBlock(contentType, facts = {}) {
     }
   } else if (contentType === 'weekly_scorecard' || contentType === 'scorecard') {
     if (facts.rangeLabel) lines.push(esc(facts.rangeLabel))
-    for (const r of (facts.rows || []).slice(0, 7)) lines.push(`• ${esc(r.date)} ${esc(r.pair)} ${esc(r.direction)} → ${esc(r.outcome)}`)
+    for (const r of facts.rows || []) lines.push(`• ${esc(r.date)} ${esc(r.pair)} ${esc(r.direction)} → ${esc(r.outcome)}`)
   } else if (contentType === 'daily_brief') {
     const b = facts.bias || {}
     lines.push(`${esc(b.pair)} · ${esc(b.direction)} · conf ${esc(b.confidence)} · grade ${esc(b.grade)}`)
@@ -1346,29 +1346,58 @@ function scorecardOutcome(perf) {
   return null
 }
 
+// The FX trading day a call belongs to. The market day rolls at 17:00 New York (see isForexClosed),
+// so a call at 19:57 ET on Thursday is Friday's call, and one after Sunday's open is Monday's.
+// Bucketing by UTC date put those on "Thu" and "Sun". Shifting by 7h puts the roll at midnight.
+function fxTradingDay(iso) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date(Date.parse(iso) + 7 * 3600 * 1000)).map(x => [x.type, x.value]))
+  return `${p.year}-${p.month}-${p.day}`
+}
+const fxDayLabel = day => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', timeZone: 'UTC' })
+
+// bias_history rows (ascending, v2) → the scorecard's calls. The unit is one pair on one trading
+// day: bias_history logs every headline change, so a pair that lost the headline and got it back
+// the same day has two rows for one view. Consecutive same-direction rows for a pair collapse to
+// the LAST one, with its outcome. A genuine flip (BUY then SELL) keeps both legs, each with its own
+// outcome — collapsing a flip to its final leg would erase a published call, and a missed first leg
+// would vanish from a card that says "every call". Rows with no verdict yet (unscored) are skipped,
+// as before. Pure: exercised directly by scripts/scorecard.test.mjs.
+function scorecardCalls(rows) {
+  const legs = new Map()   // "day|pair" → [{ direction, outcome, at }]
+  for (const r of dedupeBiasRows(rows)) {
+    const outcome = scorecardOutcome(r.performance)
+    if (!outcome) continue
+    const day = fxTradingDay(r.generated_at)
+    const pair = String(r.pair || '').toUpperCase()
+    const direction = String(r.direction || '').toUpperCase()
+    const k = `${day}|${pair}`
+    const list = legs.get(k) || []
+    const leg = { day, pair, direction, outcome, at: Date.parse(r.generated_at) }
+    if (list.length && list[list.length - 1].direction === direction) list[list.length - 1] = leg
+    else list.push(leg)
+    legs.set(k, list)
+  }
+  return [...legs.values()].flat()
+    .sort((a, b) => a.day.localeCompare(b.day) || a.at - b.at)
+    .map(c => ({ date: fxDayLabel(c.day), pair: c.pair, direction: c.direction, outcome: c.outcome }))
+}
+
 async function socialScorecardRows() {
   const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
   const { data, error } = await supabase.from('bias_history')
-    .select('id,pair,direction,generated_at,performance')
+    .select('id,engine,pair,direction,generated_at,performance')
     .eq('engine', 'v2').gte('generated_at', since).order('generated_at', { ascending: true })
   if (error) throw new Error(`bias_history read failed: ${error.message}`)
-  const rows = []
-  for (const r of data || []) {
-    const outcome = scorecardOutcome(r.performance)
-    if (!outcome) continue
-    rows.push({
-      date: new Date(r.generated_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', timeZone: 'UTC' }),
-      pair: r.pair, direction: String(r.direction || '').toUpperCase(), outcome,
-    })
-  }
-  return rows
+  return scorecardCalls(data || [])
 }
 
 function scorecardFacts(rows, now = new Date()) {
   const start = new Date(now.getTime() - 6 * 24 * 3600 * 1000)
   const fmt = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })
-  // No counts, percentages or totals anywhere — the rows speak for themselves.
-  return { rows: rows.slice(-7), rangeLabel: `${fmt(start)} – ${fmt(now)}` }
+  // No counts, percentages or totals anywhere — the rows speak for themselves. Every call is kept:
+  // this used to be rows.slice(-7), which silently dropped the start of a busy week (Monday).
+  return { rows, rangeLabel: `${fmt(start)} – ${fmt(now)}` }
 }
 
 // ── LinkedIn education ────────────────────────────────────────────────────────
@@ -4687,7 +4716,19 @@ async function computeTodaysAIBias(force = false, sessionOpen = false, _exhaustR
 // Shared publish tail for BOTH engines: cache, persist, record history, alert subscribers, post to
 // the channel. Extracted so the v2 headline path gets identical downstream behaviour instead of a
 // second copy that can drift.
-async function publishTodayBias(result) {
+//
+// Serialised. The change check below compares against lastTodaysBiasKey but only advances it AFTER
+// the history insert resolves, so two overlapping calls (two dashboard loads hitting a stale
+// /api/today-bias in the same second) both saw "changed" and both inserted: bias_history rows 269/270
+// on 2026-09-24 are byte-identical and 0.45s apart. Each call now runs after the previous one has
+// finished, so the second sees the advanced key and does nothing. Same for the channel post key.
+let publishTodayBiasChain = Promise.resolve()
+function publishTodayBias(result) {
+  const run = publishTodayBiasChain.then(() => publishTodayBiasNow(result))
+  publishTodayBiasChain = run.catch(() => {})
+  return run
+}
+async function publishTodayBiasNow(result) {
   setCache('today_bias', result)
   saveTodayBiasState(result).catch(() => {})
 
@@ -4746,8 +4787,22 @@ async function publishTodayBias(result) {
 // /api/bias-performance, which is what drops the historical XAUUSD rows (v2 does not score gold).
 async function saveBiasHistory(result, previousKey) {
   try {
+    const engine = result.engine === 'v2' ? 'v2' : 'v1'
+    const generatedAt = result.generatedAt || new Date().toISOString()
+    // One row per bias snapshot. generated_at is the engine's own timestamp for the bias (v2: the
+    // pair's bias_state_v2.updated_at), so pair + direction + generated_at identifies it. The same
+    // snapshot comes back when the headline hands over and returns before the engine re-scores, or
+    // when an old and a new container overlap during a deploy; a second row for it would list and
+    // score the same call twice. The existing id is returned, so callers behave as if it saved.
+    const { data: existing } = await supabase.from('bias_history').select('id')
+      .eq('engine', engine).eq('pair', result.pair).eq('direction', result.direction).eq('generated_at', generatedAt)
+      .limit(1).maybeSingle()
+    if (existing?.id) {
+      console.log(`📜 Bias history: ${result.direction} ${result.pair} @ ${generatedAt} already recorded (#${existing.id}) — not inserting again`)
+      return existing.id
+    }
     const { data, error } = await supabase.from('bias_history').insert({
-      engine: result.engine === 'v2' ? 'v2' : 'v1',
+      engine,
       pair: result.pair,
       direction: result.direction,
       confidence: result.confidence,
@@ -4755,7 +4810,7 @@ async function saveBiasHistory(result, previousKey) {
       reasoning: result.reasoning,
       previous_bias: previousKey,
       invalidation: result.bias?.levels?.invalidation || null,
-      generated_at: result.generatedAt || new Date().toISOString(),
+      generated_at: generatedAt,
     }).select('id').single()
     if (error) throw error   // supabase-js DB errors ko return karta hai, throw nahi — check zaroori
     console.log(`📜 Bias history saved: ${result.direction} ${result.pair} (was: ${previousKey || 'first of day'})`)
@@ -4885,6 +4940,46 @@ async function scoreBias(row) {
   }
 }
 
+// Collapse bias_history rows that record the SAME bias snapshot (engine + pair + direction +
+// generated_at) to one. saveBiasHistory no longer writes such rows, but a race wrote some before it
+// was fixed (#269/#270, 2026-09-24), and every reader must list and count that call once. Keeps the
+// row that is already finally scored, else the earliest id. Order of the input is preserved.
+function dedupeBiasRows(rows) {
+  const keyOf = r => `${r.engine || ''}|${String(r.pair || '').toUpperCase()}|${String(r.direction || '').toUpperCase()}|${Date.parse(r.generated_at)}`
+  const best = new Map()
+  for (const r of rows || []) {
+    const k = keyOf(r)
+    const cur = best.get(k)
+    const final = x => x?.performance?.status === 'final'
+    if (!cur || (final(r) && !final(cur)) || (final(r) === final(cur) && Number(r.id) < Number(cur.id))) best.set(k, r)
+  }
+  const keep = new Set(best.values())
+  return (rows || []).filter(r => keep.has(r))
+}
+
+// The Bias History banner, computed from EXACTLY the rows the modal lists. It used to count only
+// grade A+/A/B at 60%+ confidence while the list showed every row — and v2 grades A-, so an A- loss
+// sat in the list while the banner read 4/4. If a row is shown with a verdict, it counts.
+// What a hit is (pips > 0 when the 24h window closes, set in scoreBias) is unchanged.
+function biasPerformanceSummary(results) {
+  const final = results.filter(r => r.performance?.status === 'final' && typeof r.performance.correct === 'boolean')
+  const live = results.filter(r => r.performance && r.performance.status === 'live')
+  const withPips = results.filter(r => r.performance && typeof r.performance.pips === 'number' && (r.performance.status === 'final' || r.performance.status === 'live'))
+  const wins = final.filter(r => r.performance.correct === true)
+  const avg = (arr, key) => arr.length ? +(arr.reduce((s, r) => s + r.performance[key], 0) / arr.length).toFixed(1) : null
+  return {
+    total: results.length,
+    scored: final.length,          // finalized = counted toward win rate
+    live: live.length,             // still inside 24h window
+    wins: wins.length,
+    winRate: final.length ? +((wins.length / final.length) * 100).toFixed(1) : null,
+    avgPips: avg(withPips, 'pips'),
+    avgMfePips: avg(withPips, 'mfePips'),
+    avgMaePips: avg(withPips, 'maePips'),
+    countedBasis: 'Every resolved call listed'
+  }
+}
+
 // 🎯 Bias performance — every bias scored vs real market + summary stats
 // Score the v2 biases of the last `days` days and persist every completed 24h window. Moved out of
 // /api/bias-performance unchanged, so a schedule can run it too: finalised outcomes used to be
@@ -4904,7 +4999,7 @@ async function scoreBiasHistory(days) {
 
   let fetches = 0
   const results = []
-  for (const row of rows || []) {
+  for (const row of dedupeBiasRows(rows)) {
     // Already permanently scored → reuse, zero API cost
     if (row.performance?.status === 'final') { results.push(row); continue }
     if (fetches >= TRACKER_MAX_FETCHES) {
@@ -4946,32 +5041,9 @@ app.get('/api/bias-performance', async (req, res) => {
     const cacheKey = `bias_performance_${days}`
     if (isCacheFresh(cacheKey)) return res.json(getCached(cacheKey))
     const results = await scoreBiasHistory(days)
-
-    // Win/loss verdict ONLY from closed 24h windows (final) AND high-conviction calls — Grade B+
-    // with 60%+ confidence. Low-conviction D-grade biases (e.g. NFP-day whipsaws) were never meant
-    // to be acted on and shouldn't drag down the win rate. Live biases show running pips but don't
-    // affect win rate.
-    const isHighConviction = (r) => {
-      const g = (r.trade_grade || r.tradeGrade || '').toUpperCase()
-      const conf = r.confidence ?? r.performance?.confidence ?? 0
-      return ['A+', 'A', 'B'].includes(g) && conf >= 60
-    }
-    const final = results.filter(r => r.performance?.status === 'final' && isHighConviction(r))
-    const live = results.filter(r => r.performance && r.performance.status === 'live')
-    const withPips = results.filter(r => r.performance && typeof r.performance.pips === 'number' && (r.performance.status === 'final' || r.performance.status === 'live'))
-    const wins = final.filter(r => r.performance.correct === true)
-    const avg = (arr, key) => arr.length ? +(arr.reduce((s, r) => s + r.performance[key], 0) / arr.length).toFixed(1) : null
-    const summary = {
-      total: results.length,
-      scored: final.length,          // finalized = counted toward win rate
-      live: live.length,             // still inside 24h window
-      wins: wins.length,
-      winRate: final.length ? +((wins.length / final.length) * 100).toFixed(1) : null,
-      avgPips: avg(withPips, 'pips'),
-      avgMfePips: avg(withPips, 'mfePips'),
-      avgMaePips: avg(withPips, 'maePips'),
-      countedBasis: 'Grade B+ & 60%+ confidence'
-    }
+    // Win/loss verdict only from closed 24h windows; live biases show running pips but don't count.
+    // Summary and list are the same `results` array — see biasPerformanceSummary.
+    const summary = biasPerformanceSummary(results)
     const payload = { success: true, days, summary, history: results }
     setCache(cacheKey, payload)
     res.json(payload)

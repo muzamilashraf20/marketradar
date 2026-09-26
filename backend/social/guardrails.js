@@ -111,6 +111,47 @@ function countEmoji(text) {
 
 const anyMatch = (text, patterns) => patterns.some(re => re.test(text))
 
+// ── Scorecard tallies ─────────────────────────────────────────────────────────
+// A scorecard lists calls; it never counts them. "Three calls, one miss" is a win rate with the
+// division left to the reader, so counts are banned the same way percentages are. Dates are
+// stripped first: "Fri 25 GBPUSD miss" is a call, not twenty-five misses.
+const WEEKDAY_RE = '(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)'
+const MONTH_RE = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+const DATE_STRIP_RES = [
+  new RegExp(`\\b${WEEKDAY_RE}\\.?,?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, 'gi'),
+  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MONTH_RE}\\b`, 'gi'),
+  new RegExp(`\\b${MONTH_RE}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, 'gi'),
+  /\b\d{1,2}:\d{2}\b/g,
+]
+const COUNT_WORD = '(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|zero|both|a single)'
+// sessions / days / times / pairs too: "three separate sessions, same result" is a hit count.
+const TALLY_NOUN = '(?:calls?|hits?|miss(?:es|ed)?|wins?|winners?|loss(?:es)?|losers?|correct|wrong|right|trades?|resolved|landed|sessions?|days?|times|pairs?)'
+const TALLY_RES = [
+  // "three calls", "one miss", "two losing calls", "4 hits"
+  new RegExp(`\\b${COUNT_WORD}\\s+(?:[\\p{L}/-]+\\s+)?${TALLY_NOUN}\\b`, 'iu'),
+  // "three of four", "5 out of 7", "4 for 5"
+  new RegExp(`\\b${COUNT_WORD}\\s+(?:out\\s+of|of|for)\\s+${COUNT_WORD}\\b`, 'i'),
+  // "4-1 week", "5/7 correct"
+  /\b\d+\s*[-–/]\s*\d+\s+(?:week|record|run|calls?|correct|hits?)\b/i,
+  /\b(?:streak|clean sweep|perfect week|unbeaten|undefeated|twice|thrice)\b/i,
+  // A ratio in words: "a mostly clean week", "most of it", "every one of those hit", "the majority".
+  /\b(?:mostly|majority)\b/i,
+  /\bmost of (?:it|them|those|these|the|our|this|that)\b/i,
+  /\b(?:every one|each one|all) of (?:them|those|these)\b/i,
+  // A count as the subject: "one didn't", "two went against us".
+  new RegExp(`(?:^|[.!?;:—–-]\\s*)${COUNT_WORD}\\s+(?:didn'?t|did not|failed|held|worked|went|landed|missed)\\b`, 'im'),
+]
+export function scorecardTally(text) {
+  let t = String(text || '')
+  for (const re of DATE_STRIP_RES) t = t.replace(re, ' ')
+  for (const re of TALLY_RES) {
+    const m = t.match(re)
+    if (m) return m[0].trim()
+  }
+  return null
+}
+const SCORECARD_TYPES = new Set(['weekly_scorecard', 'scorecard'])
+
 export function validateSocialPost(text, opts) {
   const flags = []
   const hard = (code, msg) => flags.push({ level: 'hard', code, msg })
@@ -164,6 +205,12 @@ export function validateSocialPost(text, opts) {
   // number the model made up.
   if (anyMatch(text, [/\d+\s?%\s?(win|accura|profit|return|success)/i, /\b\d+\s?%\s?win[-\s]?rate/i])) {
     hard('perf_claim', 'Contains a performance percentage we cannot back up')
+  }
+
+  // A count of calls, hits or misses is the same claim as a percentage — see scorecardTally.
+  if (SCORECARD_TYPES.has(contentType)) {
+    const tally = scorecardTally(text)
+    if (tally) hard('tally', `Counts calls ("${tally}"); a scorecard lists calls, it never counts them`)
   }
 
   // Worn-out house phrases. Repeating them makes every post sound like the last one.
