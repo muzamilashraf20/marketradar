@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { validateSocialPost, scorecardTally } from '../social/guardrails.js'
-import { checkCarousel, scorecardSlideRange } from '../social/generator.js'
+import { checkCarousel, scorecardSlideRange, generateCarousel } from '../social/generator.js'
 import { renderCard, SCORECARD_MAX_ROWS } from '../social/renderer.js'
 
 const src = readFileSync(fileURLToPath(new URL('../index.js', import.meta.url)), 'utf8')
@@ -194,16 +194,69 @@ const LIVE = [
   const [lo, hi] = scorecardSlideRange(rows)
   check('slide range grows with the week (7 calls over 4 days → 6-7 slides)', lo === 6 && hi === 7, `${lo}-${hi}`)
 
-  for (const text of ['Three calls, one miss.', 'Four hits this week.', 'Two losing calls, both on GBP/USD.', 'Went 4 for 5.', 'Three of four landed.', 'A 5-1 week.', 'No misses since Monday — a clean sweep.', 'One call went against us.',
-    // Phrasings the live regeneration on 2026-09-26 produced before the rule covered them.
-    'Three separate sessions, same read, same result.', 'USDCAD bullish twice on Monday and Wednesday.', 'A week that was mostly clean.', 'Two pairs, two directions', 'GBPUSD bearish across three sessions',
-    'USDCAD bullish ran Monday, Wednesday and Thursday. Every one of those hit.', "Most of it moved with the bias. One didn't.", 'One miss is on the board this week.']) {
-    check(`tally: "${text}" is a hard flag on a scorecard`, hardCodes(validateSocialPost(text, { platform: 'x', contentType: 'weekly_scorecard' }).flags).includes('tally'), JSON.stringify(scorecardTally(text)))
-  }
-  for (const text of ['Fri 25 — GBP/USD bearish. Resolved as a miss.', 'Mon 21 USDCAD bullish: hit.', 'Wednesday 23 September, gold bearish, resolved as a hit.', 'A week is a small sample and says little either way.', 'Each call is scored over its own 24-hour window.', '20 September – 26 September', 'Mon 21 — USDCAD — Bullish — Hit', 'Most traders judge a week by its outcome.']) {
-    check(`no tally: "${text}"`, scorecardTally(text) === null, JSON.stringify(scorecardTally(text)))
-  }
-  check('tally rule is scoped to scorecards', !hardCodes(validateSocialPost('Three things traders get wrong about CPI.', { platform: 'x', contentType: 'education' }).flags).includes('tally'))
+  // The rule blocks AGGREGATE scoreboard phrasing only — a number applied to the calls as a whole.
+  // Every vector runs against this week's real FACTS (six hits, one miss).
+  const flagged = text => hardCodes(validateSocialPost(text, { platform: 'x', contentType: 'weekly_scorecard', facts }).flags).includes('tally')
+  const BLOCK = [
+    // The cases asked for by name.
+    'Three calls, one miss.', '2 hits and a miss.',
+    'Five calls this week.', 'Four hits this week.', 'Two losing calls, both on GBP/USD.', 'Six calls went the right way.', 'Two missed.',
+    'Went 4 for 5.', 'Three of four landed.', '5 out of 7 calls.', 'A 5-1 week.',
+    'Most landed.', 'The majority held.', 'Most of it moved with the bias.', 'A week that was mostly clean.', 'Every call hit.', 'All of them landed.',
+    'No misses since Monday.', 'A clean sweep.', 'A three-week streak.', 'An 86% hit rate.', 'The win rate held up.',
+  ]
+  const PASS = [
+    // The cases asked for by name.
+    'Both resolved.', 'One miss is on the board.', 'The engine reads five inputs.',
+    // A single named call and its outcome, a miss included.
+    "GBPUSD on Friday didn't hold.", 'One call went against us: GBPUSD on Friday.', "One didn't.", 'Fri 25 — GBP/USD bearish. Resolved as a miss.', 'Miss.', 'Hit.',
+    // Counts that are not the scoreboard.
+    'Five data sources feed every read.', 'One pair carried the week.', 'Two sessions of chop on GBPUSD.', 'Two pairs, two directions', 'USDCAD bullish Monday, Wednesday and Thursday. Every one of those hit.',
+    'One of three inputs disagreed.', 'GBPUSD bearish across three sessions',
+    // Dates, times and plain framing.
+    'Mon 21 USDCAD bullish: hit.', 'Wednesday 23 September, gold bearish, resolved as a hit.', '20 September – 26 September', 'Each call is scored over its own 24-hour window.',
+    'A week is a small sample and says little either way.', 'Most traders judge a week by its outcome.', 'It is not a record.',
+  ]
+  for (const text of BLOCK) check(`tally → hard flag: "${text}"`, flagged(text), JSON.stringify(scorecardTally(text, facts)))
+  for (const text of PASS) check(`not a tally → passes: "${text}"`, !flagged(text), JSON.stringify(scorecardTally(text, facts)))
+
+  // "one miss" names one call only when there IS exactly one — it must not understate a two-miss week.
+  const twoMisses = { rows: [...rows, { date: 'Fri 25', pair: 'EURUSD', direction: 'BULLISH', outcome: 'miss' }] }
+  check('"One miss is on the board" in a week with two misses → hard flag', hardCodes(validateSocialPost('One miss is on the board.', { platform: 'x', contentType: 'weekly_scorecard', facts: twoMisses }).flags).includes('tally'))
+  check('"a single hit" in a week of six hits → hard flag', flagged('A single hit to show for it.'))
+  check('tally rule is scoped to scorecards', !hardCodes(validateSocialPost('Three calls traders get wrong about CPI.', { platform: 'x', contentType: 'education' }).flags).includes('tally'))
+  const oneMissDeck = deck.map(s => (s.kind === 'callout' ? { ...s, text: 'One miss is on the board: GBPUSD on Friday 25. It goes up the same way a hit does.' } : s))
+  check('carousel: "One miss is on the board" callout (exactly one miss in FACTS) → deck passes', !hardCodes(checkCarousel({ carouselType: 'scorecard', slides: oneMissDeck, caption: CAPTION, facts })).length)
+}
+
+// ── The cta slide is not fact-checked against the scorecard's FACTS ───────────
+// Its job is to say what BiasForge does, which is never in FACTS; the grounding check flagged it
+// every run ("'daily macro bias' not mentioned in FACTS"). Any other slide is still checked.
+{
+  const rows = scorecardCalls(LIVE)
+  const facts = { rangeLabel: '20 September – 26 September', rows }
+  const line = r => `${r.date} — ${r.pair} ${r.direction.toLowerCase()}. ${r.outcome === 'miss' ? 'Miss.' : 'Hit.'}`
+  const slides = [
+    { kind: 'cover', kicker: 'Weekly scorecard', title: 'Every call, 20 to 26 September' },
+    { kind: 'points', label: 'Monday', title: 'Monday', points: rows.slice(0, 2).map(line) },
+    { kind: 'points', label: 'Wednesday', title: 'Wednesday', points: rows.slice(2, 5).map(line) },
+    { kind: 'points', label: 'Thursday and Friday', title: 'Thursday and Friday', points: rows.slice(5).map(line) },
+    { kind: 'callout', label: 'The honest part', text: 'GBPUSD on Friday did not hold. It sits next to the hits, the same size.' },
+    { kind: 'cta', line: 'BiasForge publishes the daily macro bias before the session opens.' },
+  ]
+  const caption = `The week of 20 to 26 September, call by call.\n\nThe misses are listed exactly like the hits. Nothing is filtered after the fact.\n\nA week is a small sample. Read the reasoning behind each call, not only the outcome column.\n\nNothing here is a trade call. It is what the engine said and how each call resolved.\n\n#forex #macro #propfirm #fundedtrader #forextrader`
+  const fake = (badWhen, seen) => ({ messages: { create: async p => {
+    if (!p.model.includes('haiku')) return { content: [{ type: 'text', text: JSON.stringify({ caption, slides }) }], usage: {} }
+    const texts = [...p.messages[0].content.matchAll(/^\[(\d+)\] (.*)$/gm)].map(m => m[2])
+    seen.push(...texts)
+    const checks = texts.map((t, i) => (badWhen(t) ? { i, grounded: false, evidence: [], issue: 'not mentioned in FACTS' } : { i, grounded: true, evidence: [], issue: null }))
+    return { content: [{ type: 'text', text: JSON.stringify({ checks }) }], usage: {} }
+  } } })
+  const seen = []
+  const ok = await generateCarousel({ carouselType: 'scorecard', facts, anthropic: fake(t => /daily macro bias/.test(t), seen) })
+  check('a checker that would reject the cta line never sees it — deck passes', !ok.failed && !seen.some(t => /daily macro bias/.test(t)), JSON.stringify(ok.flags))
+  const bad = await generateCarousel({ carouselType: 'scorecard', facts, anthropic: fake(t => /did not hold/.test(t), []) })
+  check('an ungrounded callout is still a hard flag, named by its real slide number', bad.failed && bad.flags.some(f => f.code === 'ungrounded' && /^slide 5 —/.test(f.msg)), JSON.stringify(bad.flags))
 }
 
 // ── Renderer: never drops a call ──────────────────────────────────────────────

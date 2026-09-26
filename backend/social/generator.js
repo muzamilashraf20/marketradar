@@ -136,7 +136,7 @@ const TASKS = {
     facts: f => ({ ...pick(f, ['rangeLabel']), rows: pickEach(f.rows, ['date', 'pair', 'direction', 'outcome']) }),
     brief: `Write an honest scoreboard post for the week's calls.
 - Name the misses as plainly as the hits. Do not bury them, excuse them or spin them.
-- NO aggregate anywhere: no percentage, no win rate, no totals, and no counting of any kind — never "three calls", "one miss", "twice", "three sessions", "mostly", "most of it", "every one of those hit", "one didn't", "X of Y". Talk about individual calls.
+- NO aggregate anywhere: no percentage, no win rate, no totals, and no aggregate scoreboard phrasing — never a number applied to the calls as a whole ("five calls", "3 hits", "two misses", "X of Y", "4 for 5", "most landed", "the majority"), no streak, no record. Naming one call and its outcome is fine, including a miss ("GBPUSD on Friday did not hold"). Talk about individual calls.
 - outcome "open" means the call has not resolved yet.
 - When PLATFORM is linkedin, close with what the week taught — a lesson about process or reading the macro picture, not a claim about performance.`,
   },
@@ -566,10 +566,10 @@ Slide plan, in this order:
 Slide plan:
 1. cover — the week's range from FACTS.rangeLabel.
 2. points — the calls in date order, at most three per slide, one honest line each: the date exactly as FACTS gives it (for example "Mon 21"), the pair, the direction, and how it resolved. EVERY row in FACTS.rows gets its own line; none may be left out, merged or summarised. Use as many points slides as that takes. A miss is written as plainly as a hit. Label and title each points slide by its day or days (for example "Wednesday"), never by how many calls it holds.
-3. callout — one honest line about the week. A week is a small sample and says little either way. The callout counts nothing: no "one miss", no "a single call"; if it names a call, name it by pair and day.
+3. callout — one honest line about the week. A week is a small sample and says little either way. If it names a call, name it by pair and day.
 4. cta.
 - The caption describes only the rows in FACTS. Do not mention open calls unless a row's outcome is "open".
-- NO aggregate anywhere, including the caption: no percentage, no win rate, no totals, no streak, and no counting of any kind — never "three calls", "one miss", "two hits", "twice", "three sessions", "mostly", "X of Y" or "4 for 5". Name the calls; never count them.
+- NO aggregate anywhere, including the caption: no percentage, no win rate, no totals, and no aggregate scoreboard phrasing — never a number applied to the calls as a whole ("five calls", "3 hits", "two misses", "X of Y", "4 for 5", "most landed", "the majority"), no streak, no record. Naming one call and its outcome is fine, including a miss ("GBPUSD on Friday did not hold").
 - outcome "open" means the call has not resolved yet. Say so; do not guess how it will end.`,
   },
 
@@ -801,13 +801,17 @@ export async function generateCarousel({ carouselType, facts = {}, topic = null,
   const check = async deck => {
     const flags = checkCarousel({ carouselType, slides: deck.slides, caption: deck.caption, facts: safeFacts, pastTexts: past })
     // One check over the caption and every slide, against the same facts the writer saw.
-    const texts = [deck.caption, ...deck.slides.map(slideText)]
+    // The cta slide is left out: its job is to say what BiasForge does, which is never in a
+    // carousel's FACTS, so the grounding check flagged it every time ("'daily macro bias' not
+    // mentioned in FACTS"). It still goes through every guardrail in checkCarousel above.
+    const checked = deck.slides.map((s, n) => ({ s, n })).filter(x => x.s.kind !== 'cta')
+    const texts = [deck.caption, ...checked.map(x => slideText(x.s))]
     const checks = doFactCheck
       ? await factCheck(anthropic, trackAI, modelFacts, texts, edu ? 'education' : 'grounding', CAROUSEL_FACTCHECK_MAX_TOKENS)
       : null
     let factcheck = { status: doFactCheck ? 'unavailable' : 'skipped', issue: null }
     if (checks) {
-      const bad = checks.map((c, i) => (c && !c.grounded ? { where: i === 0 ? 'caption' : `slide ${i}`, issue: c.issue } : null)).filter(Boolean)
+      const bad = checks.map((c, i) => (c && !c.grounded ? { where: i === 0 ? 'caption' : `slide ${checked[i - 1].n + 1}`, issue: c.issue } : null)).filter(Boolean)
       if (bad.length) {
         factcheck = { status: 'ungrounded', issue: bad.map(b => `${b.where}: ${b.issue}`).join('; ') }
         for (const b of bad) flags.push({ level: 'hard', code: edu ? 'claim_check' : 'ungrounded', msg: `${b.where} — ${b.issue}` })
