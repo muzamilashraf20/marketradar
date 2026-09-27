@@ -48,6 +48,10 @@ The number itself is almost never the story. Markets have already priced the con
 
 That is why a strong print can sell off and a weak one can rally. Your job around these events is not to guess the figure. It is to know when volatility is coming, size for it, and have a level that tells you when you are wrong.
 
+## Reading forecast vs previous
+
+Each release below carries two figures. **Previous** is last period's result, and it is sometimes revised when the new number comes out. **Forecast** is the consensus estimate for this period, the benchmark the print is judged against. Compare the actual with the forecast, not with the previous. A figure that climbs from last month but still lands under forecast reads as a disappointment, whatever the headline says. The distance between forecast and previous matters too. A wide gap means the market already expects a sharp change, so a genuine surprise has to land further out. When the previous figure is revised, read the revision together with the new print. Between them they show whether the trend is firming or fading.
+
 <!-- EVENTS -->
 
 The window above runs ten days out. The economic calendar only publishes about a week ahead, so the far half fills in as releases get scheduled — and over a weekend, before the coming week is posted, the block shows the releases that have just printed instead.

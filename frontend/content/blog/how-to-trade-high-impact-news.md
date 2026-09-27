@@ -92,7 +92,7 @@ For funded traders the calendar isn't optional reading. It's the difference betw
 
 You don't need a terminal for this. You need a habit:
 
-1. **Check the calendar before every session.** Note every Tier 1 and Tier 2 release in your trading window, with its exact time.
+1. **Check the calendar before every session.** Note every Tier 1 and Tier 2 release in your trading window, with its exact time. The [high-impact forex news for the week ahead](/this-week-in-forex) is laid out in one place, with forecast and previous for each release.
 2. **Read the consensus, not just the event.** Know what's expected. The forecast is the line the surprise gets measured against.
 3. **Decide the outcomes in advance.** For your open bias, write one line each: "If it beats, my thesis is [stronger/broken]. If it misses, [stronger/broken]."
 4. **Go flat or small into Tier 1.** Don't hold full size through a rate decision unless that is your deliberate, sized-for strategy.

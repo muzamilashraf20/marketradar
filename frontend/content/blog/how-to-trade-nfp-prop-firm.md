@@ -26,7 +26,7 @@ The frustrating part is that NFP doesn't blow accounts because traders pick the 
 
 ## What NFP actually is
 
-Non-Farm Payrolls is the U.S. Bureau of Labor Statistics' monthly count of how many jobs the economy added or lost, excluding farm work and a few other categories. It drops on the first Friday of most months at 8:30 AM Eastern, right in the London–New York overlap when liquidity and volatility are already peaking.
+Non-Farm Payrolls is the U.S. Bureau of Labor Statistics' monthly count of how many jobs the economy added or lost, excluding farm work and a few other categories. It drops on the first Friday of most months at 8:30 AM Eastern, right in the London–New York overlap when liquidity and volatility are already peaking. Once it's on the calendar, the exact time and consensus sit alongside the rest of the [week's high-impact forex news](/this-week-in-forex).
 
 It matters because employment feeds directly into the Federal Reserve's thinking. A hot jobs number can keep the Fed — now under chair Kevin Warsh — leaning hawkish and hold rate cuts off the table; a weak one opens the door to easing. The dollar reprices instantly against that read, and every major pair moves with it. If you want the mechanism behind why an employment number moves currencies, it runs through [how central banks move markets](/blog/how-central-banks-move-markets) and, one level deeper, [rate differentials and the carry trade](/blog/rate-differentials-carry-trade).
 
