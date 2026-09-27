@@ -1,7 +1,10 @@
 // Test vectors for lib/gumroadPing.js — which event a Gumroad POST is, and the expiry a charge buys.
 //   node backend/scripts/gumroadPing.test.mjs
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from '../lib/gumroadPing.js'
+import { secretMatches } from '../lib/planAccess.js'
 
 let pass = 0, fail = 0
 function check(name, ok, detail = '') {
@@ -70,6 +73,103 @@ check('cancel: manual grant (Pro, NULL expiry) left alone', cancelExpiry({ tier:
 check('cancel: no row → nothing to change', cancelExpiry(null, PAID) === undefined)
 check('cancel: unparseable cancelled_at → left alone', cancelExpiry({ tier: 'pro', expires_at: A }, 'soon') === undefined)
 check('cancel: payment-failure cancel in the past → lapses now', Date.parse(cancelExpiry({ tier: 'pro', expires_at: A }, '2026-09-01T00:00:00Z')) < Date.parse('2026-09-27T00:00:00Z'))
+
+// ── test=true: logged only, whatever else the payload says ────────────────────
+for (const [label, body] of [
+  ['test sale', { ...sale, test: 'true' }],
+  ['test recurring charge', { ...sale, is_recurring_charge: 'true', test: 'true' }],
+  ['test refund', { ...sale, resource_name: 'refund', refunded: 'true', test: 'true' }],
+  ['test dispute', { ...sale, resource_name: 'dispute', test: 'true' }],
+  ['test cancellation', { ...subBase, cancelled: 'true', cancelled_at: PAID, test: 'true' }],
+  ['test subscription_ended', { ...subBase, ended_at: PAID, ended_reason: 'cancelled', test: 'true' }],
+  ['test ping with boolean true', { ...sale, test: true }],
+]) {
+  check(`${label} → ignore (test)`, ...is(classifyGumroadPing(body), { kind: 'ignore', event: 'test', email: classifyGumroadPing({ ...body, test: 'false' }).email }))
+}
+check('test=false is a normal sale', classifyGumroadPing({ ...sale, test: 'false' }).kind === 'sale')
+
+// ── The shipped webhook handler: a test ping never touches user_plans ─────────
+// The handler lives in index.js, which cannot be imported without booting the server against the
+// LIVE database. So, as socialPublish.test.mjs does, its source is cut out of index.js and run
+// against a fake Supabase that records every call. The code under test is the shipped code.
+const src = readFileSync(fileURLToPath(new URL('../index.js', import.meta.url)), 'utf8')
+const a = src.indexOf("app.post('/api/gumroad/webhook'")
+const b = src.indexOf('// 🪙 CRYPTO PAYMENTS')
+if (a === -1 || b === -1 || b <= a) throw new Error('index.js extraction failed — did the Gumroad webhook move?')
+const handlerSrc = src.slice(a, b)
+
+function makeHarness(rows = []) {
+  const calls = []   // every supabase / auth call, in order
+  const supabase = {
+    from(table) {
+      const q = { table, op: 'select', filters: [], patch: null }
+      calls.push(q)
+      const api = {
+        select() { return api },
+        update(p) { q.op = 'update'; q.patch = p; return api },
+        upsert(p) { q.op = 'upsert'; q.patch = p; return api },
+        insert(p) { q.op = 'insert'; q.patch = p; return api },
+        delete() { q.op = 'delete'; return api },
+        eq(c, v) { q.filters.push([c, v]); return api },
+        async single() { const r = rows.find(x => q.filters.every(([c, v]) => x[c] === v)); return { data: r || null, error: r ? null : { code: 'PGRST116' } } },
+        then(res) { return Promise.resolve({ data: null, error: null }).then(res) },
+      }
+      return api
+    },
+  }
+  let handler = null
+  const app = { post: (path, fn) => { if (path === '/api/gumroad/webhook') handler = fn } }
+  const findAuthUserByEmail = async () => { calls.push({ table: 'auth.users', op: 'lookup' }); return null }
+  new Function('app', 'supabase', 'secretMatches', 'classifyGumroadPing', 'gumroadExpiry', 'nextExpiry', 'cancelExpiry', 'GRACE_DAYS', 'findAuthUserByEmail', handlerSrc)(
+    app, supabase, secretMatches, classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS, findAuthUserByEmail)
+  if (!handler) throw new Error('extraction sanity check failed: the webhook route was not registered')
+  return { handler, calls }
+}
+
+const SECRET = 'test-secret-value'
+process.env.GUMROAD_WEBHOOK_SECRET = SECRET
+async function post(harness, body, secret = SECRET) {
+  const out = { status: 200, body: null }
+  const res = { status(c) { out.status = c; return res }, json(j) { out.body = j; return res } }
+  const logs = []
+  const real = { log: console.log, warn: console.warn, error: console.error }
+  console.log = console.warn = console.error = (...m) => logs.push(m.join(' '))
+  try { await harness.handler({ query: { secret }, body }, res) } finally { Object.assign(console, real) }
+  return { ...out, logs }
+}
+
+const PRO_ROW = { email: 'buyer@x.co', tier: 'pro', expires_at: '2026-10-13T12:00:00.000Z' }
+for (const [label, body] of [
+  ['test sale', { ...sale, test: 'true' }],
+  ['test refund', { ...sale, resource_name: 'refund', refunded: 'true', test: 'true' }],
+  ['test cancellation', { subscription_id: 's1', user_email: 'buyer@x.co', cancelled: 'true', cancelled_at: PAID, test: 'true' }],
+  ['test subscription_ended', { subscription_id: 's1', user_email: 'buyer@x.co', ended_at: PAID, test: 'true' }],
+  ['test ping with no email', { resource_name: 'sale', test: 'true' }],
+]) {
+  const h = makeHarness([{ ...PRO_ROW }])
+  const r = await post(h, body)
+  check(`handler: ${label} → 200 ignored`, r.status === 200 && r.body?.action === 'ignored' && r.body?.event === 'test', JSON.stringify(r))
+  check(`handler: ${label} → user_plans never read or written`, h.calls.length === 0, JSON.stringify(h.calls))
+  check(`handler: ${label} → logged`, r.logs.some(l => l.includes('logged only')), JSON.stringify(r.logs))
+}
+
+// Control cases, so the harness is proven to see writes (a silent harness would pass the above).
+{
+  const h = makeHarness([{ ...PRO_ROW }])
+  const r = await post(h, { ...sale })
+  const writes = h.calls.filter(c => c.table === 'user_plans' && c.op !== 'select')
+  check('handler control: a real sale does write user_plans', r.body?.action === 'upgraded' && writes.length === 1 && writes[0].patch.tier === 'pro', JSON.stringify(h.calls))
+}
+{
+  const h = makeHarness([{ ...PRO_ROW }])
+  const r = await post(h, { ...sale, resource_name: 'refund', refunded: 'true' })
+  check('handler control: a real refund downgrades', r.body?.action === 'downgraded' && h.calls.some(c => c.op === 'update' && c.patch.tier === 'free'))
+}
+{
+  const h = makeHarness([{ ...PRO_ROW }])
+  const r = await post(h, { ...sale, test: 'true' }, 'wrong-secret')
+  check('handler: wrong secret → 401 before anything else, even for a test ping', r.status === 401 && h.calls.length === 0)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -21,10 +21,14 @@ export const GRACE_DAYS = 3
 //   'sale'          a charge (first or recurring): extend
 //   'cancel'        cancellation: Pro runs to the paid-through date (cancelled_at), then lapses
 //   'revoke'        refund, dispute or subscription end: drop to free now
-//   'ignore'        dispute_won, subscription_updated, subscription_restarted: log only
+//   'ignore'        test pings, dispute_won, subscription_updated, subscription_restarted: log only
 export function classifyGumroadPing(body = {}) {
   const email = String(body.email || body.user_email || '').toLowerCase().trim() || null
   const rn = String(body.resource_name || '').toLowerCase()
+
+  // test=true is a seller buying their own product to try the flow. It must never change a plan —
+  // not upgrade, not extend, not revoke — whatever else the payload says. Checked first for that.
+  if (truthy(body.test)) return { kind: 'ignore', event: 'test', email }
 
   if (rn === 'refund' || truthy(body.refunded)) return { kind: 'revoke', event: 'refund', email }
   if (rn === 'dispute' || truthy(body.disputed)) return { kind: 'revoke', event: 'dispute', email }

@@ -5469,13 +5469,14 @@ app.post('/api/gumroad/webhook', async (req, res) => {
     const { product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test } = req.body
     const { kind, event, email: buyerEmail } = classifyGumroadPing(req.body)
     console.log('Gumroad webhook:', { event, email: buyerEmail, product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test })
-    if (!buyerEmail) return res.status(400).json({ error: 'No email provided' })
-    const now = new Date().toISOString()
-
+    // Logged only, before anything reads or writes user_plans: test pings (test=true), dispute_won,
+    // subscription_updated / _restarted.
     if (kind === 'ignore') {
-      console.log(`Gumroad ${event} for ${buyerEmail} — no plan change`)
+      console.log(`Gumroad ${event} for ${buyerEmail || '(no email)'} — logged only, no plan change`)
       return res.json({ success: true, action: 'ignored', event })
     }
+    if (!buyerEmail) return res.status(400).json({ error: 'No email provided' })
+    const now = new Date().toISOString()
 
     // A cancellation is sent when the buyer cancels, not when access should end: keep them Pro to
     // the paid-through date and let hasPro() lapse it. subscription_ended then confirms the end.
