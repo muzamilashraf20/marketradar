@@ -1,5 +1,5 @@
 ---
-title: "Trailing vs. Static Drawdown: The Rule That Fails Most Funded Traders"
+title: "Static vs Trailing Drawdown: The Prop Firm Rule That Fails Most Traders"
 description: "More prop firm accounts die to a misunderstood drawdown than to bad trading. Here's exactly how static, end-of-day trailing, and intraday trailing drawdown work — with the math and how to survive each."
 slug: "trailing-vs-static-drawdown"
 date: "2026-07-21"
@@ -8,6 +8,8 @@ tags: ["trailing drawdown", "static drawdown", "prop firm", "funded trading", "d
 ogImage: "/og-image.png"
 draft: false
 faq:
+  - q: "What is static drawdown?"
+    a: "Static drawdown is a maximum-loss limit anchored to your starting balance. The breach level is set once, on day one, and stays put however much profit you make. Take a $100k account with a 10% limit: the account fails if equity touches $90k, and that $90k line holds whether you are up $2k or $20k."
   - q: "What is the difference between static and trailing drawdown?"
     a: "A static drawdown fixes your maximum-loss floor at the starting balance — on a $100k account with a 10% limit, you fail at $90k no matter how high the account climbs first. A trailing drawdown moves that floor upward as your account makes new highs, so the level that fails you rises with your profits. Static gives you a fixed cushion; trailing keeps shrinking your room every time you reach a new peak."
   - q: "How is trailing drawdown calculated?"
@@ -21,6 +23,10 @@ faq:
 Ask any experienced funded trader what actually ends most challenges, and they won't say bad entries. They'll say the drawdown — specifically, not understanding it. A trader can pick good trades all week and still blow the account by giving back profit they didn't realize was raising the very floor that failed them.
 
 Drawdown is the most important rule in funded trading and the one most people read past in ten seconds. The word looks simple. The mechanics are not, and the gap between "I have a 10% drawdown" and "I know exactly where my line is right now" is where accounts die. This is the deep dive that closes that gap. It pairs with the broader [prop firm challenge guide](/blog/how-prop-firm-challenges-work) — but here we go all the way down on the one rule that matters most.
+
+## What Is Static Drawdown?
+
+Static drawdown is a loss limit measured from your starting balance, not from your best day. The firm subtracts the limit from the opening deposit once, and that number becomes your breach level for the life of the account. Profit never drags it upward. Example: a $50k account with an 8% static drawdown fails at $46,000. Grow it to $55,000 and your buffer is now $9,000 — the $46,000 line hasn't moved an inch.
 
 ## What drawdown actually measures
 

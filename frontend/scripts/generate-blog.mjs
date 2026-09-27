@@ -66,7 +66,6 @@ const STATIC_ROUTES = [
   { loc: '/blog',      changefreq: 'daily',   priority: '0.8', lastmod: null },
   { loc: '/changelog', changefreq: 'weekly',  priority: '0.6', lastmod: '2026-07-22' },
   { loc: '/contact',   changefreq: 'monthly', priority: '0.5', lastmod: '2026-09-02' },
-  { loc: '/login',     changefreq: 'monthly', priority: '0.4', lastmod: '2026-07-07' },
   { loc: '/terms',     changefreq: 'yearly',  priority: '0.3', lastmod: '2026-07-27' },
   { loc: '/privacy',   changefreq: 'yearly',  priority: '0.3', lastmod: '2026-07-27' },
   { loc: '/refund',    changefreq: 'yearly',  priority: '0.3', lastmod: '2026-05-31' },

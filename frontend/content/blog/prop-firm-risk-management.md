@@ -29,7 +29,7 @@ Retail traders size a position by asking "how much do I want to make?" Funded tr
 Two numbers define your survival:
 
 - The **daily loss limit** (often ~5%) — how much you can lose in one session.
-- The **maximum drawdown** (often ~10%) — how much you can lose overall.
+- The **maximum drawdown** (often ~10%) — how much you can lose overall, measured either from your starting balance or from your peak depending on whether it is [static or trailing](/blog/trailing-vs-static-drawdown).
 
 Your per-trade risk has to be small enough that a realistic string of losses stays comfortably inside both. That's the entire discipline. Everything else is detail.
 
