@@ -6,6 +6,8 @@ import {
   expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import { withBudget } from './lib/withBudget.js'
+import { hasPro, isAdminUser, gateMode, secretMatches, createAccessResolver } from './lib/planAccess.js'
+import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from './lib/gumroadPing.js'
 import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
@@ -891,11 +893,10 @@ async function handleSocialCallback(cq) {
   })
 }
 
-// Admin = a confirmed Supabase account whose email is in ADMIN_EMAILS (comma list). Unset → nobody.
-// email_confirmed_at matters: without it anyone could sign up with the admin's address unverified.
+// Admin = a Supabase user id in ADMIN_USER_IDS (comma list). Unset → nobody. Not by email:
+// /api/register creates accounts pre-confirmed, so email_confirmed_at proves nothing. See lib/planAccess.js.
 function isAdmin(user) {
-  const list = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-  return !!(user?.email && user.email_confirmed_at && list.includes(user.email.toLowerCase()))
+  return isAdminUser(user)
 }
 
 // Manual draft trigger, used by the Studio's "New draft" panel and kept under its original
@@ -2337,8 +2338,9 @@ async function sendAlertEmail(to, subject, html) {
 // 📧 EMAIL ROUTES
 // ============================================
 app.post('/api/email/subscribe', async (req, res) => {
-  const { email, preferences } = req.body
-  if (!email) return res.status(400).json({ error: 'Email required' })
+  const { preferences } = req.body
+  const email = await callerEmail(req, res, req.body?.email)
+  if (!email) return
   try {
     await supabase.from('email_subscribers').upsert({ email: email.toLowerCase().trim(), active: true, preferences: preferences || { calendar: true, news: true }, subscribed_at: new Date().toISOString() }, { onConflict: 'email' })
     const exists = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
@@ -2372,8 +2374,9 @@ app.get('/api/email/unsubscribe', async (req, res) => {
 })
 
 app.post('/api/email/preferences', async (req, res) => {
-  const { email, preferences } = req.body
-  if (!email) return res.status(400).json({ error: 'Email required' })
+  const { preferences } = req.body
+  const email = await callerEmail(req, res, req.body?.email)
+  if (!email) return
   try {
     await supabase.from('email_subscribers').update({ preferences }).eq('email', email.toLowerCase().trim())
     const sub = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
@@ -2383,13 +2386,14 @@ app.post('/api/email/preferences', async (req, res) => {
 })
 
 app.get('/api/email/status', async (req, res) => {
-  const { email } = req.query
-  if (!email) return res.status(400).json({ error: 'Email required' })
+  const email = await callerEmail(req, res, req.query?.email)
+  if (!email) return
   const sub = emailSubscribers.find(s => s.email === email.toLowerCase().trim())
   res.json({ subscribed: sub?.active || false, preferences: sub?.preferences || { calendar: true, news: true } })
 })
 
 app.post('/api/email/test', async (req, res) => {
+  if (!await requireAdmin(req, res)) return
   const { email } = req.body
   if (!email) return res.status(400).json({ error: 'Email required' })
   const html = buildAlertEmail({ type: 'calendar', title: '⚠️ FOMC Rate Decision in 1 Hour', greeting: 'Heads up trader!', items: [{ title: 'FOMC Interest Rate Decision', subtitle: 'USD · High Impact · 2:00 PM EST', badge: 'HIGH', badgeColor: '#ef4444' }, { title: 'Fed Press Conference', subtitle: 'USD · High Impact · 2:30 PM EST', badge: 'HIGH', badgeColor: '#ef4444' }] })
@@ -2627,6 +2631,85 @@ async function optionalUser(req) {
   } catch { return null }
 }
 
+// ── Access gates ─────────────────────────────────────────────────────────────
+// Who is Pro is decided in ONE place, lib/planAccess.js (hasPro, admins count as Pro). These are the
+// route-side wrappers around it.
+//
+// PRO_GATE (Railway env) is the rollout switch: unset or "log" serves every request exactly as before
+// and logs who WOULD be refused; "enforce" refuses them. It lets the frontend start sending tokens
+// before anything depends on them, and it is rolled back by changing one variable.
+const access = createAccessResolver({ supabase })
+const uidTag = user => (user?.id ? ` uid=${String(user.id).slice(0, 8)}` : '')
+
+async function requirePro(req, res, next) {
+  const a = await access.resolve(req)
+  req.access = a
+  const reason = !a.user ? 'no-session' : a.unavailable ? 'plan-unavailable' : !a.pro ? 'not-pro' : null
+  if (!reason) return next()
+  if (gateMode() !== 'enforce') {
+    console.log(`[pro-gate] would block ${req.method} ${req.path} reason=${reason}${uidTag(a.user)}`)
+    return next()
+  }
+  if (reason === 'no-session') return res.status(401).json({ success: false, code: 'login_required', error: 'Sign in to use this.' })
+  if (reason === 'plan-unavailable') return res.status(503).json({ success: false, code: 'plan_unavailable', error: 'Could not check your plan just now. Try again.' })
+  return res.status(403).json({ success: false, code: 'pro_required', error: 'This needs an active Pro plan.' })
+}
+
+// Admin-only routes. Not behind PRO_GATE: nothing in the app calls them, so there is no rollout.
+async function requireAdmin(req, res) {
+  const user = await requireUser(req, res)
+  if (!user) return null
+  if (!isAdmin(user)) { res.status(403).json({ error: 'Admin only' }); return null }
+  return user
+}
+
+// The live-bias routes stay open for the public shape. Anonymous callers are trimmed as before; a
+// signed-in caller without Pro is trimmed too once PRO_GATE=enforce, and until then keeps the full
+// payload with the would-be trim logged.
+async function trimUnlessPro(req, res, trim) {
+  const a = await access.resolve(req)
+  if (!a.user) return trimUnlessSignedIn(res, trim)
+  if (a.pro) return
+  if (gateMode() === 'enforce') return trimUnlessSignedIn(res, trim)
+  console.log(`[pro-gate] would trim ${req.method} ${req.path} reason=${a.unavailable ? 'plan-unavailable' : 'not-pro'}${uidTag(a.user)}`)
+}
+
+// The email-alert routes act on the caller's own address, from the verified session, never from the
+// request. Until PRO_GATE=enforce a caller with no session falls back to the address it sent (the old
+// behaviour) and is logged; enforce refuses it. Replies itself and returns null when it refuses.
+async function callerEmail(req, res, sent) {
+  const a = await access.resolve(req)
+  if (a.user?.email) return a.user.email.toLowerCase().trim()
+  if (gateMode() === 'enforce') {
+    res.status(401).json({ success: false, code: 'login_required', error: 'Sign in to manage email alerts.' })
+    return null
+  }
+  console.log(`[pro-gate] would block ${req.method} ${req.path} reason=no-session`)
+  if (!sent) { res.status(400).json({ error: 'Email required' }); return null }
+  return String(sent).toLowerCase().trim()
+}
+
+// Every auth user, paged. listUsers() alone returns the first page (50), so a buyer past it was saved
+// with user_id NULL. On a lookup failure this returns null, which is what the webhooks did before.
+async function findAuthUserByEmail(email) {
+  const target = String(email || '').toLowerCase().trim()
+  if (!target) return null
+  const perPage = 1000
+  try {
+    for (let page = 1; page <= 100; page++) {
+      const { data, error } = await supabase.auth.admin.listUsers({ page, perPage })
+      if (error) throw error
+      const users = data?.users || []
+      const hit = users.find(u => u.email?.toLowerCase() === target)
+      if (hit) return hit
+      if (users.length < perPage) return null
+    }
+  } catch (e) {
+    console.error('Auth user lookup failed:', e?.message || e)
+  }
+  return null
+}
+
 // ── What an anonymous caller may see of a LIVE bias ──────────────────────────
 //
 // The landing page needs real engine output to be worth anything, so these
@@ -2856,6 +2939,8 @@ app.post('/api/contact', contactRateLimiter, async (req, res) => {
 // 💰 PRICES
 // ============================================
 app.get('/api/prices', async (req, res) => {
+  // No caller in the app; it spends TwelveData credits for whoever asks. Admin-only.
+  if (!await requireAdmin(req, res)) return
   if (isCacheFresh('prices')) return res.json(getCached('prices'))
   const stale = getCached('prices')
   try { await tdAcquire(5); const r = await axios.get(`https://api.twelvedata.com/price?symbol=EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD&apikey=${process.env.TWELVEDATA_API_KEY}`); if (r.data?.code === 429) { if (stale) return res.json(stale); return res.json({ success: true, data: r.data }) }; const result = { success: true, data: r.data }; setCache('prices', result); res.json(result) } catch (e) { if (stale) return res.json(stale); res.status(500).json({ error: 'Price fetch failed' }) }
@@ -2864,7 +2949,9 @@ app.get('/api/prices', async (req, res) => {
 // ============================================
 // 🤖 AI
 // ============================================
-app.post('/api/ai', aiRateLimiter, async (req, res) => {
+// Pro-only for now. It is still a raw prompt passthrough; NewsFeed should move to a fixed-prompt
+// route the way the calendar brief did (/api/calendar-brief), and then this can go.
+app.post('/api/ai', requirePro, aiRateLimiter, async (req, res) => {
   const { prompt, system } = req.body; if (!prompt) return res.status(400).json({ error: 'Prompt required' })
   try { const m = await anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, system: system || 'You are a financial markets analyst for BiasForge.', messages: [{ role: 'user', content: prompt }] }); trackAI('ai-analyze', 'claude-sonnet-4-6', m.usage); res.json({ success: true, response: m.content[0].text }) } catch (e) { console.error('AI error:', e?.message || e); res.status(500).json({ error: e?.message || 'AI failed' }) }
 })
@@ -4039,7 +4126,7 @@ ${template}`
 // and SELL on the dashboard, from two different engines with different logic. One state, one answer:
 // it now reads bias_state_v2, the same source the dashboard and Macro Compass use. No model call,
 // so no cost and no run-to-run drift.
-app.post('/api/bias', aiRateLimiter, async (req, res) => {
+app.post('/api/bias', requirePro, aiRateLimiter, async (req, res) => {
   const { symbol } = req.body
   if (!symbol) return res.status(400).json({ error: 'Symbol required' })
   try {
@@ -4853,7 +4940,7 @@ async function notifyTodaysBiasChange(result, oldKey) {
 app.get('/api/ai-costs', async (req, res) => {
   // Our own Anthropic spend, per feature, per day. This is not a product
   // surface and has no caller in the app — it was answering anyone who asked.
-  if (!await requireUser(req, res)) return
+  if (!await requireAdmin(req, res)) return
   res.json({ success: true, ...aiCosts, totalUSD: +aiCosts.totalUSD.toFixed(4) })
 })
 
@@ -5030,7 +5117,7 @@ async function runScheduledScoring() {
   } catch (e) { console.error(`⚠️ [scoring] scheduled run failed: ${e?.message || e}`) }
 }
 
-app.get('/api/bias-performance', async (req, res) => {
+app.get('/api/bias-performance', requirePro, async (req, res) => {
   // Win rate, average pips, per-bias scoring. The landing page carries no
   // performance claim by design; this endpoint was publishing one anyway, to
   // anyone, unauthenticated. It backs the Bias History modal, which is behind
@@ -5059,12 +5146,10 @@ app.get('/api/bias-performance', async (req, res) => {
 // re-derived on the client. Sorted strongest-conviction first.
 app.get('/api/macro-compass', async (req, res) => {
   // Open, because the landing page's hero is this data and it has to render for
-  // a visitor with no account. Anonymous callers get the rows without the
-  // invalidation level and with the reasoning cut to a sentence.
-  if (!await optionalUser(req)) {
-    trimUnlessSignedIn(res, body =>
-      body?.pairs ? { ...body, pairs: body.pairs.map(publicPair), publicView: true } : body)
-  }
+  // a visitor with no account. Callers without Pro get the rows without the
+  // invalidation level and with the reasoning cut to a sentence (see trimUnlessPro).
+  await trimUnlessPro(req, res, body =>
+    body?.pairs ? { ...body, pairs: body.pairs.map(publicPair), publicView: true } : body)
   try {
     if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
     const { data, error } = await supabase.from('bias_state_v2').select('*')
@@ -5279,7 +5364,7 @@ app.get('/api/bias-calls', async (req, res) => {
 app.get('/api/today-bias', async (req, res) => {
   // Same split as the compass. Five different exit paths return a bias here, so
   // the trim goes on res.json rather than on each of them.
-  if (!await optionalUser(req)) trimUnlessSignedIn(res, publicTodayBias)
+  await trimUnlessPro(req, res, publicTodayBias)
   // The client derives its own "stale" label from this rather than hardcoding a
   // number that can fall behind the engine's cadence.
   const staleAfterMins = TODAY_BIAS_STALE_AFTER_MIN
@@ -5313,7 +5398,7 @@ app.get('/api/today-bias', async (req, res) => {
 // ============================================
 // 🚀 PRE-TRADE GUARDIAN
 // ============================================
-app.post('/api/trade-check', aiRateLimiter, async (req, res) => {
+app.post('/api/trade-check', requirePro, aiRateLimiter, async (req, res) => {
   const { symbol, direction, lotSize, stopLossPips, accountSize, dailyDrawdownUsed, totalDrawdownUsed, maxDailyDrawdown, maxTotalDrawdown, riskPerTrade, useAI = true } = req.body
   if (!symbol || !direction || !lotSize || !stopLossPips) return res.status(400).json({ success: false, error: 'Required fields missing' })
   try {
@@ -5372,26 +5457,71 @@ RULE-BASED DRAFT: ${JSON.stringify({ verdict, headline, reasons, warnings, recom
 // 💳 GUMROAD WEBHOOK — Auto Pro Upgrade
 // ============================================
 app.post('/api/gumroad/webhook', async (req, res) => {
+  // Gumroad pings are unsigned, so the ping URL carries a shared secret (?secret=<GUMROAD_WEBHOOK_SECRET>).
+  // Without it anyone could POST an email here and be made Pro. Secret unset → every ping is refused.
+  if (!secretMatches(req.query?.secret, process.env.GUMROAD_WEBHOOK_SECRET)) {
+    console.error('Gumroad webhook: missing or wrong secret — refused')
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
   try {
-    const { email, product_id, product_name, sale_id, recurrence, price, refunded, subscription_id, resource_name } = req.body
-    console.log('Gumroad webhook:', { email, product_name, sale_id, recurrence, refunded, resource_name })
-    if (!email) return res.status(400).json({ error: 'No email provided' })
-    const buyerEmail = email.toLowerCase().trim()
-    if (refunded === 'true' || resource_name === 'cancellation' || resource_name === 'subscription_ended') {
-      await supabase.from('user_plans').update({ tier: 'free', updated_at: new Date().toISOString() }).eq('email', buyerEmail)
-      console.log(`Downgraded ${buyerEmail} to free`)
-      return res.json({ success: true, action: 'downgraded' })
+    // Sale pings carry `email`; cancellation / subscription_ended posts carry `user_email` and no
+    // resource_name. classifyGumroadPing (lib/gumroadPing.js) reads both shapes.
+    const { product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test } = req.body
+    const { kind, event, email: buyerEmail } = classifyGumroadPing(req.body)
+    console.log('Gumroad webhook:', { event, email: buyerEmail, product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test })
+    if (!buyerEmail) return res.status(400).json({ error: 'No email provided' })
+    const now = new Date().toISOString()
+
+    if (kind === 'ignore') {
+      console.log(`Gumroad ${event} for ${buyerEmail} — no plan change`)
+      return res.json({ success: true, action: 'ignored', event })
     }
+
+    // A cancellation is sent when the buyer cancels, not when access should end: keep them Pro to
+    // the paid-through date and let hasPro() lapse it. subscription_ended then confirms the end.
+    if (kind === 'cancel') {
+      const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
+      const expires = cancelExpiry(existing, req.body.cancelled_at)
+      if (expires === undefined) {
+        console.log(`Gumroad cancellation for ${buyerEmail}: ${!existing ? 'no plan row' : existing.tier === 'pro' && !existing.expires_at ? 'Pro with no expiry (manual grant)' : `unusable cancelled_at "${req.body.cancelled_at}"`} — row left unchanged`)
+        return res.json({ success: true, action: 'unchanged', event })
+      }
+      const { error } = await supabase.from('user_plans').update({ expires_at: expires, updated_at: now }).eq('email', buyerEmail)
+      if (error) throw new Error(`cancellation update failed: ${error.message}`)
+      console.log(`Cancellation for ${buyerEmail}: Pro until ${expires}, then lapses`)
+      return res.json({ success: true, action: 'expires', event, expires_at: expires })
+    }
+
+    if (kind === 'revoke') {
+      const { error } = await supabase.from('user_plans').update({ tier: 'free', updated_at: now }).eq('email', buyerEmail)
+      if (error) throw new Error(`downgrade failed: ${error.message}`)
+      console.log(`Downgraded ${buyerEmail} to free (${event})`)
+      return res.json({ success: true, action: 'downgraded', event })
+    }
+
+    // A charge — first or recurring — buys one billing period from the sale time, plus grace.
+    // Gumroad plans used to carry no expires_at, so a subscription whose payments stopped stayed
+    // Pro for good if the cancellation never arrived. Now hasPro() lets it lapse on its own.
+    const { expiresAt, months, saleTimeFallback } = gumroadExpiry(req.body)
+    if (saleTimeFallback) console.warn(`Gumroad sale ${sale_id}: unparseable sale_timestamp "${sale_timestamp}" — timed from now`)
+    if (!expiresAt) console.warn(`Gumroad sale ${sale_id}: unknown recurrence "${recurrence}" — expires_at left unchanged`)
+
     const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
-    if (existing) {
-      await supabase.from('user_plans').update({ tier: 'pro', updated_at: new Date().toISOString() }).eq('email', buyerEmail)
-    } else {
-      const { data: { users } } = await supabase.auth.admin.listUsers()
-      const authUser = users?.find(u => u.email?.toLowerCase() === buyerEmail)
-      await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, tier: 'pro', updated_at: new Date().toISOString() }, { onConflict: 'email' })
+    const expires = nextExpiry(existing, expiresAt)   // undefined = leave the column alone
+    if (existing?.tier === 'pro' && !existing.expires_at && expiresAt) {
+      console.log(`Gumroad sale for ${buyerEmail}: Pro with no expiry (manual grant) — expiry left unset`)
     }
-    console.log(`Upgraded ${buyerEmail} to PRO`)
-    res.json({ success: true, action: 'upgraded' })
+    const patch = { tier: 'pro', updated_at: now, ...(expires !== undefined ? { expires_at: expires } : {}) }
+    if (existing) {
+      const { error } = await supabase.from('user_plans').update(patch).eq('email', buyerEmail)
+      if (error) throw new Error(`upgrade failed: ${error.message}`)
+    } else {
+      const authUser = await findAuthUserByEmail(buyerEmail)
+      const { error } = await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, ...patch }, { onConflict: 'email' })
+      if (error) throw new Error(`upgrade failed: ${error.message}`)
+    }
+    console.log(`Upgraded ${buyerEmail} to PRO (${recurrence || 'no recurrence'}, ${months ?? '?'} mo + ${GRACE_DAYS}d grace) until ${expires ?? existing?.expires_at ?? 'no expiry'}`)
+    res.json({ success: true, action: 'upgraded', expires_at: expires ?? existing?.expires_at ?? null })
   } catch (e) {
     console.error('Gumroad webhook error:', e.message)
     res.status(500).json({ error: 'Webhook processing failed' })
@@ -5489,8 +5619,7 @@ app.post('/api/crypto/webhook', async (req, res) => {
     if (existing) {
       await supabase.from('user_plans').update({ tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }).eq('email', buyerEmail)
     } else {
-      const { data: { users } } = await supabase.auth.admin.listUsers()
-      const authUser = users?.find(u => u.email?.toLowerCase() === buyerEmail)
+      const authUser = await findAuthUserByEmail(buyerEmail)
       await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }, { onConflict: 'email' })
     }
     console.log(`Crypto: upgraded ${buyerEmail} to PRO until ${expiresAt}`)
@@ -5525,7 +5654,7 @@ app.get('/api/trades', async (req, res) => {
   }
 })
 
-app.post('/api/trades', async (req, res) => {
+app.post('/api/trades', requirePro, async (req, res) => {
   const authHeader = req.headers.authorization
   if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
 
@@ -5569,7 +5698,7 @@ app.post('/api/trades', async (req, res) => {
   }
 })
 
-app.put('/api/trades/:id', async (req, res) => {
+app.put('/api/trades/:id', requirePro, async (req, res) => {
   const authHeader = req.headers.authorization
   if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
   try {
@@ -5614,7 +5743,7 @@ app.put('/api/trades/:id', async (req, res) => {
   }
 })
 
-app.delete('/api/trades/:id', async (req, res) => {
+app.delete('/api/trades/:id', requirePro, async (req, res) => {
   const authHeader = req.headers.authorization
   if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
 
@@ -5654,6 +5783,23 @@ app.get('/api/user/plan', async (req, res) => {
       .eq('user_id', user.id)
       .single()
 
+    // No row under this user id — but someone who paid before signing up (or whose account the
+    // webhook could not find) has a row under their email with user_id NULL. Claim that row rather
+    // than creating a free one beside it; the free insert would fail on the email key anyway.
+    if (!plan && user.email) {
+      const { data: claimed } = await supabase
+        .from('user_plans')
+        .update({ user_id: user.id })
+        .eq('email', user.email.toLowerCase().trim())
+        .is('user_id', null)
+        .select()
+        .maybeSingle()
+      if (claimed) {
+        plan = claimed
+        console.log(`Plan row claimed by email for user ${String(user.id).slice(0, 8)} (tier ${claimed.tier})`)
+      }
+    }
+
     // If no plan exists, create free plan
     if (!plan) {
       const { data: newPlan } = await supabase
@@ -5671,11 +5817,16 @@ app.get('/api/user/plan', async (req, res) => {
 
     // Crypto plans don't auto-renew — downgrade once past expiry.
     // Gumroad/subscription pro users have expires_at = null, so they're never touched here.
-    if (plan?.tier === 'pro' && plan?.expires_at && new Date(plan.expires_at).getTime() < Date.now()) {
+    // "Expired" is whatever hasPro() says — the same rule every Pro route enforces.
+    if (plan?.tier === 'pro' && !hasPro(plan)) {
       await supabase.from('user_plans').update({ tier: 'free', updated_at: new Date().toISOString() }).eq('user_id', user.id)
       plan.tier = 'free'
       console.log(`Crypto plan expired — downgraded ${user.email} to free`)
     }
+
+    // Refresh the gate's cache with the row just read, so a new purchase unlocks the Pro routes as
+    // soon as the app refetches its plan.
+    access.remember(user.id, plan)
 
     res.json({
       success: true,
@@ -5684,6 +5835,8 @@ app.get('/api/user/plan', async (req, res) => {
         trialStart: plan?.trial_start,
         expiresAt: plan?.expires_at || null,
         updatedAt: plan?.updated_at,
+        // The verdict the server enforces (admins count as Pro). The app uses this, not tier.
+        pro: isAdmin(user) || hasPro(plan),
       }
     })
   } catch (e) {
@@ -6340,6 +6493,7 @@ async function getCachedReleaseActuals(familyId, currency) {
 // including reject_reason, so a gate that is too tight is visible without log archaeology.
 // No writes, no model call, no cost. Public economic figures only.
 app.get('/api/release-actuals', async (req, res) => {
+  if (!await requireAdmin(req, res)) return
   try {
     const { data, error } = await supabase.from('release_actuals')
       .select('release_key,series_id,reference_period,scheduled_at,next_release_at,forecast,previous,actual,surprise,release_date,source_url,status,attempts,reject_reason,updated_at')
@@ -6610,7 +6764,7 @@ function sanitizeBriefField(v, max = 120) {
 const BRIEF_FETCH_BUDGET = 20 * 1000
 
 const BRIEF_CACHE_TTL = 15 * 60 * 1000
-app.post('/api/calendar-brief', aiRateLimiter, async (req, res) => {
+app.post('/api/calendar-brief', requirePro, aiRateLimiter, async (req, res) => {
   const event = {
     title: sanitizeBriefField(req.body?.title),
     currency: sanitizeBriefField(req.body?.currency, 8).toUpperCase(),
@@ -6927,7 +7081,7 @@ function isForexClosed() {
   return false
 }
 
-app.get('/api/strength', async (req, res) => {
+app.get('/api/strength', requirePro, async (req, res) => {
   // ✅ NEW: Weekend check FIRST — return closed state immediately
   if (isForexClosed()) {
     return res.json({
@@ -6985,7 +7139,7 @@ function sliceNews(articles, q = {}) {
   return out
 }
 
-app.get('/api/news', async (req, res) => {
+app.get('/api/news', requirePro, async (req, res) => {
   if (isCacheFresh('latest_news')) return res.json({ success: true, articles: sliceNews(getCached('latest_news'), req.query) })
   const feeds=[{name:'CNBC',url:'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'},{name:'Nasdaq',url:'https://www.nasdaq.com/feed/rssoutbound?category=Markets'},{name:'Fox Business',url:'https://feeds.foxbusiness.com/foxbusiness/markets'},{name:'Reuters',url:'https://feeds.reuters.com/reuters/topNews'},{name:'Investing.com',url:'https://www.investing.com/rss/news.rss'}]
   try {
@@ -7205,7 +7359,7 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
   return payload
 }
 
-app.get('/api/cot', async (req, res) => {
+app.get('/api/cot', requirePro, async (req, res) => {
   try {
     const cot = await getCOTData()
     res.json({ success: true, data: cot.data, reportDate: cot.reportDate, fetchedAt: new Date().toISOString() })
@@ -7219,7 +7373,7 @@ app.get('/api/cot', async (req, res) => {
 // ============================================
 // 📅 EARNINGS
 // ============================================
-app.get('/api/earnings', async (req, res) => {
+app.get('/api/earnings', requirePro, async (req, res) => {
   const apiKey=process.env.FINNHUB_API_KEY;if(!apiKey)return res.status(500).json({error:'No key'})
   try{const now=new Date(),from=new Date(now),to=new Date(now);from.setDate(now.getDate()-1);to.setDate(now.getDate()+14);const r=await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from.toISOString().split('T')[0]}&to=${to.toISOString().split('T')[0]}&token=${apiKey}`,{headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('Finnhub error');const d=await r.json();const norm=(d.earningsCalendar||[]).map(i=>({symbol:i.symbol||'—',date:i.date||'',hour:i.hour||'amc',epsEstimate:i.epsEstimate??null,epsActual:i.epsActual??null,revenueEstimate:i.revenueEstimate??null,revenueActual:i.revenueActual??null,quarter:i.quarter||null,year:i.year||null}));norm.sort((a,b)=>a.date!==b.date?new Date(a.date)-new Date(b.date):a.symbol.localeCompare(b.symbol));res.json({success:true,earnings:norm,total:norm.length,fetchedAt:new Date().toISOString()})}catch(e){res.status(502).json({success:false,error:'Earnings failed'})}
 })
@@ -7847,6 +8001,8 @@ async function runV2Shadow(trigger) {
 
 // Manual trigger — inspect a full v2 run on demand. Does not affect the live dashboard.
 app.post('/api/v2/shadow/run', async (req, res) => {
+  // Admin-only: this runs the whole engine (model + TwelveData spend) and rewrites bias_state_v2.
+  if (!await requireAdmin(req, res)) return
   try { const out = await runV2Shadow('manual'); res.json({ success: true, pairs: V2_CONFIG.PAIRS.length, ...out }) }
   catch (e) { console.error('v2 shadow run error:', e?.message); res.status(500).json({ success: false, error: e?.message }) }
 })
@@ -7856,6 +8012,7 @@ app.post('/api/v2/shadow/run', async (req, res) => {
 // and (2) how often does the quiet regime actually occur. Reads banked telemetry only — it runs
 // no engine work, spends no model credits, and changes nothing.
 app.get('/api/v2/shadow/telemetry', async (req, res) => {
+  if (!await requireAdmin(req, res)) return
   try {
     const rows = (Array.isArray(v2Telemetry) ? v2Telemetry : await v2LoadSnapshot(V2_TELEMETRY_KEY)) || []
     const T = V2_CONFIG.OPEN_THRESHOLD
@@ -8035,6 +8192,7 @@ app.get('/api/v2/shadow/telemetry', async (req, res) => {
 // history the direction is built from. Public market data only — no keys, no user data. Exists so the
 // 2Y 3-session direction and the per-leg FRED fill can be verified without tailing Railway logs.
 app.get('/api/v2/shadow/yields', async (req, res) => {
+  if (!await requireAdmin(req, res)) return
   try {
     const y = await buildV2Feeds().getYields()
     res.json({ success: true, yields: y, y2_history: v2Yield2yHistory || [], sessions_needed: Y2_LOOKBACK_SESSIONS + 1 })

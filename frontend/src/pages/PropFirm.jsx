@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Shield, AlertTriangle, TrendingUp, DollarSign, RefreshCw, Save, CheckCircle2, XCircle, Clock, Brain, Zap, Calendar, Trophy, BarChart3, Target } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { authedFetch } from '../lib/authFetch';
 
 const STORAGE_KEY = 'biasforge_propfirm_settings';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -151,7 +152,7 @@ export default function PropFirmMode() {
     setAiVerdict(null);
 
     try {
-      const response = await fetch(`${API_URL}/api/trade-check`, {
+      const response = await authedFetch(`${API_URL}/api/trade-check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

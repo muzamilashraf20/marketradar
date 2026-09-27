@@ -4,6 +4,7 @@ import { Settings, User, Bell, Shield, CreditCard, LogOut, Mail, Loader2, CheckC
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 const SUPPORT_EMAIL = 'support@biasforge.co'
@@ -77,7 +78,7 @@ const [copied, setCopied] = useState(false)
   const fetchEmailStatus = async () => {
     try {
       setEmailLoading(true)
-      const res = await fetch(`${API_BASE}/api/email/status?email=${encodeURIComponent(email)}`)
+      const res = await authedFetch(`${API_BASE}/api/email/status?email=${encodeURIComponent(email)}`)
       const data = await res.json()
       setEmailSub({
         subscribed: data.subscribed || false,
@@ -94,7 +95,7 @@ const [copied, setCopied] = useState(false)
     setEmailSaving(true)
     setEmailMessage({ type: '', text: '' })
     try {
-      const res = await fetch(`${API_BASE}/api/email/subscribe`, {
+      const res = await authedFetch(`${API_BASE}/api/email/subscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, preferences: emailSub.preferences }),
@@ -118,13 +119,13 @@ const [copied, setCopied] = useState(false)
     setEmailSaving(true)
     setEmailMessage({ type: '', text: '' })
     try {
-      const res = await fetch(`${API_BASE}/api/email/subscribe`, {
+      const res = await authedFetch(`${API_BASE}/api/email/subscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, preferences: emailSub.preferences }),
       })
       // Use the unsubscribe by setting active false via preferences route
-      await fetch(`${API_BASE}/api/email/preferences`, {
+      await authedFetch(`${API_BASE}/api/email/preferences`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, preferences: { calendar: false, news: false } }),
@@ -144,7 +145,7 @@ const [copied, setCopied] = useState(false)
     setEmailSub(prev => ({ ...prev, preferences: updated }))
 
     try {
-      await fetch(`${API_BASE}/api/email/preferences`, {
+      await authedFetch(`${API_BASE}/api/email/preferences`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, preferences: updated }),

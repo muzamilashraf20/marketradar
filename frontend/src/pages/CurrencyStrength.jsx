@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, RefreshCw, Zap } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { authedFetch } from '../lib/authFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -25,7 +26,7 @@ export default function CurrencyStrength() {
     try {
       setLoading(true);
       setError('');
-      const res = await fetch(`${API_BASE}/api/strength`);
+      const res = await authedFetch(`${API_BASE}/api/strength`);
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'Failed to fetch');
       setData(json);

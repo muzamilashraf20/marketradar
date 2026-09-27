@@ -6,6 +6,7 @@ import {
   GraduationCap, ChevronDown, ChevronUp, Lightbulb,
   AlertCircle, Zap, Crown, Target
 } from 'lucide-react'
+import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -92,7 +93,7 @@ export default function EarningsCalendar() {
     try {
       setLoading(true)
       setError('')
-      const res = await fetch(`${API_BASE}/api/earnings`)
+      const res = await authedFetch(`${API_BASE}/api/earnings`)
       const data = await res.json()
       if (data.success) {
         setEarnings(data.earnings || [])

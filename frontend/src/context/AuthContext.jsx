@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { ACCESS_DENIED_EVENT } from '../lib/authFetch'
 
 const AuthContext = createContext(null)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -14,17 +15,38 @@ export function AuthProvider({ children }) {
     return !!localStorage.getItem('bf_plan')
   })
 
+  // The server decides access: /api/user/plan returns plan.pro, the same rule every Pro route
+  // enforces. The cached plan is painted only until the server answers, never trusted on its own.
   const fetchPlan = async (userId) => {
+    let cached = null
+    try { cached = JSON.parse(localStorage.getItem('bf_plan') || 'null') } catch { cached = null }
     try {
-      // 1. Check localStorage cache first
-      const cached = localStorage.getItem('bf_plan')
+      // 1. Paint the cached plan straight away, so a paying user doesn't see a lock flash
       if (cached) {
-        setPlan(JSON.parse(cached))
+        setPlan(cached)
         setPlanLoaded(true)
-        return
       }
 
-      // 2. Try direct Supabase query (no backend needed)
+      // 2. Ask the backend for the verdict
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.access_token) {
+        const res = await fetch(`${API_URL}/api/user/plan`, {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        })
+        if (res.ok) {
+          const d = await res.json()
+          if (d.success && d.plan) {
+            setPlan(d.plan)
+            localStorage.setItem('bf_plan', JSON.stringify(d.plan))
+            return
+          }
+        }
+      }
+
+      // 3. Backend unreachable: keep the cache if there is one, else read the row directly
+      //    (RLS lets a signed-in user read their own row). Not cached, so the server's
+      //    answer replaces it next time.
+      if (cached) return
       const uid = userId || user?.id
       if (uid) {
         const { data } = await supabase
@@ -32,26 +54,7 @@ export function AuthProvider({ children }) {
           .select('*')
           .eq('user_id', uid)
           .maybeSingle()
-
-        if (data) {
-          setPlan(data)
-          localStorage.setItem('bf_plan', JSON.stringify(data))
-          setPlanLoaded(true)
-          return
-        }
-      }
-
-      // 3. Fallback: try backend API
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.access_token) {
-        const res = await fetch(`${API_URL}/api/user/plan`, {
-          headers: { 'Authorization': `Bearer ${session.access_token}` }
-        })
-        const d = await res.json()
-        if (d.success && d.plan) {
-          setPlan(d.plan)
-          localStorage.setItem('bf_plan', JSON.stringify(d.plan))
-        }
+        if (data) setPlan(data)
       }
     } catch (e) {
       console.error('Failed to fetch plan:', e.message)
@@ -172,6 +175,25 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  // A Pro route refused us (see authFetch.js), so the plan on screen is stale. Ask the server again;
+  // a lapsed plan comes back pro:false and DashboardLayout shows the lock wall. A 401 with no session
+  // left means the login itself is gone, so sign out rather than show an app that cannot load.
+  // Throttled: one refused dashboard load fires several requests at once.
+  useEffect(() => {
+    let last = 0
+    const onDenied = async (e) => {
+      if (Date.now() - last < 30 * 1000) return
+      last = Date.now()
+      if (e.detail?.code === 'login_required') {
+        const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: {} }))
+        if (!session) { await logout(); return }
+      }
+      fetchPlan()
+    }
+    window.addEventListener(ACCESS_DENIED_EVENT, onDenied)
+    return () => window.removeEventListener(ACCESS_DENIED_EVENT, onDenied)
+  }, [])
+
   const login = (userData, session) => {
     const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
@@ -205,7 +227,10 @@ export function AuthProvider({ children }) {
   }
 
   // No free trial — BiasForge is paid-only. Access requires an active Pro plan.
-  const isActualPro = plan?.tier === 'pro'
+  // plan.pro is the server's verdict (expiry and admins included). The tier check covers only a plan
+  // that did not come from the server — an old cache, or the direct read while the backend is down —
+  // and is replaced as soon as /api/user/plan answers.
+  const isActualPro = typeof plan?.pro === 'boolean' ? plan.pro : plan?.tier === 'pro'
   const trialDaysLeft = 0
   const isTrialActive = false
   // "Locked": a signed-in user whose plan has resolved and is not Pro → must subscribe.

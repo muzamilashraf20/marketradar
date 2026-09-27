@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Newspaper, RefreshCw, AlertTriangle, Search, Clock, SlidersHorizontal, Zap, X, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { authedFetch } from '../lib/authFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -57,7 +58,7 @@ Return ONLY a valid JSON object (no markdown, no explanation):
   "propFirmAdvice": "Risk management advice for prop firm traders"
 }`
 
-      const res = await fetch(`${API_BASE}/api/ai`, {
+      const res = await authedFetch(`${API_BASE}/api/ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt })
@@ -246,7 +247,7 @@ export default function NewsFeed() {
     try {
       setLoading(true);
       setError('');
-      const res = await fetch(`${API_BASE}/api/news?hours=${hours}`);
+      const res = await authedFetch(`${API_BASE}/api/news?hours=${hours}`);
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data?.error || 'Failed to load market news');
       setRawArticles(data.articles || []);

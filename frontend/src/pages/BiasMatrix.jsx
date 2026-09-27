@@ -5,6 +5,7 @@ import {
   AlertTriangle, BookOpen, XOctagon, Info,
   Activity, Zap
 } from 'lucide-react'
+import { authedFetch } from '../lib/authFetch'
 
 const ASSETS = [
   'EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'GBPJPY',
@@ -95,7 +96,7 @@ export default function BiasMatrix() {
     setError(''); setNotice('')
     setBias(null)
     try {
-      const res = await fetch(
+      const res = await authedFetch(
         `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/bias`,
         {
           method: 'POST',

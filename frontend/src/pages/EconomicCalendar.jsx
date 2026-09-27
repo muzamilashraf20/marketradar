@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Calendar, RefreshCw, AlertTriangle, Search, Zap, X, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { authedFetch } from '../lib/authFetch';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const CALENDAR_URL = `${API_BASE}/api/calendar`;
@@ -49,7 +50,7 @@ function AnalyzeModal({ event, onClose }) {
       setError('');
       setElapsed(0);
 
-      const res = await fetch(`${API_BASE}/api/calendar-brief`, {
+      const res = await authedFetch(`${API_BASE}/api/calendar-brief`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

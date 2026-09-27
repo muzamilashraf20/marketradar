@@ -114,7 +114,7 @@ export default function Dashboard() {
   const fetchNews = async () => {
     try {
       setNewsLoading(true)
-      const res = await fetch(`${API_BASE}/api/news`)
+      const res = await authedFetch(`${API_BASE}/api/news`)
       const data = await res.json()
       if (data.success) {
         const sorted = (data.articles || [])
@@ -166,7 +166,7 @@ export default function Dashboard() {
   const fetchStrength = async () => {
     try {
       setStrengthLoading(true)
-      const res = await fetch(`${API_BASE}/api/strength`)
+      const res = await authedFetch(`${API_BASE}/api/strength`)
       const data = await res.json()
       if (data.success) setStrength(data)
     } catch (e) {

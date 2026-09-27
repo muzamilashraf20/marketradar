@@ -4,6 +4,7 @@ import {
   Radio, RefreshCw, Search, Filter, AlertTriangle,
   TrendingUp, TrendingDown, Minus, ExternalLink, Loader2, Zap
 } from 'lucide-react'
+import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -61,7 +62,7 @@ export default function MarketMoversRadar() {
     try {
       setLoading(true)
       setError('')
-      const res = await fetch(`${API_BASE}/api/news`)
+      const res = await authedFetch(`${API_BASE}/api/news`)
       const data = await res.json()
       if (data.success) {
         // Match each article to a mover

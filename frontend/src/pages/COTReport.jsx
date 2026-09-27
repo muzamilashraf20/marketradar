@@ -5,6 +5,7 @@ import {
   Minus, Info, Loader2, AlertTriangle, BarChart3, BookOpen,
   Target, Zap, AlertCircle, Lightbulb, GraduationCap
 } from 'lucide-react'
+import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -79,7 +80,7 @@ export default function COTReport() {
     try {
       setLoading(true)
       setError('')
-      const res = await fetch(`${API_BASE}/api/cot`)
+      const res = await authedFetch(`${API_BASE}/api/cot`)
       const json = await res.json()
       if (json.success) {
         setData(json.data || [])

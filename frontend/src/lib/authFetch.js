@@ -26,11 +26,29 @@ export const getFreshToken = async (fallback) => {
    401 themselves. */
 export async function authedFetch(url, { token, ...init } = {}) {
   const fresh = await getFreshToken(token)
-  return fetch(url, {
+  const res = await fetch(url, {
     ...init,
     headers: {
       ...(init.headers || {}),
       ...(fresh ? { Authorization: `Bearer ${fresh}` } : {}),
     },
   })
+  reportDenial(res)
+  return res
+}
+
+/* A Pro route that refuses the caller answers 401 { code: 'login_required' } or
+   403 { code: 'pro_required' }. The plan the app is showing is then out of date
+   (lapsed, or just bought), so AuthContext listens for this and asks the server
+   again. Reads a clone, so the caller still gets an unread body. */
+export const ACCESS_DENIED_EVENT = 'bf:access-denied'
+
+function reportDenial(res) {
+  if (res.status !== 401 && res.status !== 403) return
+  if (typeof window === 'undefined') return
+  res.clone().json().then(body => {
+    if (body?.code === 'pro_required' || body?.code === 'login_required') {
+      window.dispatchEvent(new CustomEvent(ACCESS_DENIED_EVENT, { detail: { code: body.code } }))
+    }
+  }).catch(() => {})
 }
