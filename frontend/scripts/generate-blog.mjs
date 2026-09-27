@@ -32,6 +32,11 @@ const SECTION    = 'Macro Journal';
 const AUTHOR     = 'Muzamil Ashraf';
 const APP_URL    = `${SITE_URL}/login`;
 const X_URL      = 'https://x.com/BiasForgeai';
+const FOUNDER_X        = 'https://x.com/MuzamilAshraf_1';
+const FOUNDER_LINKEDIN = 'https://www.linkedin.com/in/muzamil-ashraf-a722b5373/';
+const TELEGRAM_URL     = 'https://t.me/biasforgeofficial';
+const GUMROAD_URL      = 'https://muzamilashraf.gumroad.com/l/ntjpje';
+const PRODUCTHUNT_URL  = '';   // empty = left out of sameAs
 const DEFAULT_OG = `${SITE_URL}/og-image.png`;
 const LOGO_URL   = `${SITE_URL}/og-image.png`;
 
@@ -671,8 +676,8 @@ ${jsonld({
   image: og,
   datePublished: post.date,
   dateModified: post.updated || post.date,
-  author: { '@type': 'Person', name: AUTHOR, url: X_URL },
-  publisher: { '@type': 'Organization', name: BRAND, url: SITE_URL, logo: { '@type': 'ImageObject', url: LOGO_URL } },
+  author: FOUNDER,
+  publisher: { '@id': ORG['@id'], '@type': 'Organization', name: BRAND, logo: { '@type': 'ImageObject', url: LOGO_URL } },
   mainEntityOfPage: { '@type': 'WebPage', '@id': url },
   ...(tags.length ? { keywords: tags.join(', ') } : {}),
   ...(post.category ? { articleSection: post.category } : {}),
@@ -750,17 +755,14 @@ function renderIndex(posts) {
 <meta property="og:image" content="${DEFAULT_OG}"/>
 <meta name="twitter:card" content="summary_large_image"/>
 <meta name="twitter:site" content="@BiasForgeai"/>
-${jsonld({
-  '@context': 'https://schema.org', '@type': 'Organization',
-  name: BRAND, url: SITE_URL, logo: LOGO_URL, sameAs: [X_URL],
-})}
+${jsonld({ '@context': 'https://schema.org', ...ORG })}
 ${jsonld({
   '@context': 'https://schema.org', '@type': 'Blog',
   name: `${BRAND} ${SECTION}`, url,
   blogPost: posts.map(p => ({
     '@type': 'BlogPosting', headline: p.title, description: p.description,
     url: postUrl(p), datePublished: p.date,
-    author: { '@type': 'Person', name: AUTHOR },
+    author: FOUNDER,
   })),
 })}`;
 
@@ -882,6 +884,31 @@ const LANDING_TITLE = 'Macro Bias for Forex & Prop Firm Traders | BiasForge';
 const LANDING_DESC  =
   "Directional macro bias for every major forex pair, with the invalidation level where it's wrong. Built for prop firm and funded traders.";
 
+// One entity with one @id, referenced from every page, so Google reads a single
+// company at biasforge.co with a named founder rather than a bare "BiasForge"
+// string it could fold into biasforge.com. Lives here, not up in CONFIG,
+// because it needs LANDING_DESC. Empty URLs are dropped from sameAs.
+const ALT_NAMES = ['BiasForge.co', 'biasforge.co'];
+const FOUNDER = {
+  '@type': 'Person',
+  '@id': `${SITE_URL}/#founder`,
+  name: AUTHOR,
+  jobTitle: 'Founder',
+  url: FOUNDER_LINKEDIN,
+  sameAs: [FOUNDER_LINKEDIN, FOUNDER_X].filter(Boolean),
+};
+const ORG = {
+  '@type': 'Organization',
+  '@id': `${SITE_URL}/#organization`,
+  name: BRAND,
+  alternateName: ALT_NAMES,
+  url: `${SITE_URL}/`,
+  logo: LOGO_URL,
+  description: LANDING_DESC,
+  founder: FOUNDER,
+  sameAs: [X_URL, TELEGRAM_URL, GUMROAD_URL, PRODUCTHUNT_URL].filter(Boolean),
+};
+
 async function getJson(url, ms = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -965,6 +992,7 @@ function landingSchemas({ FAQ, PRICE_MONTHLY, PRICE_ANNUAL }) {
     applicationCategory: 'FinanceApplication',
     operatingSystem: 'Web',
     url: `${SITE_URL}/`,
+    publisher: { '@id': ORG['@id'] },
     offers: [
       { '@type': 'Offer', price: String(PRICE_MONTHLY), priceCurrency: 'USD', name: 'Pro (monthly)', category: 'Subscription' },
       { '@type': 'Offer', price: String(PRICE_ANNUAL), priceCurrency: 'USD', name: 'Pro (annual)', category: 'Subscription' },
@@ -982,16 +1010,20 @@ function landingSchemas({ FAQ, PRICE_MONTHLY, PRICE_ANNUAL }) {
     })),
   };
 
-  const org = {
+  const org = { '@context': 'https://schema.org', ...ORG };
+
+  // Homepage only — names the site itself and ties it to the organization.
+  const website = {
     '@context': 'https://schema.org',
-    '@type': 'Organization',
+    '@type': 'WebSite',
+    '@id': `${SITE_URL}/#website`,
     name: BRAND,
+    alternateName: ALT_NAMES,
     url: `${SITE_URL}/`,
-    logo: LOGO_URL,
-    sameAs: [X_URL, 'https://t.me/biasforgeofficial'],
+    publisher: { '@id': ORG['@id'] },
   };
 
-  return [software, faq, org].map(jsonld).join('\n    ');
+  return [software, faq, org, website].map(jsonld).join('\n    ');
 }
 
 // Attribute values get the apostrophe escaped too, so a value is safe inside
