@@ -376,7 +376,7 @@ const REGION = {
 const EVENT_KB = [
   {
     family: 'jobs',
-    re: /(non-?farm|payroll|employment change|unemployment (rate|claims)|average hourly|claimant count|jobless|jobs report|adp)/i,
+    re: /(non-?farm|\bnfp\b|payroll|employment change|unemployment (rate|claims)|average hourly|claimant count|jobless|jobs report|adp)/i,
     label: 'jobs data',
     what: 'The labour market read. Employment is half of the dual mandate most major central banks work to, which makes it a direct input into the rate path — and the rate path is what prices a currency.',
     watch: 'The deviation from consensus matters more than the headline count, and the unemployment rate can override the jobs figure entirely when the two disagree. Wage growth inside the report is the inflation link, so a soft headline with hot earnings is not the dovish print it looks like.',
@@ -389,6 +389,14 @@ const EVENT_KB = [
     what: 'The headline inflation print. Of everything on the calendar, this is the release that most reliably repositions rate expectations.',
     watch: 'Core is the number that moves policy — the headline carries food and energy noise the central bank looks through. Month-on-month tells you the current run rate; year-on-year tells you the trend, and the two can point opposite ways in the same release. The surprise against forecast is the move, not the level.',
     compass: 'A hot print pushes the rate path higher and typically bids the currency while pressuring gold; a cool one does the reverse. Both are conditional, not predictions. Size for a two-way spike, then take direction from where price settles once the first minute is over — and mark that settle level, because losing it means the read has failed.',
+  },
+  {
+    family: 'pce',
+    re: /\bpce\b|personal consumption expenditure/i,
+    label: 'inflation (PCE)',
+    what: 'The Personal Consumption Expenditures price index — the inflation measure the Fed frames its target around. Core, which drops food and energy, is the line policymakers read for the underlying trend.',
+    watch: 'Much of it can be estimated from CPI and PPI, which print earlier in the month, so the consensus is usually well informed and the surprise tends to be smaller. Core month-on-month against forecast is the number that moves price, and the prior month is often revised in the same release.',
+    compass: 'A firmer core print lifts the expected Fed path and short-dated yields, which typically supports the dollar and weighs on gold; a softer one runs the other way. Let spreads settle, take direction from where price holds, and treat a move back through that level as the read failing.',
   },
   {
     family: 'ppi',
@@ -522,45 +530,7 @@ function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
       .sort((a, b) => new Date(a.date) - new Date(b.date));
   }
 
-  // One release is often four rows in the feed — US CPI arrives as CPI m/m, CPI
-  // y/y, Core CPI m/m and Core CPI y/y stamped at the same minute. Four cards
-  // for one print is exactly what makes a generated page read like a scraper,
-  // so rows of the same currency and family that land close together share a
-  // card carrying all of their figures.
-  //
-  // "Close together" is a time window, not a calendar day. Bucketing by ET day
-  // split the BOJ in two: its decision lands at 10:30 PM ET and its press
-  // conference at 1:30 AM, either side of midnight, so one event printed as
-  // two cards on two days. A decision and its press conference are always
-  // within a few hours; the next release of the same family is days away.
-  const SAME_RELEASE_MS = 6 * 60 * 60 * 1000;
-  const buckets = [];
-  for (const e of rows) {
-    const kb = kbFor(e.title), t = new Date(e.date).getTime();
-    const b = buckets.find(x => x.country === e.country && x.kb.family === kb.family && t - x.start <= SAME_RELEASE_MS);
-    if (b) b.rows.push(e);
-    else buckets.push({ kb, country: e.country, start: t, rows: [e] });
-  }
-
-  const fromFeed = buckets.map(({ kb, country, rows }) => {
-    const first = etParts(rows[0].date);
-    const spread = new Set(rows.map(r => etParts(r.date).time)).size > 1;
-    return {
-      _at: new Date(rows[0].date).getTime(),
-      name: `${REGION[country] || country} ${kb.label}`,
-      when: `${first.day} — ${first.time} ET${spread ? ', with follow-ons after' : ''}`,
-      impact: 'high',
-      lines: rows.map(r => {
-        const fig = figures(r);
-        return `${spread ? etParts(r.date).time + ' — ' : ''}${r.title}${fig ? ` (${fig})` : ''}`;
-      }),
-      // `what` describes the release and reads the same either way. `watch`
-      // and `compass` tell you how to trade into it, which is the wrong tense
-      // for something that has already printed.
-      what: kb.what,
-      ...(mode === 'recap' ? {} : { watch: kb.watch, compass: kb.compass }),
-    };
-  });
+  const fromFeed = bucketRows(rows, mode);
 
   // A pin only needs `name` and `date`; anything else it carries overrides the
   // family copy matched off its name.
@@ -579,6 +549,80 @@ function buildAutoEvents(calendar, pinned = [], days = AUTO_EVENT_DAYS) {
     });
 
   return { mode, events: [...fromFeed, ...fromPins].sort((a, b) => a._at - b._at) };
+}
+
+/* Date-sorted feed rows into cards. Shared by the weekly page and the
+   per-post release box, so the two always describe the same print the same way.
+
+   One release is often four rows in the feed — US CPI arrives as CPI m/m, CPI
+   y/y, Core CPI m/m and Core CPI y/y stamped at the same minute. Four cards
+   for one print is exactly what makes a generated page read like a scraper,
+   so rows of the same currency and family that land close together share a
+   card carrying all of their figures.
+
+   "Close together" is a time window, not a calendar day. Bucketing by ET day
+   split the BOJ in two: its decision lands at 10:30 PM ET and its press
+   conference at 1:30 AM, either side of midnight, so one event printed as
+   two cards on two days. A decision and its press conference are always
+   within a few hours; the next release of the same family is days away. */
+function bucketRows(rows, mode) {
+  const SAME_RELEASE_MS = 6 * 60 * 60 * 1000;
+  const buckets = [];
+  for (const e of rows) {
+    const kb = kbFor(e.title), t = new Date(e.date).getTime();
+    const b = buckets.find(x => x.country === e.country && x.kb.family === kb.family && t - x.start <= SAME_RELEASE_MS);
+    if (b) b.rows.push(e);
+    else buckets.push({ kb, country: e.country, start: t, rows: [e] });
+  }
+
+  return buckets.map(({ kb, country, rows }) => {
+    const first = etParts(rows[0].date);
+    const spread = new Set(rows.map(r => etParts(r.date).time)).size > 1;
+    return {
+      _at: new Date(rows[0].date).getTime(),
+      _family: kb.family,
+      _country: country,
+      name: `${REGION[country] || country} ${kb.label}`,
+      when: `${first.day} — ${first.time} ET${spread ? ', with follow-ons after' : ''}`,
+      impact: 'high',
+      lines: rows.map(r => {
+        const fig = figures(r);
+        return `${spread ? etParts(r.date).time + ' — ' : ''}${r.title}${fig ? ` (${fig})` : ''}`;
+      }),
+      // `what` describes the release and reads the same either way. `watch`
+      // and `compass` tell you how to trade into it, which is the wrong tense
+      // for something that has already printed.
+      what: kb.what,
+      ...(mode === 'recap' ? {} : { watch: kb.watch, compass: kb.compass }),
+    };
+  });
+}
+
+/* A post that covers one release (`autoEventFamily: "NFP"`) carries a box with
+   that release's next US print. The name is resolved by kbFor — the same matcher
+   that titles the weekly cards — so "NFP" lands on the jobs family and "Core
+   PCE" on the PCE family. A name that only reaches the catch-all is refused:
+   it would match everything. */
+function familyKb(name) {
+  const kb = kbFor(name);
+  return kb.family === 'other' ? null : kb;
+}
+
+// Next USD release of the family; failing that, the latest one the feed still
+// holds; failing that, null and no box. Every figure comes off the feed.
+function buildFamilyEvent(calendar, name) {
+  const kb = familyKb(name);
+  if (!kb) return null;
+  const now = Date.now();
+  const rows = (Array.isArray(calendar) ? calendar : [])
+    .filter(e => e?.title && e?.date && e.impact === 'High' && e.country === 'USD')
+    .filter(e => Number.isFinite(new Date(e.date).getTime()) && kbFor(e.title).family === kb.family)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const ahead = rows.filter(e => new Date(e.date).getTime() > now);
+  if (ahead.length) return { mode: 'upcoming', event: bucketRows(ahead, 'upcoming')[0] };
+  const past = bucketRows(rows, 'recap');
+  return past.length ? { mode: 'recap', event: past[past.length - 1] } : null;
 }
 
 /* ------------------------------ RENDER ----------------------------- */
@@ -639,9 +683,36 @@ function renderEvents(post) {
     ${row('What', e.what)}
     ${row('Watch', e.watch)}
     ${row('Compass', e.compass, 'compass')}
+    ${e._howTo ? `<p class="ev-row"><span class="ev-k">Guide</span><span><a href="${e._howTo.href}">How to trade ${esc(e._howTo.label)} →</a></span></p>` : ''}
   </div>`;
   }).join('')}
 </section>`;
+}
+
+// The compact release box for an `autoEventFamily:` post: name, ET slot and the
+// feed's figures, drawn with the weekly page's card classes. Nothing to show,
+// nothing rendered. The two spacing tweaks are inline on purpose: the stylesheet
+// is inlined into every page, so a new rule there would touch every post.
+function renderFamilyBox(post) {
+  const f = post._familyEvent;
+  if (!f) return '';
+  const e = f.event;
+  const head = f.mode === 'recap'
+    ? '<b>Last release</b> — already released, all times ET'
+    : '<b>Next release</b> — on the calendar, all times ET';
+  return `
+<section class="events" style="margin:28px 0 32px">
+  <p class="events-head">${head}</p>
+  <div class="ev">
+    <div class="ev-top">
+      <span class="ev-name">${esc(e.name)}</span>
+      <span class="ev-tag high">high impact</span>
+    </div>
+    <p class="ev-when">${esc(e.when)}</p>
+    ${e.lines.length ? `<ul class="ev-figs" style="margin:0">${e.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : ''}
+  </div>
+</section>
+`;
 }
 
 function renderPost(post) {
@@ -713,10 +784,17 @@ ${post.faq && post.faq.length ? jsonld({
 
   // Swap the <!-- EVENTS --> marker for the rendered events block. marked may
   // wrap a lone comment in a <p>, so tolerate that.
-  const articleHtml = post.html.replace(
+  let articleHtml = post.html.replace(
     /<p>\s*<!--\s*EVENTS\s*-->\s*<\/p>|<!--\s*EVENTS\s*-->/,
     () => renderEvents(post)
   );
+
+  // The release box sits after the intro, i.e. just ahead of the first section.
+  const familyBox = renderFamilyBox(post);
+  if (familyBox) {
+    const at = articleHtml.search(/<h2[\s>]/);
+    articleHtml = at === -1 ? familyBox + articleHtml : articleHtml.slice(0, at) + familyBox + articleHtml.slice(at);
+  }
 
   const updatedStamp = post.updated
     ? `<p class="updated"><span class="dot"></span>Updated ${fmtDate(post.updated)}</p>`
@@ -1185,6 +1263,19 @@ async function run() {
   // `updated` stamp is set from the build for the same reason: the window really
   // does move every day, so the date is earned rather than asserted.
   const buildDay = new Date().toISOString().slice(0, 10);
+
+  // Posts that cover one release family get that release's box, and become the
+  // "How to trade …" guide on the weekly card for the same family. The mapping
+  // is read off frontmatter, so a new guide links itself.
+  const familyGuides = new Map();
+  for (const p of posts) {
+    if (!p.autoEventFamily) continue;
+    const kb = familyKb(p.autoEventFamily);
+    if (!kb) { console.warn(`  ! ${p.slug}: autoEventFamily "${p.autoEventFamily}" matches no release family — ignored`); continue; }
+    if (!familyGuides.has(kb.family)) familyGuides.set(kb.family, p);
+    p._familyEvent = buildFamilyEvent(live.calendarRaw, p.autoEventFamily);
+  }
+
   for (const p of posts) {
     if (!p.autoEvents) continue;
     // Number.isFinite, not `||`: a deliberate 0 is a valid window and must not
@@ -1193,6 +1284,11 @@ async function run() {
     const days = Number.isFinite(n) && n >= 0 ? n : AUTO_EVENT_DAYS;
     const built = buildAutoEvents(live.calendarRaw, p.pinnedEvents, days);
     p.events = built.events;
+    // Guides are written for the US release, so only USD cards carry the link.
+    for (const e of p.events) {
+      const guide = e._country === 'USD' && familyGuides.get(e._family);
+      if (guide) e._howTo = { href: new URL(postUrl(guide)).pathname, label: guide.autoEventFamily };
+    }
     p._mode = built.mode;
     // A recap covers the week behind it, so it must not wear the label of the
     // window ahead.

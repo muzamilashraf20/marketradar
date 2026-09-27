@@ -7,6 +7,7 @@ category: "Prop Firm"
 tags: ["NFP", "non-farm payrolls", "prop firm", "drawdown", "high-impact news", "risk management"]
 ogImage: "/og-image.png"
 draft: false
+autoEventFamily: "NFP"
 faq:
   - q: "Should funded traders trade NFP?"
     a: "Most funded traders should not trade the NFP release itself. The first seconds after the number print carry the widest spreads and the fastest reversals of the month, and a single spike through your stop can breach a daily drawdown limit that ends the account. Trading the aftermath — once direction and tone are confirmed, usually 15 to 60 minutes later — is far safer than betting on the number. If your prop firm restricts news trading (many ban trades within a window around high-impact releases), trading NFP can breach the rules outright regardless of the outcome."

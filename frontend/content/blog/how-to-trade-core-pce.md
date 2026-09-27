@@ -7,6 +7,7 @@ category: "Prop Firm"
 tags: ["core PCE", "PCE inflation", "Fed", "USD", "prop firm", "high-impact news"]
 ogImage: "/og-image.png"
 draft: false
+autoEventFamily: "Core PCE"
 faq:
   - q: "What is core PCE?"
     a: "Core PCE is the Personal Consumption Expenditures price index with food and energy excluded, published monthly by the U.S. Bureau of Economic Analysis. It tracks how quickly the prices of goods and services households consume are rising. The Federal Reserve leans on it more than any other inflation measure: its 2% goal is framed in PCE terms, and the core version filters out the most volatile items to show the underlying trend."
@@ -78,7 +79,11 @@ On a funded account, the question isn't only what core PCE means for the dollar.
 
 **Know what's around it.** Other U.S. data or Fed speakers may be scheduled nearby. A look at [the week's high-impact calendar](/this-week-in-forex) tells you whether PCE is the main event or one piece of a busier session.
 
-<!-- FOUNDER NOTE -->
+> How I actually handle it. I start with the day's BiasForge bias, not the chart. Then I go to that pair and run my own technical analysis. If the chart agrees with the bias, I take the trade, and when the macro direction and the technicals line up, I hold that position through a release like PCE. When they don't agree, I don't force it. The bias tells me which side to be on; my chart tells me whether today is the day.
+>
+> One thing before you copy this: check your firm's news rules first, and size the position so a spike on the print can't take out your daily drawdown.
+>
+> *— Muzamil Ashraf, founder of BiasForge and a funded trader*
 
 ## Where Bias Gets Invalidated on a PCE Print
 
