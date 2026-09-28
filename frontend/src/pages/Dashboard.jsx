@@ -15,6 +15,13 @@ import { authedFetch } from '../lib/authFetch'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
+// "Stale · 14:05 UTC" — the backend served its last-good strength read (refresh blocked or failed)
+const staleLabel = (iso) => {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'Stale'
+  return `Stale · ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`
+}
+
 const FLAG = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
   AUD: '🇦🇺', NZD: '🇳🇿', CAD: '🇨🇦', CHF: '🇨🇭'
@@ -710,6 +717,11 @@ export default function Dashboard() {
             <div className="flex items-center gap-2">
               <BarChart2 size={15} className="text-cyan-400" />
               <h2 className="text-sm font-bold text-white">Currency Strength</h2>
+              {strength?.stale && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                  {staleLabel(strength.staleAsOf)}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <button onClick={fetchStrength} className="text-slate-500 hover:text-white transition-colors">

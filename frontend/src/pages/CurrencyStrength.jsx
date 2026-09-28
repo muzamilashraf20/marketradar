@@ -16,6 +16,13 @@ const COLORS = {
   Weak:    { bar: 'bg-red-500',     text: 'text-red-400',     badge: 'bg-red-500/10 border-red-500/30 text-red-400' },
 }
 
+// "Stale · 14:05 UTC" — the backend served its last-good read (refresh blocked or failed)
+const staleLabel = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Stale';
+  return `Stale · ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`;
+};
+
 export default function CurrencyStrength() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -61,13 +68,18 @@ export default function CurrencyStrength() {
             </div>
             <h1 className="text-3xl font-black text-white tracking-tight">Currency Strength Meter</h1>
             <p className="text-slate-400 mt-1">
-              Real-time strength of 8 major currencies. Auto-updates every 60s.
+              Strength of 8 major currencies. Data refreshes every 30 min.
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {data?.stale && (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                {staleLabel(data.staleAsOf)}
+              </span>
+            )}
             {lastUpdate && (
               <span className="text-xs text-slate-500">
-                Updated: {lastUpdate.toLocaleTimeString()}
+                Updated: {new Date(data?.updatedAt || lastUpdate).toLocaleTimeString()}
               </span>
             )}
             <button onClick={fetchStrength} disabled={loading}
