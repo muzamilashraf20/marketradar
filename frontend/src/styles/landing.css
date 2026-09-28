@@ -136,17 +136,15 @@
   border-radius: 6px;
 }
 
-/* ═══════════ 1. Hero entrance ═══════════
-   Rise 14px + fade, staggered via --d. */
-@keyframes bf-rise {
-  from { opacity: 0; transform: translateY(14px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.bf-rise {
-  opacity: 0;
-  animation: bf-rise 0.62s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  animation-delay: var(--d, 0ms);
-}
+/* ═══════════ 1. Hero ═══════════
+   No entrance fade. The hero used to start at opacity 0 and rise in on a CSS
+   animation, which meant the prerendered copy was invisible until that
+   animation ran — and anything that froze it (a headless capture, a throttled
+   tab) was left with a blank hero. The copy is now visible from the first
+   paint. The hero's motion comes from the compass instead: conviction filling
+   and the evidence being read in (see "Motion pass" below). .bf-rise stays on
+   the elements as a no-op so the markup does not churn. */
+.bf-rise { }
 
 /* ═══════════ 3. Bar fill ═══════════
    scaleX(0) → value, origin left. The track reserves the full width up
@@ -341,7 +339,12 @@
    beside it. The resting width is --w, so with JavaScript disabled — where
    .bf-js never lands — the bar simply renders at its value with no animation. */
 .bf-bar { width: var(--w, 0%); transform-origin: left center; }
-.bf-js .bf-bar { animation: bf-bar-fill 950ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: var(--d, 0ms); }
+/* Swept out when the drawdown panel scrolls into view (useMotion), not on page
+   load — by the time a visitor reached it, a load-time sweep had long finished. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-motion='armed'] .bf-bar { transform: scaleX(0); }
+  [data-motion='play'] .bf-bar { animation: bf-bar-fill 950ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: var(--d, 0ms); }
+}
 @keyframes bf-bar-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 /* The ten impact segments filling left to right as a news card lands. */
@@ -377,3 +380,278 @@
      screen rather than whatever the loop happened to be showing. */
   .bf-wire { animation: none; transform: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MOTION PASS
+
+   Driven by useMotion (components/landing/v2/useMotion.js), which sets
+   data-motion on an element: none (static final state) → 'armed' (start
+   state) → 'play'; loops toggle 'play' / 'paused' with visibility.
+
+   Nothing here applies without JavaScript, and nothing applies under reduced
+   motion: every rule sits inside prefers-reduced-motion: no-preference, and
+   the hook never sets the attribute when motion is reduced. The only styles
+   outside that block make decorative overlays (packets, flashes, the record
+   ring, the flipped badge) invisible by default — none of them is content.
+
+   Transform, opacity and SVG stroke-dashoffset only. No layout property, no
+   box-shadow animation, no filter animation.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Decorative overlays: invisible unless an animation is running them. */
+.bf-packet, .bf-packet-out, .bf-hub-flash, .bf-out-flash, .bf-inv-chip-b { opacity: 0; }
+.bf-inv-hit { transform-box: fill-box; transform-origin: center; }
+.bf-inv-record::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1.5px solid rgba(251, 113, 133, 0.55);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+
+  /* ── 1. Conviction fills from the bottom of the scale (40) to its value ── */
+  [data-motion='armed'] .bf-meter-fill { transform: scaleX(0) !important; transition: none !important; }
+  [data-motion='play'] .bf-meter-fill { transition: transform 1100ms cubic-bezier(0.16, 1, 0.3, 1) 150ms; }
+
+  /* ── 2. Evidence read in: each row lands in turn, its verdict a beat after
+        its label, starting once conviction is mostly filled ── */
+  [data-motion='armed'] .bf-ev-row,
+  [data-motion='armed'] .bf-ev-verdict { opacity: 0; transition: none; }
+  [data-motion='armed'] .bf-ev-row { transform: translateX(-6px); }
+  [data-motion='play'] .bf-ev-row {
+    transition: opacity 420ms ease-out, transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: calc(750ms + var(--i, 0) * 320ms);
+  }
+  [data-motion='play'] .bf-ev-verdict {
+    transition: opacity 360ms ease-out;
+    transition-delay: calc(950ms + var(--i, 0) * 320ms);
+  }
+
+  /* ── 3. Invalidation: price climbs to the level, crosses at 46%, the live
+        card flips ACTIVE → INVALIDATED, the record lights; hold; reset.
+        10s loop, drawn linearly so the crossing is exactly on time. ── */
+  [data-motion='play'] .bf-inv-path, [data-motion='paused'] .bf-inv-path { animation: bf-inv-draw 10s linear infinite; }
+  [data-motion='play'] .bf-inv-hit, [data-motion='paused'] .bf-inv-hit { animation: bf-inv-hit 10s linear infinite; }
+  [data-motion='play'] .bf-inv-line, [data-motion='paused'] .bf-inv-line { animation: bf-inv-line 10s linear infinite; }
+  [data-motion='play'] .bf-inv-chip-a, [data-motion='paused'] .bf-inv-chip-a { animation: bf-inv-chip-a 10s linear infinite; }
+  [data-motion='play'] .bf-inv-chip-b, [data-motion='paused'] .bf-inv-chip-b { animation: bf-inv-chip-b 10s linear infinite; }
+  [data-motion='play'] .bf-inv-live, [data-motion='paused'] .bf-inv-live { animation: bf-inv-live 10s linear infinite; }
+  [data-motion='play'] .bf-inv-record::after, [data-motion='paused'] .bf-inv-record::after { animation: bf-inv-record 10s linear infinite; }
+
+  /* ── 5. Data flow: packets ride each input into the engine, the hub
+        flashes, one packet carries on to the bias, which glows. 4.2s loop. ── */
+  [data-motion='play'] .bf-packet, [data-motion='paused'] .bf-packet {
+    animation: bf-packet 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    animation-delay: calc(var(--i, 0) * 140ms);
+  }
+  [data-motion='play'] .bf-hub-flash, [data-motion='paused'] .bf-hub-flash { animation: bf-hub-flash 4.2s ease-out infinite; }
+  [data-motion='play'] .bf-packet-out, [data-motion='paused'] .bf-packet-out { animation: bf-packet-out 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+  [data-motion='play'] .bf-out-flash, [data-motion='paused'] .bf-out-flash { animation: bf-out-flash 4.2s ease-out infinite; }
+
+  /* Loops freeze where they are when scrolled away, and resume on return. */
+  [data-motion='paused'] .bf-inv-path, [data-motion='paused'] .bf-inv-hit,
+  [data-motion='paused'] .bf-inv-line, [data-motion='paused'] .bf-inv-chip-a,
+  [data-motion='paused'] .bf-inv-chip-b, [data-motion='paused'] .bf-inv-live,
+  [data-motion='paused'] .bf-inv-record::after, [data-motion='paused'] .bf-packet,
+  [data-motion='paused'] .bf-hub-flash, [data-motion='paused'] .bf-packet-out,
+  [data-motion='paused'] .bf-out-flash { animation-play-state: paused; }
+}
+
+@keyframes bf-inv-draw {
+  0%, 6%    { stroke-dashoffset: 100px; opacity: 1; }
+  56%       { stroke-dashoffset: 0px;   opacity: 1; }
+  88%       { stroke-dashoffset: 0px;   opacity: 1; }
+  94%, 100% { stroke-dashoffset: 0px;   opacity: 0; }
+}
+@keyframes bf-inv-hit {
+  0%, 45.8% { opacity: 0; transform: scale(0.3); }
+  48%       { opacity: 1; transform: scale(1); }
+  88%       { opacity: 1; transform: scale(1); }
+  94%, 100% { opacity: 0; transform: scale(1); }
+}
+@keyframes bf-inv-line {
+  0%, 45.8% { opacity: 0.5; }
+  47%       { opacity: 1; }
+  49%       { opacity: 0.45; }
+  51%       { opacity: 1; }
+  88%       { opacity: 1; }
+  94%, 100% { opacity: 0.5; }
+}
+@keyframes bf-inv-chip-a {
+  0%, 46%   { opacity: 1; }
+  48%       { opacity: 0; }
+  90%       { opacity: 0; }
+  94%, 100% { opacity: 1; }
+}
+@keyframes bf-inv-chip-b {
+  0%, 46%   { opacity: 0; }
+  48%       { opacity: 1; }
+  90%       { opacity: 1; }
+  94%, 100% { opacity: 0; }
+}
+@keyframes bf-inv-live {
+  0%, 46%   { opacity: 1; }
+  50%       { opacity: 0.6; }
+  88%       { opacity: 0.6; }
+  94%, 100% { opacity: 1; }
+}
+@keyframes bf-inv-record {
+  0%, 46%   { opacity: 0; }
+  50%       { opacity: 1; }
+  88%       { opacity: 1; }
+  94%, 100% { opacity: 0; }
+}
+@keyframes bf-packet {
+  0%        { stroke-dashoffset: 5px;   opacity: 0; }
+  4%        { opacity: 1; }
+  44%       { stroke-dashoffset: -95px; opacity: 1; }
+  48%, 100% { stroke-dashoffset: -95px; opacity: 0; }
+}
+@keyframes bf-hub-flash {
+  0%, 55%   { opacity: 0; }
+  61%       { opacity: 0.28; }
+  74%, 100% { opacity: 0; }
+}
+@keyframes bf-packet-out {
+  0%, 60%   { stroke-dashoffset: 8px;   opacity: 0; }
+  62%       { opacity: 1; }
+  84%       { stroke-dashoffset: -92px; opacity: 1; }
+  87%, 100% { stroke-dashoffset: -92px; opacity: 0; }
+}
+@keyframes bf-out-flash {
+  0%, 83%   { opacity: 0; }
+  88%       { opacity: 1; }
+  100%      { opacity: 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MOTION PASS 2 — no-call balance, prop-firm rings, features, record
+
+   Same contract as above: static styles first (the final state everything
+   ships in), then every animation inside prefers-reduced-motion:
+   no-preference, keyed off data-motion. One-shot entrances use keyframes with
+   `backwards` fill rather than transitions, so once a card has landed its hover
+   lift is not held back by its stagger delay.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* No-call brief: a faint cyan grid and a soft glow on the card edge. Static. */
+.bf-grid-card {
+  background-image:
+    linear-gradient(rgba(6, 182, 212, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 182, 212, 0.045) 1px, transparent 1px);
+  background-size: 22px 22px;
+  box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.12), 0 0 40px -18px rgba(6, 182, 212, 0.45);
+}
+/* Where the evidence nets out: just right of centre, inside the no-call zone. */
+.bf-bal-needle { transform: translateX(3%); }
+.bf-resolve { text-shadow: 0 0 14px rgba(148, 163, 184, 0.35); }
+.bf-resolve::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.4), transparent);
+  transform: translateX(-110%);
+  pointer-events: none;
+}
+
+/* Features: hover glow is an overlay fading in, never an animated shadow. */
+.bf-feat::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  box-shadow: 0 0 24px -8px rgba(6, 182, 212, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.bf-feat:hover::after { opacity: 1; }
+
+@media (prefers-reduced-motion: no-preference) {
+
+  /* ── No call: the needle is pushed and pulled, then settles in the zone ── */
+  [data-motion='armed'] .bf-bal-needle { transform: translateX(0); }
+  [data-motion='play'] .bf-bal-needle { animation: bf-bal 2800ms cubic-bezier(0.45, 0, 0.2, 1) 200ms backwards; }
+  [data-motion='armed'] .bf-bal-force-buy,
+  [data-motion='armed'] .bf-bal-force-sell { opacity: 0.35; }
+  [data-motion='play'] .bf-bal-force-buy { animation: bf-force-buy 2800ms linear 200ms backwards; }
+  [data-motion='play'] .bf-bal-force-sell { animation: bf-force-sell 2800ms linear 200ms backwards; }
+  /* …then "No directional call" resolves in behind a scan line… */
+  [data-motion='armed'] .bf-resolve { opacity: 0; }
+  [data-motion='play'] .bf-resolve { animation: bf-fade-in 700ms ease-out 2900ms backwards; }
+  [data-motion='play'] .bf-resolve::after { animation: bf-scan 900ms ease-in-out 2900ms both; }
+  /* …and the two leads arrive from opposite sides. */
+  [data-motion='armed'] .bf-chip-beat { opacity: 0; transform: translateX(-24px); }
+  [data-motion='armed'] .bf-chip-miss { opacity: 0; transform: translateX(24px); }
+  [data-motion='play'] .bf-chip-beat { animation: bf-chip-l 520ms cubic-bezier(0.16, 1, 0.3, 1) 3300ms backwards; }
+  [data-motion='play'] .bf-chip-miss { animation: bf-chip-r 520ms cubic-bezier(0.16, 1, 0.3, 1) 3420ms backwards; }
+
+  /* ── Prop firm: rings fill, then the pre-trade check lands ── */
+  [data-motion='armed'] .bf-ring-value { stroke-dashoffset: 100px; transition: none; }
+  [data-motion='play'] .bf-ring-value { transition: stroke-dashoffset 1200ms cubic-bezier(0.16, 1, 0.3, 1) 150ms; }
+  [data-motion='armed'] .bf-pretrade { opacity: 0; transform: translateY(10px); }
+  [data-motion='play'] .bf-pretrade { animation: bf-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) 1350ms backwards; }
+  [data-motion='play'] .bf-pretrade-ok { animation: bf-stamp 420ms cubic-bezier(0.2, 1.4, 0.4, 1) 1800ms backwards; }
+
+  /* ── Features: cards in turn, icons draw their strokes, lift on hover ── */
+  .bf-feat { transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1); }
+  .bf-feat:hover { transform: translateY(-3px); }
+  [data-motion='armed'] .bf-feat { opacity: 0; transform: translateY(14px); }
+  [data-motion='play'] .bf-feat { animation: bf-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: calc(var(--i, 0) * 90ms); }
+  [data-motion='armed'] .bf-draw :is(path, circle, line, rect, polyline, polygon, ellipse) { stroke-dasharray: 100px; stroke-dashoffset: 100px; }
+  [data-motion='play'] .bf-draw :is(path, circle, line, rect, polyline, polygon, ellipse) {
+    animation: bf-draw 1000ms ease-out backwards;
+    animation-delay: calc(var(--i, 0) * 90ms + 220ms);
+  }
+
+  /* ── Record: cards in turn, each status stamped once, legend dot breathes ── */
+  [data-motion='armed'] .bf-rec-card { opacity: 0; transform: translateY(14px); }
+  [data-motion='play'] .bf-rec-card { animation: bf-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: calc(var(--i, 0) * 110ms); }
+  [data-motion='play'] .bf-stamp { animation: bf-stamp 420ms cubic-bezier(0.2, 1.4, 0.4, 1) backwards; animation-delay: calc(var(--i, 0) * 110ms + 380ms); }
+  /* Only once the record has scrolled in (its list is playing); static before. */
+  #record:has([data-motion='play']) .bf-pulse-slow { animation: bf-pulse-slow 3.2s ease-in-out infinite; }
+}
+
+@keyframes bf-enter  { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes bf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bf-stamp {
+  0%   { opacity: 0; transform: scale(1.35); }
+  60%  { opacity: 1; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes bf-draw {
+  from { stroke-dasharray: 100px; stroke-dashoffset: 100px; }
+  to   { stroke-dasharray: 100px; stroke-dashoffset: 0px; }
+}
+@keyframes bf-pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes bf-bal {
+  0%   { transform: translateX(0); }
+  18%  { transform: translateX(30%); }
+  38%  { transform: translateX(-26%); }
+  54%  { transform: translateX(14%); }
+  68%  { transform: translateX(-7%); }
+  82%  { transform: translateX(5%); }
+  100% { transform: translateX(3%); }
+}
+@keyframes bf-force-buy {
+  0%   { opacity: 0.35; }
+  8%   { opacity: 1; }
+  28%  { opacity: 0.35; }
+  88%  { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+@keyframes bf-force-sell {
+  0%, 26% { opacity: 0.35; }
+  34%  { opacity: 1; }
+  52%  { opacity: 0.35; }
+  88%  { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+@keyframes bf-scan { from { transform: translateX(-110%); } to { transform: translateX(110%); } }
+@keyframes bf-chip-l { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }
+@keyframes bf-chip-r { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }

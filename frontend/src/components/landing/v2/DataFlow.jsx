@@ -1,3 +1,5 @@
+import { useMotion } from './useMotion'
+
 /* Ported from the previous landing page's AIEngineSection. The geometry, the
    cyan glow and the converging dashed lines are unchanged — it is the most
    distinctive thing either page has. What changed:
@@ -28,9 +30,16 @@ const NODES = [
 const CX = 468, CY = 220, R = 56
 const OUT_CX = 710, OUT_CY = 220
 
+/* Motion: while the diagram is on screen, a short "packet" of light travels
+   along each input into the engine, the hub flashes as they land, and one
+   packet carries on down the output line to the bias, which glows. All of it is
+   SVG stroke-dashoffset and opacity (bf-packet / bf-hub-flash / bf-out-flash in
+   landing.css), paused when scrolled away. The packets and flashes are
+   decorative overlays: the diagram itself is complete without them. */
 export default function DataFlow() {
+  const motion = useMotion({ loop: true })
   return (
-    <div className="relative">
+    <div ref={motion} className="relative">
       {/* Background glow — the treatment that carried over from the old page. */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] h-[320px] max-w-full bg-cyan-500/[0.06] rounded-full blur-3xl pointer-events-none" />
       <div className="absolute top-1/3 right-1/4 w-[240px] h-[240px] bg-emerald-500/[0.05] rounded-full blur-3xl pointer-events-none" />
@@ -95,6 +104,7 @@ export default function DataFlow() {
             <circle cx={CX} cy={CY} r={R + 14} fill="url(#bfhub)" filter="url(#bfhubglow)" />
             <circle cx={CX} cy={CY} r={R} fill="#05101e" stroke="#06b6d4" strokeWidth="1.5" />
             <circle cx={CX} cy={CY} r={R - 11} fill="none" stroke="#06b6d4" strokeWidth="0.5" strokeOpacity="0.25" />
+            <circle className="bf-hub-flash" cx={CX} cy={CY} r={R} fill="#06b6d4" aria-hidden="true" />
 
             <text x={CX} y={CY - 9} textAnchor="middle" fill="#06b6d4" fontSize="11.5" fontWeight="700" fontFamily="'Courier New',monospace" letterSpacing="0.5">
               BiasForge
@@ -104,7 +114,7 @@ export default function DataFlow() {
             </text>
 
             {/* Input nodes and their converging flow lines */}
-            {NODES.map(node => {
+            {NODES.map((node, i) => {
               const startX = node.x + 70
               const endX = CX - R - 4
               const cpX = (startX + endX) / 2
@@ -121,6 +131,19 @@ export default function DataFlow() {
                     strokeOpacity="0.55"
                     className="bf-flow"
                     style={{ animationDelay: node.delay }}
+                  />
+                  {/* The packet rides the same curve, under the node boxes like
+                      the line does. Staggered so the inputs land in sequence. */}
+                  <path
+                    className="bf-packet"
+                    d={d}
+                    pathLength="100"
+                    fill="none"
+                    stroke={node.color}
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeDasharray="5 100"
+                    style={{ '--i': i }}
                   />
                   <rect
                     x={node.x - 70} y={node.y - 24}
@@ -143,6 +166,12 @@ export default function DataFlow() {
               x1={CX + R + 4} y1={CY} x2={OUT_CX - 86} y2={OUT_CY}
               stroke="#10b981" strokeWidth="1.5" strokeOpacity="0.5" strokeDasharray="5 3"
             />
+            <line
+              className="bf-packet-out"
+              x1={CX + R + 4} y1={CY} x2={OUT_CX - 86} y2={OUT_CY}
+              pathLength="100"
+              stroke="#34d399" strokeWidth="3" strokeLinecap="round" strokeDasharray="8 100"
+            />
             <polygon
               points={`${OUT_CX - 86},${OUT_CY - 5} ${OUT_CX - 74},${OUT_CY} ${OUT_CX - 86},${OUT_CY + 5}`}
               fill="#10b981" opacity="0.75"
@@ -152,6 +181,14 @@ export default function DataFlow() {
               width="148" height="64" rx="12"
               fill="#04120e" stroke="#10b981" strokeWidth="1.5" strokeOpacity="0.55"
               filter="url(#bfsoftglow)"
+            />
+            {/* Opacity-only glow when the output packet lands. No filter on it,
+                so the pulse never re-rasterises a blur. */}
+            <rect
+              className="bf-out-flash"
+              x={OUT_CX - 74} y={OUT_CY - 32}
+              width="148" height="64" rx="12"
+              fill="#10b981" fillOpacity="0.08" stroke="#34d399" strokeWidth="2"
             />
             <text x={OUT_CX} y={OUT_CY - 10} textAnchor="middle" fill="#ffffff" fontSize="11" fontWeight="700">
               Directional

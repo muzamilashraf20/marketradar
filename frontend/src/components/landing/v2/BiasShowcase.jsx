@@ -8,7 +8,8 @@ import { CHIP_BASE, CHIP_SIZE, TIMING_STYLE } from '../../ui/styles'
 import { fmtPair, fmtLevel } from '../../ui/format'
 import DemoTag from './DemoTag'
 import EvidenceList from './EvidenceList'
-import { useCompassData } from './useCompassData'
+import { DEMO_SHOWCASE } from './demoData'
+import { useMotion } from './useMotion'
 
 /* A numbered marker tying a block of the card to its explanation beside it.
    The numbers match the three columns in Direction.jsx. */
@@ -33,10 +34,13 @@ function Marker({ n, children }) {
 
    No overflow-hidden on the frame, so the conviction tooltip is never clipped. */
 export default function BiasShowcase() {
-  const { rows, ready } = useCompassData()
-  const row = rows.find(r => r.isHeadline && r.direction !== 'FLAT') || null
+  // Its own demo pair (AUD/USD SELL), so the framework card is not a repeat of
+  // the hero's. See demoData.js.
+  const row = DEMO_SHOWCASE
+  // Called before the early return so the hook order never changes.
+  const motion = useMotion()
 
-  if (!ready || !row) {
+  if (!row) {
     return (
       <EmptyState
         title="No pair clears the bar."
@@ -49,7 +53,7 @@ export default function BiasShowcase() {
   const side = row.direction === 'SELL' ? 'above' : 'below'
 
   return (
-    <article className="bf-card shadow-[0_24px_70px_-30px_rgba(0,0,0,0.95)]" aria-label={`Example bias: ${row.direction} ${fmtPair(row.pair)}`}>
+    <article ref={motion} className="bf-card shadow-[0_24px_70px_-30px_rgba(0,0,0,0.95)]" aria-label={`Example bias: ${row.direction} ${fmtPair(row.pair)}`}>
       <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3.5 bf-hairline-b">
         <h3 className="text-[17px] font-bold tracking-tight text-bf-text tabular-nums">{fmtPair(row.pair)}</h3>
         <DemoTag />

@@ -7,6 +7,7 @@ import EmptyState from '../../ui/EmptyState'
 import { statusFromOutcome } from '../../ui/styles'
 import { fmtPair } from '../../ui/format'
 import { useBiasCalls, fmtDate } from './useBiasCalls'
+import { useMotion } from './useMotion'
 
 /* The record — real closed calls, invalidations included.
 
@@ -27,15 +28,16 @@ import { useBiasCalls, fmtDate } from './useBiasCalls'
    or "held" state, because the engine never records one. */
 const SHOWN = 6
 
-function Call({ c }) {
+function Call({ c, i }) {
   return (
-    <Card as="li" tone="subtle" padding="md" className="flex flex-col gap-3 min-w-0">
+    <Card as="li" tone="subtle" padding="md" className="bf-rec-card flex flex-col gap-3 min-w-0" style={{ '--i': i }}>
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <DirectionBadge direction={c.direction} size="sm" />
           <span className="text-sm font-semibold text-bf-text tabular-nums">{fmtPair(c.pair)}</span>
         </span>
-        <StatusBadge status={statusFromOutcome(c.outcome)} size="sm" describe />
+        {/* One-time "stamp" as the card lands (landing.css, bf-stamp). */}
+        <span className="bf-stamp inline-flex shrink-0"><StatusBadge status={statusFromOutcome(c.outcome)} size="sm" describe /></span>
       </div>
       <LevelRow pair={c.pair} value={c.invalidationLevel} size="sm" />
       <p className="text-2xs text-bf-muted tabular-nums">
@@ -47,6 +49,7 @@ function Call({ c }) {
 
 export default function TrackRecord() {
   const { calls, ready, source } = useBiasCalls()
+  const motion = useMotion()
   const shown = calls.slice(0, SHOWN)
   // The live endpoint could not be reached, so these are the calls saved at the
   // last site build (or on an earlier visit). Still real and still closed, but
@@ -65,7 +68,7 @@ export default function TrackRecord() {
             fallback they are the set saved at build time. The dates on each card
             carry the timing. */}
         <span className="inline-flex items-center gap-1.5 text-3xs font-semibold uppercase tracking-wider text-bf-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-slate-500" aria-hidden="true" />
+          <span className="bf-pulse-slow w-1.5 h-1.5 rounded-full bg-slate-500" aria-hidden="true" />
           Closed calls · engine record
         </span>
         <span className="flex flex-wrap items-center gap-2 text-2xs text-bf-text-2">
@@ -79,7 +82,9 @@ export default function TrackRecord() {
         </span>
       </div>
 
-      <div className="mt-6" data-reveal>
+      {/* Motion: the cards land in turn (landing.css, bf-rec-card). The list itself
+          is exactly what the endpoint returned — same calls, same order. */}
+      <div ref={motion} className="mt-6" data-reveal>
         {!ready ? (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Loading the record">
             {Array.from({ length: SHOWN }, (_, i) => (
@@ -111,7 +116,7 @@ export default function TrackRecord() {
               </p>
             )}
             <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {shown.map(c => <Call key={`${c.pair}-${c.closedAt}`} c={c} />)}
+              {shown.map((c, i) => <Call key={`${c.pair}-${c.closedAt}`} c={c} i={i} />)}
             </ul>
           </>
         )}

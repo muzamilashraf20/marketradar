@@ -89,9 +89,12 @@ export default function ConvictionMeter({
         aria-valuetext={spoken}
         className={`relative mt-2 w-full overflow-hidden rounded-full bg-white/[0.06] ${TRACK_SIZE[size] || TRACK_SIZE.md}`}
       >
-        {/* Scaled, not resized: transform is the only property that moves. */}
+        {/* Scaled, not resized: transform is the only property that moves.
+            `bf-meter-fill` is a hook for page-level motion (the landing page
+            fills it from the bottom of the scale on scroll); it adds no style
+            of its own, so the meter renders at its value everywhere else. */}
         <span
-          className={`absolute inset-0 origin-left rounded-full motion-safe:transition-transform motion-safe:duration-700 motion-safe:ease-bf ${gs.bar}`}
+          className={`bf-meter-fill absolute inset-0 origin-left rounded-full motion-safe:transition-transform motion-safe:duration-700 motion-safe:ease-bf ${gs.bar}`}
           style={{ transform: `scaleX(${pct})` }}
           aria-hidden="true"
         />

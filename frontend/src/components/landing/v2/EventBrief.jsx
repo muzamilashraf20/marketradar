@@ -1,21 +1,27 @@
 import { Search } from 'lucide-react'
 import { DEMO_BRIEF as B } from './demoData'
 import DemoTag from './DemoTag'
+import { useMotion } from './useMotion'
 
-/* The event brief, rendered.
+/* The event brief, rendered — with the evidence balance that makes "no call"
+   visible rather than asserted.
 
-   This was the last screenshot on the page. It was a 952px modal the layout had
-   to show at 460px wide, which put the reasoning at roughly half size — and the
-   reasoning is the entire section. Anyone can say their engine declines to call
-   a print; what makes it land is reading the argument for why, and that was the
-   part the crop made illegible.
+   EVIDENCE BALANCE. A horizontal meter from SELL to BUY with a shaded no-call
+   zone in the middle. Macro pushes one way, flow and sentiment the other; the
+   needle is where they net out. Statically (no JavaScript, reduced motion, or
+   before the brief is scrolled to) the needle rests inside the zone — the
+   engine's actual answer. With motion, on arrival, the needle is pushed toward
+   BUY by macro, pulled back toward SELL by flow and sentiment, swings with
+   shrinking amplitude and settles inside the zone; only then does "No
+   directional call" resolve in, and the beat/miss chips slide in from opposite
+   sides. Timing lives in landing.css (bf-bal-* / bf-resolve / bf-chip-*).
 
-   Rendered, it is legible at any width, it carries no image weight, and it holds
-   the same "Demo data" label as the other panels: this is one fixed brief, not a
-   read on a print that is coming up. */
+   Everything here is demo data and labelled as such. */
 export default function EventBrief() {
+  const motion = useMotion()
+
   return (
-    <div className="bf-card overflow-hidden">
+    <div ref={motion} className="bf-card bf-grid-card relative overflow-hidden">
       <div className="px-4 sm:px-5 pt-4 pb-3.5 bf-hairline-b">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -42,18 +48,53 @@ export default function EventBrief() {
       </div>
 
       <div className="p-3 space-y-2.5">
-        {/* The verdict. Where a bias card carries a direction and a conviction
-            ring, this carries a flat dash — the engine's way of saying it has
-            nothing to publish, rendered as deliberately as a call would be. */}
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-          <div className="flex items-start justify-between gap-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider bf-t3">Overall bias</p>
-            <div className="text-right shrink-0">
-              <span className="block w-8 h-[3px] rounded-full bg-slate-500 ml-auto" aria-hidden="true" />
-              <p className="mt-2 text-[10px] font-bold uppercase tracking-wider bf-t3 max-w-[8rem]">
-                {B.call}
-              </p>
+        {/* Evidence balance */}
+        <div className="rounded-xl border border-white/[0.06] bg-bf-bg/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider bf-t3">Evidence balance</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wider bf-t3 bf-mono">{B.currency}</p>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-3 text-[11px]">
+            <span className="bf-bal-force-sell font-medium text-bf-bear-soft">&larr; Flow · Sentiment</span>
+            <span className="bf-bal-force-buy font-medium text-bf-bull-soft">Macro &rarr;</span>
+          </div>
+
+          <div
+            className="relative mt-2 h-9"
+            role="img"
+            aria-label="Evidence balance: macro pushes toward buy, flow and sentiment toward sell; the net sits inside the no-call zone"
+          >
+            {/* Track */}
+            <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/[0.08]" />
+            {/* No-call zone: the band the net has to clear before a direction is called */}
+            <div className="absolute inset-y-0 left-[38%] right-[38%] rounded-md border border-dashed border-slate-500/40 bg-slate-400/[0.08]" />
+            {/* Ticks */}
+            {[0, 25, 50, 75, 100].map(t => (
+              <span key={t} className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 bg-white/15" style={{ left: `${t}%` }} aria-hidden="true" />
+            ))}
+            {/* Needle. The wrapper spans the whole track, so translateX(%) moves
+                it by a share of the track's width. Rests inside the zone. */}
+            <div className="bf-bal-needle absolute inset-0" aria-hidden="true">
+              <span className="absolute left-1/2 top-0 bottom-0 w-[2px] -ml-px rounded-full bg-bf-accent-soft" />
+              <span className="absolute left-1/2 -top-1 h-2 w-2 -ml-1 rotate-45 bg-bf-accent-soft" />
             </div>
+          </div>
+
+          <div className="mt-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider">
+            <span className="text-bf-bear-soft">Sell</span>
+            <span className="bf-t3">No-call zone</span>
+            <span className="text-bf-bull-soft">Buy</span>
+          </div>
+        </div>
+
+        {/* The verdict, resolved once the needle settles */}
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[10px] font-bold uppercase tracking-wider bf-t3">Overall bias</p>
+            <p className="bf-resolve relative overflow-hidden text-[12px] font-bold uppercase tracking-[0.18em] text-slate-200">
+              {B.call}
+            </p>
           </div>
 
           <p className="mt-2 text-[17px] sm:text-[19px] font-semibold text-slate-100 leading-snug max-w-[32ch]">
@@ -71,6 +112,16 @@ export default function EventBrief() {
             </p>
             <span className="text-[10px] font-bold px-2 py-[3px] rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/25">
               {B.indicatorsVerdict}
+            </span>
+          </div>
+
+          {/* One lead each way — the split, shown rather than described. */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <span className="bf-chip-beat inline-flex items-center gap-1.5 rounded-chip border border-bf-bull/25 bg-bf-bull/10 px-2 py-1 text-[11px] font-semibold text-bf-bull-soft">
+              Beat · {B.leadBeat}
+            </span>
+            <span className="bf-chip-miss inline-flex items-center gap-1.5 rounded-chip border border-bf-bear/25 bg-bf-bear/10 px-2 py-1 text-[11px] font-semibold text-bf-bear-soft">
+              Miss · {B.leadMiss}
             </span>
           </div>
 

@@ -16,7 +16,7 @@ export default function EvidenceList({ components = [], size = 'sm', className =
 
   return (
     <ul className={`space-y-1 ${className}`}>
-      {components.map(c => {
+      {components.map((c, i) => {
         let state
         if (c.leans) {
           const Arrow = c.leans === 'BUY' ? ArrowUpRight : ArrowDownRight
@@ -41,10 +41,13 @@ export default function EvidenceList({ components = [], size = 'sm', className =
             </span>
           )
         }
+        // bf-ev-row / bf-ev-verdict / --i are hooks for the landing page's
+        // "engine reading the evidence" motion: rows land one by one, each
+        // verdict a beat after its label. Static without that motion.
         return (
-          <li key={c.label} className={`flex items-center justify-between gap-3 ${text}`}>
+          <li key={c.label} className={`bf-ev-row flex items-center justify-between gap-3 ${text}`} style={{ '--i': i }}>
             <span className="text-bf-text-2">{c.label}</span>
-            {state}
+            <span className="bf-ev-verdict">{state}</span>
           </li>
         )
       })}

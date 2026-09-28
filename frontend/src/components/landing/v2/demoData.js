@@ -42,23 +42,38 @@ export const DEMO_NOTE = 'Demo data — not the current market read.'
    `components` mirrors the engine's per-pair breakdown (macro, order flow,
    sentiment) as agree/disagree with the net direction. No component values are
    shown: on a sample they would be numbers with no scale behind them.
-   The no-call reason is the backend's own wording for that case. */
+   The no-call reason is the backend's own wording for that case.
+
+   THE THREE DEMO BIASES are deliberately different pairs, directions and
+   scores, so the page does not read as one call repeated:
+     hero        XAU/USD BUY   84 A   (A needs 82+ and FRESH timing)
+     framework   AUD/USD SELL  67 B   (64–73, not LATE)
+     invalidation USD/CAD BUY  (the card shows no score)
+   Grades follow the engine's lines — 55 / 64 / 74 / 82, timing folded in —
+   see computeConfidence in backend/biasEngineV2/biasEngine.js.
+
+   Levels were set near real prices when written (late September 2026: gold
+   ~4188, AUD/USD ~0.7024, USD/CAD ~1.4152), rounded, and placed on the side
+   the engine would put them: below price for a BUY, above for a SELL. They
+   are illustrative and will drift from the market; every panel says "Demo
+   data". Theses name only standing macro relationships — no dates, events or
+   data prints that could turn out false. */
 export const DEMO_BIASES = [
   {
-    pair: 'GBPUSD',
-    direction: 'SELL',
-    confidence: 78,
-    grade: 'A-',
+    pair: 'XAUUSD',
+    direction: 'BUY',
+    confidence: 84,
+    grade: 'A',
     entryTiming: 'FRESH',
     thesis:
-      'The dollar holds a rate and positioning edge over sterling while UK data keeps the Bank of England leaning toward cuts.',
-    invalidationLevel: 1.35686,
+      'Softer real yields and a weaker dollar are supporting gold, and positioning has room to extend before it looks stretched.',
+    invalidationLevel: 4128.5,
     hasInvalidation: true,
     isHeadline: true,
     components: [
       { label: 'Macro', agrees: true },
       { label: 'Flow', agrees: true },
-      { label: 'Sentiment', agrees: false },
+      { label: 'Sentiment', agrees: true },
     ],
   },
   {
@@ -79,6 +94,34 @@ export const DEMO_BIASES = [
     ],
   },
 ]
+
+/* The framework section's annotated card. */
+export const DEMO_SHOWCASE = {
+  pair: 'AUDUSD',
+  direction: 'SELL',
+  confidence: 67,
+  grade: 'B',
+  entryTiming: 'EXTENDED',
+  thesis:
+    'The rate outlook favours the dollar over the Australian dollar, and softer risk appetite is weighing on the currency more than positioning is supporting it.',
+  invalidationLevel: 0.7082,
+  hasInvalidation: true,
+  isHeadline: true,
+  components: [
+    { label: 'Macro', agrees: true },
+    { label: 'Flow', agrees: false },
+    { label: 'Sentiment', agrees: true },
+  ],
+}
+
+/* The invalidation section's bias: a BUY, so it is wrong below its level and
+   the demo chart shows price falling through it. */
+export const DEMO_INVALIDATION = {
+  pair: 'USDCAD',
+  direction: 'BUY',
+  thesis: "The dollar's rate edge over the Canadian dollar holds while softer crude weighs on the loonie.",
+  invalidationLevel: 1.4068,
+}
 
 /* Named but never given a direction or a grade, the same as the live panel did:
    the chip row says what else the engine covers, not what it thinks. */
@@ -147,6 +190,9 @@ export const DEMO_BRIEF = {
   reasoning:
     'The forecast of 55.2 against a prior 55.6 implies a modest pullback that stays in expansionary territory. Leading indicators are split, so there is no clean directional lean.',
   indicatorsVerdict: 'mixed',
+  // Generic labels for the two leads that disagree. No figures, no dates.
+  leadBeat: 'manufacturing lead',
+  leadMiss: 'services lead',
   indicatorsLead:
     'The data points both ways — some leads argue for a beat, others for a miss. This is a real split in the evidence, not missing data, so no directional call is made.',
 }

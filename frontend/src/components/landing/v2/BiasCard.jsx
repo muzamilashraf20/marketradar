@@ -6,6 +6,7 @@ import LevelRow from '../../ui/LevelRow'
 import { CHIP_BASE, CHIP_SIZE, TIMING_STYLE } from '../../ui/styles'
 import { fmtPair } from '../../ui/format'
 import EvidenceList from './EvidenceList'
+import { useMotion } from './useMotion'
 
 /* One bias in the hero's compass panel, built from the design system so it
    reads exactly like the product.
@@ -18,9 +19,11 @@ import EvidenceList from './EvidenceList'
    component leans are the whole point of showing it. */
 export default function BiasCard({ row }) {
   const isFlat = row.direction !== 'BUY' && row.direction !== 'SELL'
+  // Conviction fills and the evidence rows are read in, on arrival. See useMotion.
+  const motion = useMotion()
 
   return (
-    <Card as="li" tone="subtle" padding="none" className="p-4 flex flex-col min-w-0">
+    <Card as="li" ref={motion} tone="subtle" padding="none" className="p-4 flex flex-col min-w-0">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold tracking-tight text-bf-text tabular-nums">{fmtPair(row.pair)}</h3>
         <StatusBadge status={isFlat ? 'no_call' : 'active'} size="sm" />

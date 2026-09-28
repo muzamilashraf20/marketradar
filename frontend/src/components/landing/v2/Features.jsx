@@ -1,6 +1,7 @@
 import { Sun, TrendingUp, CalendarDays, PieChart, ShieldCheck, NotebookPen } from 'lucide-react'
 import { Section, Lede } from './Section'
 import Card from '../../ui/Card'
+import { useMotion } from './useMotion'
 
 /* Inside the dashboard, grouped by the decision each area serves rather than
    listed flat. Only modules that exist, under their app names.
@@ -54,15 +55,18 @@ const AREAS = [
 ]
 
 export default function Features() {
+  const motion = useMotion()
   return (
     <Section id="features" eyebrow="Inside the dashboard" headline="Organised around the decision, not the data." wide>
       <Lede>Six areas, in the order you use them.</Lede>
 
-      <ul className="mt-8 sm:mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {AREAS.map(a => (
-          <Card as="li" key={a.name} tone="subtle" padding="md" data-reveal>
+      {/* Motion: cards land in turn, each icon draws its strokes in, and a card
+          lifts with a faint cyan glow on hover (landing.css, bf-feat / bf-draw). */}
+      <ul ref={motion} className="mt-8 sm:mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {AREAS.map((a, i) => (
+          <Card as="li" key={a.name} tone="subtle" padding="md" className="bf-feat relative" style={{ '--i': i }}>
             <h3 className="flex items-center gap-2 text-sm font-semibold text-bf-text">
-              <a.icon size={16} className="text-bf-accent shrink-0" aria-hidden="true" strokeWidth={1.75} />
+              <a.icon size={16} className="bf-draw text-bf-accent shrink-0" aria-hidden="true" strokeWidth={1.75} />
               {a.name}
             </h3>
             <dl className="mt-3 space-y-2.5">
