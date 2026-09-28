@@ -1,5 +1,6 @@
 import { Search } from 'lucide-react'
 import { DEMO_BRIEF as B } from './demoData'
+import DemoTag from './DemoTag'
 
 /* The event brief, rendered.
 
@@ -10,7 +11,7 @@ import { DEMO_BRIEF as B } from './demoData'
    part the crop made illegible.
 
    Rendered, it is legible at any width, it carries no image weight, and it holds
-   the same SAMPLE label as the other panels: this is one recorded brief, not a
+   the same "Demo data" label as the other panels: this is one fixed brief, not a
    read on a print that is coming up. */
 export default function EventBrief() {
   return (
@@ -25,9 +26,7 @@ export default function EventBrief() {
               {B.event}
             </h3>
           </div>
-          <span className="bf-pill bf-hairline text-[9.5px] font-bold uppercase tracking-wider px-2 py-[3px] bf-t3 shrink-0">
-            Sample
-          </span>
+          <DemoTag />
         </div>
 
         <div className="mt-2.5 flex items-center gap-x-4 gap-y-1 flex-wrap text-[12px]">
@@ -76,7 +75,6 @@ export default function EventBrief() {
           </div>
 
           <p className="mt-3 text-[13.5px] leading-[1.7] text-yellow-200/80">{B.indicatorsLead}</p>
-          <p className="mt-2.5 text-[13px] leading-[1.7] text-slate-400">{B.indicatorsDetail}</p>
         </div>
       </div>
     </div>

@@ -1,145 +1,129 @@
 import { Section, Lede } from './Section'
-import { useBiasCalls, fmtLevel, fmtPair, fmtDate } from './useBiasCalls'
+import Card from '../../ui/Card'
+import DirectionBadge from '../../ui/DirectionBadge'
+import StatusBadge from '../../ui/StatusBadge'
+import LevelRow from '../../ui/LevelRow'
+import EmptyState from '../../ui/EmptyState'
+import { statusFromOutcome } from '../../ui/styles'
+import { fmtPair } from '../../ui/format'
+import { useBiasCalls, fmtDate } from './useBiasCalls'
 
-/* Phase 2 — the record.
+/* The record — real closed calls, invalidations included.
 
-   Individual past calls, never an aggregate. There is not enough recorded data
-   to publish a statistic and this section does not attempt one: no rate, no
-   count of correct calls, no summary line. Listing what happened makes no
-   statistical claim, which is exactly why it can go on the page today.
+   WHAT IS SHOWN. The six most recent closed calls exactly as /api/bias-calls
+   returns them (newest first). No filter, no re-sort, no selection by outcome:
+   whatever the engine closed last is what appears, invalidated or not.
 
-   OUTCOME LABELS. The engine records three reasons for closing a bias and only
-   one of them is price crossing the line. "Held" is not a state it has, so it is
-   not a label used here — see useBiasCalls for the full note. */
-const OUTCOME = {
-  level_break: {
-    tone: 'text-rose-300',
-    dot: 'bg-rose-400',
-    label: level => `Invalidated at ${level} — bias closed`,
-  },
-  conviction_floor: {
-    tone: 'bf-t3',
-    dot: 'bg-slate-500',
-    label: () => 'Closed — conviction fell below the floor',
-  },
-  regime_reversal: {
-    tone: 'bf-t3',
-    dot: 'bg-slate-500',
-    label: () => 'Closed — the regime flipped',
-  },
-}
-const outcomeFor = o => OUTCOME[o] || { tone: 'bf-t3', dot: 'bg-slate-500', label: () => 'Closed' }
+   WHERE IT COMES FROM. Only that endpoint — live on load, or the same
+   endpoint's response baked in at build time so the prerendered HTML carries
+   it. Both are the engine's real record, and both hold CLOSED calls only (the
+   endpoint emits nothing else), so no active level is ever baked. If the live
+   fetch fails, the baked set stays with a note saying it may not be the newest;
+   if nothing exists at all, an empty state. Never demo numbers.
 
-/* Card width, and the travel rate that keeps it moving at the same speed as the
-   news wire. 16px a second is the figure both are tuned to — the record and the
-   feed drifting at different rates on one page reads as two mistakes. */
-const CARD_W = 290
-const SECONDS_PER_CARD = Math.round(CARD_W / 16.4)
-const MIN_CARDS_PER_COPY = 5
+   NO AGGREGATE. Outcome recording began in late August 2026, too short a window
+   for a rate to mean anything, so none is computed or shown. The engine closes
+   a bias for three reasons and each is labelled as itself — there is no "won"
+   or "held" state, because the engine never records one. */
+const SHOWN = 6
 
-function Call({ c, clone }) {
-  const o = outcomeFor(c.outcome)
-  const level = fmtLevel(c.pair, c.invalidationLevel)
-  const isSell = c.direction === 'SELL'
+function Call({ c }) {
   return (
-    <li
-      className="shrink-0 px-1.5"
-      style={{ width: CARD_W }}
-      aria-hidden={clone ? 'true' : undefined}
-    >
-      <article className="bf-card p-4 h-full flex flex-col">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="bf-mono text-[14px] font-bold tracking-tight">
-            <span className={isSell ? 'text-rose-400' : 'text-emerald-400'}>{c.direction}</span>{' '}
-            <span className="text-slate-100">{fmtPair(c.pair)}</span>
-          </span>
-          <span className="bf-mono text-[11px] bf-t3 shrink-0">{fmtDate(c.closedAt)}</span>
-        </div>
-
-        <p className="mt-3 text-[12px] bf-t3">
-          Invalidation level <span className="bf-mono text-slate-300">{level || '—'}</span>
-        </p>
-
-        <p className={`mt-auto pt-3 flex items-start gap-2 text-[12px] leading-snug ${o.tone}`}>
-          <span className={`mt-[5px] w-1.5 h-1.5 rounded-full shrink-0 ${o.dot}`} aria-hidden="true" />
-          {o.label(level)}
-        </p>
-      </article>
-    </li>
-  )
-}
-
-/* One flowing row of calls.
-
-   Same mechanism as the news wire: the set is padded until a copy overfills the
-   frame, laid down twice, and translated to -50% so the loop seam is invisible.
-   Hover or focus pauses it, which is what makes a moving row usable for
-   something a visitor is meant to actually read. */
-function Row({ calls, offset }) {
-  if (!calls.length) return null
-  const repeats = Math.max(1, Math.ceil(MIN_CARDS_PER_COPY / calls.length))
-  const copy = Array.from({ length: repeats }, () => calls).flat()
-  const track = [...copy, ...copy]
-  return (
-    <div className="bf-wire-mask overflow-hidden">
-      <ul
-        className="bf-wire flex items-stretch w-max"
-        style={{ '--dur': `${copy.length * SECONDS_PER_CARD}s`, animationDelay: `-${offset}s` }}
-      >
-        {track.map((c, i) => (
-          <Call key={`${c.pair}-${c.closedAt}-${i}`} c={c} clone={i >= calls.length} />
-        ))}
-      </ul>
-    </div>
+    <Card as="li" tone="subtle" padding="md" className="flex flex-col gap-3 min-w-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 min-w-0">
+          <DirectionBadge direction={c.direction} size="sm" />
+          <span className="text-sm font-semibold text-bf-text tabular-nums">{fmtPair(c.pair)}</span>
+        </span>
+        <StatusBadge status={statusFromOutcome(c.outcome)} size="sm" describe />
+      </div>
+      <LevelRow pair={c.pair} value={c.invalidationLevel} size="sm" />
+      <p className="text-2xs text-bf-muted tabular-nums">
+        {c.openedAt ? `Opened ${fmtDate(c.openedAt)} · ` : ''}Closed {fmtDate(c.closedAt)}
+      </p>
+    </Card>
   )
 }
 
 export default function TrackRecord() {
-  const { calls, ready } = useBiasCalls()
-
-  /* Nothing to show means nothing is rendered. A headline promising past calls
-     above an empty grid is worse than no section, and this only happens when the
-     baked set, the cache and the live fetch are all empty at once — the baked
-     set survives an API blip on its own. */
-  if (ready && calls.length === 0) return null
+  const { calls, ready, source } = useBiasCalls()
+  const shown = calls.slice(0, SHOWN)
+  // The live endpoint could not be reached, so these are the calls saved at the
+  // last site build (or on an earlier visit). Still real and still closed, but
+  // possibly not the newest — and the section says exactly that.
+  const fallback = source === 'fallback' && shown.length > 0
 
   return (
-    <Section eyebrow="The record, misses included" headline={<>Every past call is on the page.<br className="bf-br" /> So are the ones that got invalidated.</>} wide>
+    <Section id="record" eyebrow="The record" headline="Every closed call stays on the record. The invalidated ones too." wide>
       <Lede>
-        Signal groups delete screenshots. Below are recent bias calls — direction, invalidation
-        level, and how each one ended.
+        Each entry is a real bias the engine closed: pair, direction, invalidation level, close date,
+        and why it closed. Nothing is removed.
       </Lede>
 
-      {/* Two rows, flowing, rather than a grid.
+      <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2" data-reveal>
+        {/* Deliberately not "live": these are closed, historical calls, and on a
+            fallback they are the set saved at build time. The dates on each card
+            carry the timing. */}
+        <span className="inline-flex items-center gap-1.5 text-3xs font-semibold uppercase tracking-wider text-bf-muted">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-500" aria-hidden="true" />
+          Closed calls · engine record
+        </span>
+        <span className="flex flex-wrap items-center gap-2 text-2xs text-bf-text-2">
+          <StatusBadge status="invalidated" size="sm" /> price crossed the level
+        </span>
+        <span className="flex flex-wrap items-center gap-2 text-2xs text-bf-text-2">
+          <StatusBadge status="closed" size="sm" /> withdrawn below the conviction floor
+        </span>
+        <span className="flex flex-wrap items-center gap-2 text-2xs text-bf-text-2">
+          <StatusBadge status="regime_flip" size="sm" /> the macro regime changed
+        </span>
+      </div>
 
-          The record only grows — 17 closed calls became 24 in a few days — and
-          as a grid every new one added a row to the page. Flowing rows are a
-          fixed height whatever the engine has closed, and they carry the same
-          motion as the news wire so the page reads as one surface.
-
-          Split across two rows rather than one so eight calls are on screen at
-          a time instead of four. This section is evidence and a visitor has to
-          be able to take it in; the rows pause the moment the pointer lands on
-          them. The second row is offset so the two are never in step. */}
-      <div className="mt-10 sm:mt-12 space-y-2.5">
-        {ready ? (
-          <>
-            <Row calls={calls.filter((_, i) => i % 2 === 0)} offset={0} />
-            <Row calls={calls.filter((_, i) => i % 2 === 1)} offset={37} />
-          </>
-        ) : (
-          <div className="flex gap-2.5">
-            {Array.from({ length: 4 }, (_, i) => (
-              <div key={i} className="bf-card p-4 shrink-0" style={{ width: CARD_W }}>
-                <div className="bf-skeleton h-3.5 w-24" style={{ animationDelay: `${i * 80}ms` }} />
-                <div className="bf-skeleton h-3 w-32 mt-4" style={{ animationDelay: `${i * 80}ms` }} />
-                <div className="bf-skeleton h-3 w-full mt-5" style={{ animationDelay: `${i * 80}ms` }} />
-              </div>
+      <div className="mt-6" data-reveal>
+        {!ready ? (
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Loading the record">
+            {Array.from({ length: SHOWN }, (_, i) => (
+              <li key={i} className="h-[132px] rounded-card border border-white/[0.06] bg-white/[0.02] p-4">
+                <div className="bf-skeleton h-4 w-32" />
+                <div className="bf-skeleton h-3 w-full mt-5" />
+                <div className="bf-skeleton h-3 w-24 mt-5" />
+              </li>
             ))}
-          </div>
+          </ul>
+        ) : shown.length === 0 ? (
+          source === 'live' ? (
+            <EmptyState
+              title="No closed calls on record yet."
+              message="Calls appear here as the engine closes them — invalidated, withdrawn or reversed."
+            />
+          ) : (
+            <EmptyState
+              title="The record could not be loaded right now."
+              message="Closed calls are published from the engine's record. Nothing is shown in their place — try again shortly."
+            />
+          )
+        ) : (
+          <>
+            {fallback && (
+              <p className="mb-3 text-2xs leading-relaxed text-bf-warn-soft" role="status">
+                The live record couldn&rsquo;t be reached. These are the most recent closed calls
+                saved when this page was last updated, so newer ones may be missing.
+              </p>
+            )}
+            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {shown.map(c => <Call key={`${c.pair}-${c.closedAt}`} c={c} />)}
+            </ul>
+          </>
         )}
       </div>
 
+      <Card tone="subtle" padding="md" className="mt-6 max-w-[46rem]" data-reveal>
+        <p className="text-sm font-semibold text-bf-text">Validation dataset still being built.</p>
+        <p className="mt-1.5 text-[13.5px] leading-[1.7] text-bf-text-2">
+          Outcome recording began in late August 2026. That is too short a window for a win rate to
+          mean anything, so none is published.
+        </p>
+      </Card>
     </Section>
   )
 }

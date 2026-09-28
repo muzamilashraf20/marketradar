@@ -6,9 +6,11 @@ const COLUMNS = [
   {
     title: 'Product',
     links: [
-      { label: 'Features', href: '#features' },
-      { label: 'Pricing', href: '#pricing' },
-      { label: 'Prop Firm Mode', href: '#features' },
+      { label: 'How it works', href: '/#framework' },
+      { label: 'The record', href: '/#record' },
+      { label: 'Prop Firm Mode', href: '/#prop-firm' },
+      { label: 'Inside the dashboard', href: '/#features' },
+      { label: 'Pricing', href: '/#pricing' },
       { label: 'Open app', href: '/login' },
     ],
   },
@@ -57,7 +59,7 @@ export default function Footer() {
               </span>
             </a>
             <p className="mt-4 text-[13px] leading-relaxed bf-t3 max-w-[16rem]">
-              Macro bias and invalidation levels for forex, prop firm and funded traders.
+              Trading decision intelligence for forex and prop firm traders.
             </p>
           </div>
 
@@ -82,9 +84,9 @@ export default function Footer() {
         </div>
 
         <p className="mt-14 pt-8 bf-hairline-t text-[12.5px] leading-[1.75] bf-t3 max-w-[52rem]">
-          BiasForge is an educational macro research tool. It is not financial advice, and it does
-          not predict markets. Trading carries risk, and you are responsible for every decision on
-          your account.
+          BiasForge provides market analysis and decision-support tools. It does not provide
+          personalised investment advice, predict markets or guarantee returns. Trading involves
+          substantial risk, and every decision on your account is yours.
         </p>
 
         <p className="mt-8 text-[12.5px] bf-t3">

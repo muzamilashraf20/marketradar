@@ -1,3 +1,5 @@
+import DemoTag from './DemoTag'
+
 const money = n =>
   '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -100,11 +102,9 @@ export default function DrawdownLive() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap px-4 pt-4 pb-3.5 bf-hairline-b">
         <div>
           <h3 className="text-[13.5px] font-medium text-slate-100 tracking-tight">Prop Firm Mode</h3>
-          <p className="text-[11px] bf-t3 mt-0.5">Every funded trader's limits, tracked against every trade</p>
+          <p className="text-[11px] bf-t3 mt-0.5">Daily and total drawdown against your firm&rsquo;s limits</p>
         </div>
-        <span className="bf-pill bf-hairline text-[9.5px] font-bold uppercase tracking-wider px-2 py-[3px] bf-t3">
-          Example
-        </span>
+        <DemoTag>Demo data · worked example</DemoTag>
       </div>
 
       <div className="grid sm:grid-cols-2 gap-2.5 p-3">

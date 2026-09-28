@@ -1,7 +1,10 @@
 import { useState } from 'react'
-import { Check, Bitcoin, Loader2 } from 'lucide-react'
+import { Check, Bitcoin } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../../context/AuthContext'
+import Button from '../../ui/Button'
+import Card from '../../ui/Card'
+import { FOCUS_RING } from '../../ui/styles'
 import { Section } from './Section'
 import { FAQ } from './faqData'
 
@@ -10,9 +13,11 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 export const GUMROAD_URL = 'https://biasforge.gumroad.com/l/ntjpje'
 export const PRICE_MONTHLY = 40
 export const PRICE_ANNUAL = 399
+const ANNUAL_PER_MONTH = (PRICE_ANNUAL / 12).toFixed(2)   // 33.25
+const ANNUAL_SAVING = PRICE_MONTHLY * 12 - PRICE_ANNUAL     // 81
 
 const INCLUDED = [
-  'Macro bias and invalidation level for every major pair',
+  'Macro bias and invalidation level for seven major pairs and gold',
   'Prop Firm Mode with live drawdown tracking',
   'Economic calendar with directional context',
   'Impact-scored live news',
@@ -80,8 +85,8 @@ export default function Plan() {
               type="button"
               onClick={() => setAnnual(o.on)}
               aria-pressed={annual === o.on}
-              className={`bf-pill px-4 py-1.5 transition-colors ${
-                annual === o.on ? 'bg-slate-100 text-[#030712] font-medium' : 'text-slate-400 hover:text-slate-200'
+              className={`bf-pill px-4 py-1.5 transition-colors ${FOCUS_RING} ${
+                annual === o.on ? 'bg-bf-text text-bf-bg font-medium' : 'text-bf-text-2 hover:text-bf-text'
               }`}
             >
               {o.label}
@@ -89,67 +94,52 @@ export default function Plan() {
           ))}
         </div>
 
-        <div className="bf-card mt-6 p-7">
-          <p className="text-[13px] text-slate-400">Pro</p>
+        <Card padding="none" className="mt-6 p-7">
+          <p className="text-[13px] text-bf-text-2">Pro</p>
 
           <p className="mt-3 flex items-baseline gap-2">
-            <span className="bf-mono text-[38px] font-medium tracking-tight text-slate-50 leading-none">
+            <span className="bf-mono text-[38px] font-medium tracking-tight text-bf-text leading-none">
               ${annual ? PRICE_ANNUAL : PRICE_MONTHLY}
             </span>
             <span className="text-[14px] bf-t3">{annual ? '/ year' : '/ month'}</span>
           </p>
 
+          {/* Both figures are arithmetic on the two real prices, not typed in:
+              the annual price over twelve months, and twelve months at the
+              monthly rate minus the annual price. Change a price constant and
+              these follow. */}
           <p className="mt-3 text-[13.5px] bf-t3">
-            {annual ? (
-              <>
-                {/* The saving stated as what twelve months at the monthly rate
-                    would actually cost — an arithmetic fact, not a claim. */}
-                <span className="line-through bf-t3">${PRICE_MONTHLY * 12} / year</span>{' '}
-                billed monthly
-              </>
-            ) : (
-              <>or ${PRICE_ANNUAL} / year</>
-            )}
+            {annual
+              ? <>${ANNUAL_PER_MONTH} / month, billed annually · Save ${ANNUAL_SAVING} vs monthly</>
+              : <>or ${PRICE_ANNUAL} / year and save ${ANNUAL_SAVING}</>}
           </p>
 
           <ul className="mt-7 space-y-3">
             {INCLUDED.map(item => (
               <li key={item} className="flex gap-2.5 text-[14px] leading-[1.6] text-slate-300">
-                <Check size={15} className="text-emerald-400 shrink-0 mt-[3px]" aria-hidden="true" strokeWidth={2.25} />
+                <Check size={15} className="text-bf-bull-soft shrink-0 mt-[3px]" aria-hidden="true" strokeWidth={2.25} />
                 {item}
               </li>
             ))}
           </ul>
 
-          <a
-            href={GUMROAD_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="bf-pill bf-lift mt-8 block w-full px-6 py-3 text-center text-[15px] font-medium bg-cyan-500 text-[#030712] hover:bg-cyan-400"
-          >
+          <Button href={GUMROAD_URL} external size="lg" fullWidth className="mt-8">
             Get access
-          </a>
+          </Button>
 
-          {/* Second payment method, equal billing with the card option. */}
-          <button
-            type="button"
+          {/* Second payment method, equal billing with the card option. Button
+              swaps the Bitcoin icon for its own spinner while loading. */}
+          <Button
+            variant="secondary"
+            size="lg"
+            fullWidth
+            className="mt-2.5"
             onClick={handleCrypto}
-            disabled={cryptoLoading}
-            aria-busy={cryptoLoading}
-            className="bf-pill bf-lift bf-hairline mt-2.5 flex w-full items-center justify-center gap-2 px-6 py-3 text-[14px] font-medium text-cyan-300 hover:border-cyan-500/40 disabled:opacity-60"
+            loading={cryptoLoading}
+            iconLeft={<Bitcoin size={15} className="text-bf-accent" aria-hidden="true" />}
           >
-            {cryptoLoading ? (
-              <>
-                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-                Redirecting…
-              </>
-            ) : (
-              <>
-                <Bitcoin size={15} className="text-cyan-400" aria-hidden="true" />
-                Pay with crypto
-              </>
-            )}
-          </button>
+            {cryptoLoading ? 'Redirecting…' : 'Pay with crypto'}
+          </Button>
 
           {cryptoFailed && (
             <p className="mt-2 text-center text-[12px] text-rose-400" role="alert">
@@ -158,9 +148,12 @@ export default function Plan() {
           )}
 
           <p className="mt-4 text-center text-[12.5px] bf-t3">
-            Card or crypto · BTC, USDT and USDC accepted · Cancel anytime.
+            {/* No coin list: which cryptocurrencies are offered is set in the
+                NOWPayments dashboard, not in code (pay_currency is left out of
+                the invoice), so naming them here would be unverifiable. */}
+            Card or crypto · Cancel anytime.
           </p>
-          </div>
+          </Card>
         </div>
 
         <dl className="space-y-8" data-reveal>

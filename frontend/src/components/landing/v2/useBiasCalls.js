@@ -34,10 +34,21 @@ export const fmtDate = iso => {
    the regime flipped (regime_reversal). There is no state meaning "ran to a
    conclusion and the level held" — a call is either broken, withdrawn, or still
    open. Mapping the two withdrawal reasons onto "Held" would assert a favourable
-   outcome the engine never measured, so each reason is shown as itself. */
+   outcome the engine never measured, so each reason is shown as itself.
+
+   NOTE ON SOURCE — `source` says where the calls on screen came from, so the
+   section can say so instead of implying they are current:
+     'pending'  — the live fetch has not answered yet (showing the build-time set)
+     'live'     — the live endpoint answered; what is shown is the current record
+     'fallback' — the live fetch failed; showing the build-time set, or a copy
+                  saved on an earlier visit. Closed calls are historical facts,
+                  so they stay true, but they may not be the newest.
+     'none'     — the live fetch failed and nothing was baked or saved
+   Every source is the same endpoint's real output. Nothing here is ever demo. */
 export function useBiasCalls() {
   const [calls, setCalls] = useState(() => bakedCalls() || [])
   const [ready, setReady] = useState(() => !!bakedCalls())
+  const [source, setSource] = useState('pending')
 
   useEffect(() => {
     let alive = true
@@ -47,20 +58,27 @@ export function useBiasCalls() {
         if (!alive) return
         if (!json?.success || !Array.isArray(json.calls)) throw new Error('empty')
         setCalls(json.calls)
+        setSource('live')
         setReady(true)
         try { localStorage.setItem(CACHE_KEY, JSON.stringify(json.calls)) } catch { /* private mode */ }
       })
       .catch(() => {
+        if (!alive) return
         /* Fall back to the last set seen, never to an error state — but only
            when nothing was baked. The baked set is written at build time and is
            the newest record we have offline; a cache written on some earlier
            visit is older by definition, and letting it win replaced a complete
            list of closed calls with whatever a stale visit happened to hold. */
-        if (!alive || bakedCalls()) return setReady(true)
+        if (bakedCalls()) {
+          setSource('fallback')
+          return setReady(true)
+        }
+        let used = false
         try {
           const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null')
-          if (Array.isArray(cached) && cached.length) setCalls(cached)
-        } catch { /* nothing baked and no cache: the section hides itself */ }
+          if (Array.isArray(cached) && cached.length) { setCalls(cached); used = true }
+        } catch { /* nothing baked and no cache: the section shows its empty state */ }
+        setSource(used ? 'fallback' : 'none')
         // Resolve either way. Without this the section skeletons forever when
         // the fetch fails and nothing is baked or cached.
         setReady(true)
@@ -68,5 +86,5 @@ export function useBiasCalls() {
     return () => { alive = false }
   }, [])
 
-  return { calls, ready }
+  return { calls, ready, source }
 }

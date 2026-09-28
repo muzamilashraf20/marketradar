@@ -2,7 +2,6 @@ import Earnings from './pages/EarningsCalendar'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 
-import LandingPage from './pages/LandingPage'
 import LandingV2 from './pages/LandingV2'
 import AboutPage from './pages/About'
 import Login from './pages/Login'
@@ -48,8 +47,9 @@ export default function App() {
 
         {/* Public Routes */}
         <Route path="/landing" element={<LandingV2 />} />
-        {/* The previous landing page, kept reachable for side-by-side review. */}
-        <Route path="/landing-old" element={<LandingPage />} />
+        {/* The previous landing page is retired. Its files are kept (listed for
+            the cleanup review); the path redirects so old links still land. */}
+        <Route path="/landing-old" element={<Navigate to="/" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/pricing" element={<Pricing />} />

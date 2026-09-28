@@ -13,7 +13,7 @@
    invalidation level — precisely because none of it is actionable. Nobody can
    trade a level from a pair that is not being quoted right now.
 
-   WHY EVERY PANEL SAYS "SAMPLE"
+   WHY EVERY PANEL SAYS "DEMO DATA"
    -----------------------------
    These numbers are illustrative, not a read on the market as it stands. Any
    panel rendering them says so on its face, and none of them claims to be live
@@ -30,10 +30,19 @@
    because a closed level cannot be traded, and inventing them would be
    inventing a track record. See TrackRecord.jsx. */
 
-export const DEMO_NOTE = 'Sample data — not the current market read.'
+export const DEMO_NOTE = 'Demo data — not the current market read.'
 
-/* Shaped exactly like the rows useCompassData used to return, so the cards
-   render through the same components with no demo-specific branches. */
+/* Shaped like the rows /api/macro-compass returns, so the cards render through
+   the same components with no demo-specific branches.
+
+   One bias and one no call, on purpose. A no call is a real engine output —
+   the pair stays flat when its components disagree — and showing it beside a
+   bias is the fastest way to say the product does not force a direction.
+
+   `components` mirrors the engine's per-pair breakdown (macro, order flow,
+   sentiment) as agree/disagree with the net direction. No component values are
+   shown: on a sample they would be numbers with no scale behind them.
+   The no-call reason is the backend's own wording for that case. */
 export const DEMO_BIASES = [
   {
     pair: 'GBPUSD',
@@ -42,22 +51,32 @@ export const DEMO_BIASES = [
     grade: 'A-',
     entryTiming: 'FRESH',
     thesis:
-      'The dollar holds a rate and positioning edge over sterling while UK data keeps the Bank of England leaning toward cuts, and gilt flows have not offset it.',
+      'The dollar holds a rate and positioning edge over sterling while UK data keeps the Bank of England leaning toward cuts.',
     invalidationLevel: 1.35686,
     hasInvalidation: true,
     isHeadline: true,
+    components: [
+      { label: 'Macro', agrees: true },
+      { label: 'Flow', agrees: true },
+      { label: 'Sentiment', agrees: false },
+    ],
   },
   {
-    pair: 'USDCAD',
-    direction: 'BUY',
-    confidence: 71,
-    grade: 'B',
-    entryTiming: 'EXTENDED',
-    thesis:
-      'A firmer rate differential against the Canadian dollar, with crude soft and positioning still net short the loonie into the Bank of Canada meeting.',
-    invalidationLevel: 1.37738,
-    hasInvalidation: true,
+    pair: 'EURUSD',
+    direction: 'FLAT',
+    confidence: null,
+    grade: null,
+    entryTiming: null,
+    thesis: null,
+    invalidationLevel: null,
+    hasInvalidation: false,
     isHeadline: false,
+    noBiasReason: 'Components disagree — macro points one way, flow and sentiment the other. No clean read.',
+    components: [
+      { label: 'Macro', leans: 'BUY' },
+      { label: 'Flow', leans: 'SELL' },
+      { label: 'Sentiment', leans: 'SELL' },
+    ],
   },
 ]
 
@@ -110,18 +129,13 @@ export const DEMO_NEWS = [
   },
 ]
 
-/* The event brief behind the "sometimes the answer is no call" section.
+/* The event brief behind the no-call section.
 
-   This is the engine's own recorded output for a real high-impact print — the
-   ISM Manufacturing PMI release it declined to call — kept as written rather
-   than reworded, because the whole point of the section is that the engine said
-   this. It is fixed content, so the panel carries the same SAMPLE label as the
-   others and claims no more than they do.
-
-   It replaces a 952px screenshot that the layout had to render at 460px wide.
-   Half the reasoning was unreadable at that size, and the reasoning is the only
-   reason the section works: anyone can claim restraint, and showing the argument
-   is what makes it land. */
+   Modelled on the engine's brief for an ISM Manufacturing PMI print it declined
+   to call, cut down to the four parts the section needs: the event, the verdict,
+   one short thesis and the leading-indicators line. No month or year appears in
+   it — it is demo data and labelled as such, so nothing in it should read as a
+   dated record of a specific release. */
 export const DEMO_BRIEF = {
   event: 'ISM Manufacturing PMI',
   currency: 'USD',
@@ -131,10 +145,8 @@ export const DEMO_BRIEF = {
   verdict: 'mixed — insufficient directional edge into the print',
   call: 'No directional call',
   reasoning:
-    'ISM Manufacturing PMI for August 2026 is due at 14:00 UTC with a forecast of 55.2 against a prior print of 55.6, implying a modest expected pullback but still firmly expansionary territory. Leading indicators from this cycle are genuinely split — the July ISM Manufacturing beat strongly while ISM Services missed and Industrial Production decelerated — preventing any clean directional lean.',
+    'The forecast of 55.2 against a prior 55.6 implies a modest pullback that stays in expansionary territory. Leading indicators are split, so there is no clean directional lean.',
   indicatorsVerdict: 'mixed',
   indicatorsLead:
     'The data points both ways — some leads argue for a beat, others for a miss. This is a real split in the evidence, not missing data, so no directional call is made.',
-  indicatorsDetail:
-    'Two prints carry computable actual-versus-forecast surprises and they point in opposite directions: July ISM Manufacturing printed 55.6 against a 54.0 forecast, a clear beat, while ISM Services printed 54.1 against 54.5, a miss. The net computable surprise score is zero.',
 }

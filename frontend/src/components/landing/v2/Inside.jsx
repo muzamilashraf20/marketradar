@@ -1,34 +1,66 @@
-import { Section, Lede, Ref } from './Section'
+import { Section, Lede } from './Section'
+import Card from '../../ui/Card'
 import DataFlow from './DataFlow'
 
-/* Section 6 — what's inside.
+/* How it works — the five real inputs and the three steps between them and a
+   published bias.
 
-   The cards carried thumbnails and they did not work. At a third of the grid
-   they were far too small for any interface to be legible, so they read as
-   decoration — and there was no capture for the trade journal, leaving one card
-   visibly short of the other five.
+   Every claim here is the engine's actual behaviour (biasEngineV2): each pair's
+   bias is the score difference between its two currencies, a bias opens only
+   past a threshold and not once the day's range is spent, the level comes from
+   volatility, and a model writes the thesis text only.
 
-   The text-only grid that replaced them has now gone too. It named the same six
-   inputs the diagram below already labels, one section after the other, which is
-   the duplication this pass exists to remove. The sentence above still names
-   every one of them, so nothing is lost but the second telling. */
+   No update interval is stated. The cycle length is an environment setting in
+   production and can change without a deploy, so the copy describes it rather
+   than quoting a number that could quietly become false. */
+const STEPS = [
+  {
+    n: 1,
+    title: 'Score',
+    body: "Each currency is scored on macro, order flow and sentiment. A pair's bias is the difference between the two sides of the pair.",
+  },
+  {
+    n: 2,
+    title: 'Qualify',
+    body: "A bias opens only when that difference clears the engine's threshold. Below it, or when most of the day's range is already spent, the pair stays flat.",
+  },
+  {
+    n: 3,
+    title: 'Publish',
+    body: 'The invalidation level is set from recent volatility, and an AI model writes the thesis in plain English. The engine updates through the trading session, and re-reads sooner when a major headline lands.',
+  },
+]
+
 export default function Inside() {
   return (
-    <Section eyebrow="The full picture" headline="Every input that moves a currency, in one place." wide>
+    <Section id="how-it-works" eyebrow="How it works" headline="Five inputs. One thesis per pair." wide>
       <Lede>
-        Price, positioning, the calendar, the wires and cross-asset flow are read together and
-        resolved into one directional call per pair — with the{' '}
-        <Ref href="/blog">macro journal</Ref> covering how they fit together.
+        Live price, the economic calendar, scored newsflow, CFTC positioning, and cross-asset flows
+        including yields are read together for seven major pairs and gold.
       </Lede>
 
-      {/* 01-overview.png is gone. The hero already shows the dashboard live; a
-          static copy of the same view three sections later was the redundancy
-          the review flagged, and it rendered 1110x1090 to say nothing new. The
-          data-flow diagram moves here from Section 3, where it was competing
-          with a screenshot for the same job. */}
       <div className="mt-12 sm:mt-14">
         <DataFlow />
       </div>
+
+      <ol className="mt-12 grid gap-3 md:grid-cols-3">
+        {STEPS.map(s => (
+          <Card as="li" key={s.title} tone="subtle" padding="md" data-reveal>
+            <h3 className="flex items-center gap-2.5 text-[15px] font-semibold text-bf-text">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-bf-accent/40 text-2xs text-bf-accent tabular-nums" aria-hidden="true">
+                {s.n}
+              </span>
+              {s.title}
+            </h3>
+            <p className="mt-2.5 text-[14px] leading-[1.7] text-bf-text-2">{s.body}</p>
+          </Card>
+        ))}
+      </ol>
+
+      <p className="mt-8 max-w-[46rem] text-[13.5px] leading-[1.7] text-bf-muted" data-reveal>
+        Currency Strength is in the dashboard as a viewer. It is not an engine input: it lags price,
+        so it would only repeat what the chart already shows.
+      </p>
     </Section>
   )
 }

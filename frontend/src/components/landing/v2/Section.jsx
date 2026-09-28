@@ -1,10 +1,14 @@
 import { useReveal } from './useReveal'
+import SectionHeader from '../../ui/SectionHeader'
 
 /* The section rhythm, applied without exception:
      small cyan uppercase eyebrow → large headline → one sentence → one visual.
    Every section on the page renders through this, so the spacing is identical
-   down the whole page and the restraint holds. */
-export function Section({ id, eyebrow, headline, children, className = '', wide = false }) {
+   down the whole page and the restraint holds.
+
+   The heading itself is the design system's SectionHeader, so the landing page
+   and the app share one heading style. `action` sits to its right from sm up. */
+export function Section({ id, eyebrow, headline, action, children, className = '', wide = false }) {
   // Everything marked data-reveal inside here rises and fades as the section
   // scrolls in, ~80ms apart, in document order: eyebrow, headline, body, visual.
   const ref = useReveal()
@@ -15,8 +19,14 @@ export function Section({ id, eyebrow, headline, children, className = '', wide 
           allowed range. Content caps at 1024px, or 1088px on the wider sections — both inside
           the 900–1100px measure. Nothing bleeds past it except the hero. */}
       <div className={`mx-auto ${wide ? 'max-w-[68rem]' : 'max-w-5xl'}`}>
-        <p className="bf-eyebrow" data-reveal>{eyebrow}</p>
-        <h2 className="bf-h2 mt-5 max-w-[22ch]" data-reveal>{headline}</h2>
+        <div data-reveal>
+          <SectionHeader
+            eyebrow={eyebrow}
+            title={<span className="block max-w-[22ch]">{headline}</span>}
+            action={action}
+            size="lg"
+          />
+        </div>
         {children}
       </div>
     </section>

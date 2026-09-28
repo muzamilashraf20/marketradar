@@ -8,15 +8,20 @@
      · the two label greys were below AA on this background and now use the
        page's own text tokens
      · the hub ring pulsed by animating the circle's `r` attribute; it now
-       scales by transform, so the page keeps to transform and opacity only */
+       scales by transform, so the page keeps to transform and opacity only
+
+   THE INPUTS ARE THE ENGINE'S REAL ONES, and only those. Currency Strength was
+   drawn here as a sixth input and it is not one: it lags price, so the engine
+   leaves it out and the dashboard shows it as a viewer only. The hub no longer
+   says "AI engine" either — the score is computed; a model only writes the
+   thesis text. */
 
 const NODES = [
-  { id: 'price',      lines: ['Price', 'Action'],      x: 90,  y: 80,  color: '#06b6d4', delay: '0s' },
-  { id: 'currency',   lines: ['Currency', 'Strength'], x: 90,  y: 220, color: '#06b6d4', delay: '-0.6s' },
-  { id: 'calendar',   lines: ['Economic', 'Calendar'], x: 90,  y: 360, color: '#06b6d4', delay: '-1.2s' },
-  { id: 'news',       lines: ['Breaking', 'News'],     x: 265, y: 80,  color: '#10b981', delay: '-0.3s' },
-  { id: 'position',   lines: ['Positioning', 'Data'],  x: 265, y: 220, color: '#10b981', delay: '-0.9s' },
-  { id: 'crossasset', lines: ['Cross-Asset', 'Flows'], x: 265, y: 360, color: '#10b981', delay: '-1.5s' },
+  { id: 'price',      lines: ['Live price', 'Market data'],        x: 90,  y: 80,  color: '#06b6d4', delay: '0s' },
+  { id: 'calendar',   lines: ['Economic', 'Calendar'],             x: 90,  y: 220, color: '#06b6d4', delay: '-0.6s' },
+  { id: 'news',       lines: ['Newsflow', 'Scored for impact'],    x: 90,  y: 360, color: '#06b6d4', delay: '-1.2s' },
+  { id: 'position',   lines: ['COT', 'Positioning'],               x: 265, y: 150, color: '#10b981', delay: '-0.3s' },
+  { id: 'crossasset', lines: ['Cross-asset', 'Flows & yields'],    x: 265, y: 290, color: '#10b981', delay: '-0.9s' },
 ]
 
 // Hub centre, hub radius, output box centre
@@ -42,7 +47,7 @@ export default function DataFlow() {
             width="100%"
             className="overflow-visible"
             role="img"
-            aria-label="Six macro data sources — price action, currency strength, the economic calendar, breaking news, positioning data and cross-asset flows — converging into BiasForge and resolving into one directional bias with its invalidation level, the macro read forex and prop firm traders act on"
+            aria-label="Five inputs — live price, the economic calendar, scored newsflow, COT positioning, and cross-asset flows and yields — converging into the BiasForge engine and resolving into one directional bias per pair with its invalidation level"
           >
             <defs>
               <style>{`
@@ -95,7 +100,7 @@ export default function DataFlow() {
               BiasForge
             </text>
             <text x={CX} y={CY + 7} textAnchor="middle" fill="#10b981" fontSize="9" fontWeight="700" fontFamily="'Courier New',monospace" letterSpacing="2">
-              AI ENGINE
+              ENGINE
             </text>
 
             {/* Input nodes and their converging flow lines */}
@@ -166,7 +171,7 @@ export default function DataFlow() {
       </p>
 
       <p className="text-center text-[14px] bf-t3 mt-6 max-w-xl mx-auto leading-relaxed">
-        All sources processed simultaneously — no manual interpretation, no guesswork.
+        Five inputs, read together for every covered pair.
       </p>
     </div>
   )
