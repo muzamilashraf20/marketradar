@@ -33,7 +33,13 @@ origin: ['http://localhost:5173', 'http://localhost:5174', 'https://www.biasforg
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+})
+// Throwaway client for user logins — keeps user sessions OFF the shared service_role client
+const makeAuthClient = () => createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+})
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
@@ -2580,7 +2586,7 @@ app.post('/api/register', async (req, res) => {
 })
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body
-  try { const { data, error } = await supabase.auth.signInWithPassword({ email, password }); if (error) throw error; res.json({ success: true, user: data.user, session: data.session }) } catch (e) { res.status(400).json({ error: e.message }) }
+  try { const { data, error } = await makeAuthClient().auth.signInWithPassword({ email, password }); if (error) throw error; res.json({ success: true, user: data.user, session: data.session }) } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
 // ============================================
