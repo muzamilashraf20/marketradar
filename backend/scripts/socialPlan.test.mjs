@@ -138,7 +138,13 @@ const loud = () => { console.log = REAL.log; console.warn = REAL.warn; console.e
   } }
   // scoreBias stand-in: a bias older than 24h gets a final verdict, a newer one is still live.
   const scoreBias = async row => { scored.push(row.id); return Date.now() - Date.parse(row.generated_at) > 24 * 3600e3 ? { status: 'final', correct: row.id % 2 === 0, pips: 10 } : { status: 'live', correct: null } }
-  const { runScheduledScoring, scoreBiasHistory } = new Function('supabase', 'scoreBias', 'TRACKER_MAX_FETCHES', `${scoringSrc}\nreturn { runScheduledScoring, scoreBiasHistory }`)(supabase, scoreBias, 6)
+  // The cut source also reads the 24h window constant and the in-memory cache helpers (live scores are
+  // cached 30 min per bias) — give it minimal stand-ins.
+  const cache = {}
+  const getCached = k => cache[k]?.data ?? null
+  const setCache = (k, data) => { cache[k] = { data, timestamp: Date.now() } }
+  const isCacheFreshFor = (k, ttl) => !!cache[k] && Date.now() - cache[k].timestamp < ttl
+  const { runScheduledScoring, scoreBiasHistory } = new Function('supabase', 'scoreBias', 'TRACKER_MAX_FETCHES', 'TRACKER_WINDOW_HOURS', 'getCached', 'setCache', 'isCacheFreshFor', `${scoringSrc}\nreturn { runScheduledScoring, scoreBiasHistory }`)(supabase, scoreBias, 6, 24, getCached, setCache, isCacheFreshFor)
 
   const h = hrs => new Date(Date.now() - hrs * 3600e3).toISOString()
   history = [
@@ -152,10 +158,11 @@ const loud = () => { console.log = REAL.log; console.warn = REAL.warn; console.e
   loud()
   check('scheduled run persists final outcomes for windows that have closed', history[0].performance?.status === 'final' && history[1].performance?.status === 'final', JSON.stringify(history.map(r => r.performance)))
   check('a bias still inside its 24h window is not persisted', history[2].performance === null)
+  check('scheduled run does not fetch a still-open window (TwelveData credits)', !scored.includes(3), JSON.stringify(scored))
   check('already-final rows are not re-fetched (no API cost)', !scored.includes(4), JSON.stringify(scored))
 
   const endpoint = cut("app.get('/api/bias-performance'", '// 🧭 MACRO COMPASS')
-  check('the endpoint calls the same scoreBiasHistory function', /const results = await scoreBiasHistory\(days\)/.test(endpoint) && !/scoreBias\(row\)/.test(endpoint))
+  check('the endpoint calls the same scoreBiasHistory function', /await scoreBiasHistory\(days\b/.test(endpoint) && !/scoreBias\(row\)/.test(endpoint))
   check('the schedule runs it every 6h plus a boot run', /setTimeout\(\(\) => \{ runScheduledScoring\(\) \}/.test(src) && /setInterval\(\(\) => \{ runScheduledScoring\(\) \}, 6 \* 60 \* 60 \* 1000\)/.test(src))
   check('scoreBiasHistory returns the rows with performance attached', (await scoreBiasHistory(7)).length === 4)
 }

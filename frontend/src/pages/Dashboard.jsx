@@ -53,7 +53,7 @@ function timeAgo(dateString) {
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const { isPro, user } = useAuth()
+  const { isPro, user, loading: authLoading } = useAuth()
 
   const [news, setNews] = useState([])
   const [newsLoading, setNewsLoading] = useState(true)
@@ -106,17 +106,19 @@ export default function Dashboard() {
     sub: '', pct: 0, hex: '#10b981', configured: false
   })
 
-  // Re-runs when the session lands. Today's Bias now returns a trimmed read to
-  // callers it cannot identify, and AuthContext resolves after first paint — a
-  // mount-only effect would fetch the public preview and keep it.
+  // Waits for AuthContext to settle, then loads once per signed-in user. Today's Bias returns a
+  // trimmed read to callers it cannot identify, so fetching before the session lands meant a second
+  // full round of requests once it did — and keying on the token re-ran all of them on every token
+  // refresh. authedFetch attaches a fresh token itself.
   useEffect(() => {
+    if (authLoading) return
     fetchNews()
     fetchCalendar()
     fetchStrength()
     fetchTodayBias()
     loadPropRisk()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.token])
+  }, [authLoading, user?.id])
 
   const fetchNews = async () => {
     try {

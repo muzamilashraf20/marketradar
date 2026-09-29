@@ -5,7 +5,8 @@ import { useEffect, useRef } from 'react'
 // (e.g. a session token that resolves after first paint).
 export function usePolling(fn, ms, deps = []) {
   const fnRef = useRef(fn)
-  fnRef.current = fn
+  // Keep the latest `fn` without restarting the timer. Updated in an effect, not during render.
+  useEffect(() => { fnRef.current = fn })
 
   useEffect(() => {
     let timer = null
