@@ -18,6 +18,7 @@ import {
   SCORING_SYSTEM, scoringUser,
   THESIS_SYSTEM, thesisUser,
 } from "./prompts.js";
+import { runChfShadow, formatChfShadow, resultingDirection } from "./chfShadow.js";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -267,9 +268,11 @@ function bandScore(devBps) {
   return devBps < 0 ? -s : s;
 }
 
-function computeMacroRateScores(rates) {
+// `xsection` defaults to the live RATE_XSECTION. The CHF shadow (chfShadow.js) passes a widened list
+// to ask "what if CHF were in"; the live engine never passes it.
+function computeMacroRateScores(rates, xsection = RATE_XSECTION) {
   const changes = {}, dropped = {};
-  for (const c of RATE_XSECTION) {
+  for (const c of xsection) {
     const h = rates?.[c]?.history;
     if (!Array.isArray(h) || h.length < RATE_LOOKBACK + 1) { dropped[c] = `history ${h?.length ?? 0}/${RATE_LOOKBACK + 1}`; continue; }
     // Staleness: the cross-section must be CONTEMPORANEOUS. Comparing one currency's week-old change
@@ -282,7 +285,7 @@ function computeMacroRateScores(rates) {
 
   const present = Object.keys(changes);
   const base = {
-    scores: Object.fromEntries(RATE_XSECTION.map((c) => [c, null])),
+    scores: Object.fromEntries(xsection.map((c) => [c, null])),
     xsection: present, dropped, bps: changes,
     spread: null, mean: null, floor: null, shadow_floor: null,
   };
@@ -296,11 +299,11 @@ function computeMacroRateScores(rates) {
   const shadow = spread < RATE_SHADOW_FLOOR_BPS ? "WOULD_BLOCK" : "WOULD_PASS";
   if (spread < RATE_FLOOR_BPS) {
     // measured flat → 0 for everyone IN the cross-section (weight retained), null for those outside
-    const scores = Object.fromEntries(RATE_XSECTION.map((c) => [c, present.includes(c) ? 0 : null]));
+    const scores = Object.fromEntries(xsection.map((c) => [c, present.includes(c) ? 0 : null]));
     return { ...base, scores, spread, mean: +mean.toFixed(2), status: "FLOOR_FLAT", floor: "BLOCKED", shadow_floor: shadow };
   }
   const scores = Object.fromEntries(
-    RATE_XSECTION.map((c) => [c, present.includes(c) ? bandScore(+(changes[c] - mean).toFixed(2)) : null]),
+    xsection.map((c) => [c, present.includes(c) ? bandScore(+(changes[c] - mean).toFixed(2)) : null]),
   );
   return { ...base, scores, spread, mean: +mean.toFixed(2), status: "OK", floor: "PASSED", shadow_floor: shadow };
 }
@@ -577,6 +580,11 @@ async function runEngine({ supabase, feeds, onUsage }) {
   const riskBasket  = await feeds.getRiskBasket();           // { vix, gold, dxy, spx, jpy, chf }
   const yields      = await feeds.getYields?.();             // { y2, y10 } — real-rate proxy for XAU macro
   const rates       = await feeds.getRates?.();              // { USD:{value,change}, EUR:{...}, CAD:{...} } — 2Y govt yields
+  // CHF SHADOW input (SNB 10y). Deliberately NOT merged into `rates`: rates goes into the scoring
+  // prompt, and the shadow must not influence the run. A failure here only skips the shadow.
+  let chfShadowRate = null;
+  try { chfShadowRate = (await feeds.getChfShadowRate?.()) || null; } catch (e) { console.warn(`⚠️ [v2 chf-shadow] feed failed: ${e?.message}`); }
+  const shadowPairs = [];
 
   const regime = detectRegime(calendar);
 
@@ -674,6 +682,13 @@ async function runEngine({ supabase, feeds, onUsage }) {
         }
       }
     }
+
+    // CHF shadow input: the pre-run state, the market and the FINAL action of this run (after the
+    // floor). Read-only — the shadow runs after the loop and writes nothing.
+    if (chfShadowRate) shadowPairs.push({
+      pair, base, quote, state, market,
+      actual: { diff, action: d.action, direction: resultingDirection(d.action, d, state), grade: conf.grade, confidence: conf.confidence, basis: pc.basis },
+    });
 
     if (d.action === "OPEN" || d.action === "FLIP") {
       const thesis = await writeThesis({                                    // Sonnet 5, only on change
@@ -794,14 +809,27 @@ async function runEngine({ supabase, feeds, onUsage }) {
     results.push({ pair, diff: +diff.toFixed(2), action: d.action, direction: d.direction || state?.direction || "FLAT", reason: d.reason, invalidation: d.invalidation, confidence: conf.confidence, grade: conf.grade, macro_basis: pc.basis, contrib: pc.contrib, outcome });
   }
 
+  // CHF SHADOW — observation only, after every live decision is made and written. See chfShadow.js.
+  let chfShadow = null;
+  if (chfShadowRate && shadowPairs.length) {
+    try {
+      chfShadow = runChfShadow(
+        { chfRate: chfShadowRate, rates, macroRate, scores, weights: regime.weights, pairs: shadowPairs },
+        { computeMacroRateScores, pairComposite, decide, computeConfidence, isInvalidated, CONFIG, RATE_XSECTION },
+      );
+      console.log(formatChfShadow(chfShadow));
+    } catch (e) { console.warn(`⚠️ [v2 chf-shadow] skipped: ${e?.message}`); }
+  }
+
   // macro_rate + warnings ride out in the response so a degraded cross-section is visible from the
   // shadow endpoint without needing log access — that gap is exactly how this went unnoticed before.
-  return { regime: regime.label, scores, results, macro_rate: macroRate, warnings };
+  return { regime: regime.label, scores, results, macro_rate: macroRate, warnings, chf_shadow: chfShadow };
 }
 
 export {
   CONFIG, REGIMES, MODELS,
   detectRegime, composite, decide, invalidationLevel, isInvalidated, pipFor, inLevelBreakCooldown,
+  computeMacroRateScores, pairComposite, computeConfidence, RATE_XSECTION,   // pure — used by the CHF shadow test
   extractSignals, scoreCurrencies, writeThesis,
   runEngine,
 };
