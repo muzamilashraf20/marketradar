@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { RefreshCw, Loader2, Compass, ChevronDown, AlertCircle, Clock } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { authedFetch } from '../../lib/authFetch'
+import { usePolling } from '../../lib/usePolling'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -252,12 +253,8 @@ export default function MacroCompass() {
   // mount-only effect could fire the one request that matters before there is
   // anything to authenticate it with, and the panel would sit on the public
   // shape — no levels — until something else forced a reload.
-  useEffect(() => {
-    load()
-    const t = setInterval(load, 5 * 60 * 1000)   // engine writes at most every 2h; 5min keeps it fresh cheaply
-    return () => clearInterval(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.token])
+  // engine writes at most every 2h; 5min keeps it fresh cheaply. Hidden tabs don't poll.
+  usePolling(load, 5 * 60 * 1000, [user?.token])
 
   const active = (data?.pairs || []).filter(p => p.direction !== 'FLAT')
   const flat = (data?.pairs || []).filter(p => p.direction === 'FLAT')

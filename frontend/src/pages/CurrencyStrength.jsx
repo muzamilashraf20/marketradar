@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, RefreshCw, Zap } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { authedFetch } from '../lib/authFetch';
+import { usePolling } from '../lib/usePolling';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -45,12 +46,8 @@ export default function CurrencyStrength() {
     }
   };
 
-  useEffect(() => {
-    fetchStrength();
-    // Auto refresh every 60 seconds
-    const interval = setInterval(fetchStrength, 60000);
-    return () => clearInterval(interval);
-  }, []);
+  // The server refreshes strength every 30 min, so a 5-min poll is plenty; hidden tabs don't poll.
+  usePolling(fetchStrength, 5 * 60 * 1000);
 
   const strongest = data?.currencies?.[0];
   const weakest = data?.currencies?.[data.currencies.length - 1];
@@ -98,7 +95,8 @@ export default function CurrencyStrength() {
         )}
 
         {/* Loading */}
-        {loading && (
+        {/* Skeleton on first load only — a background poll keeps the current numbers on screen */}
+        {loading && !data && (
           <div className="space-y-3">
             {[1,2,3,4,5,6,7,8].map(i => (
               <div key={i} className="h-20 bg-white/5 border border-white/10 rounded-2xl animate-pulse" />
@@ -106,7 +104,7 @@ export default function CurrencyStrength() {
           </div>
         )}
 
-        {!loading && data && (
+        {data && (
           <>
             {/* Top Stats */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
