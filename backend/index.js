@@ -26,6 +26,7 @@ import Parser from 'rss-parser'
 import * as XLSX from 'xlsx'
 import { Resend } from 'resend'
 import { runEngine as runEngineV2, CONFIG as V2_CONFIG, isInvalidated, pipFor as v2PipFor, invalidationLevel as v2InvalidationLevel } from './biasEngineV2/biasEngine.js'
+import { observeFeeds, runChfShadowAfter, formatChfShadow } from './biasEngineV2/chfShadow.js'
 
 const app = express()
 const rssParser = new Parser()
@@ -3963,6 +3964,16 @@ async function bankChfShadow(entry, trigger) {
   const list = Array.isArray(cur) ? cur : []
   list.push({ ...entry, trigger })
   v2SaveSnapshot(CHF_SHADOW_KEY, list.slice(-CHF_SHADOW_MAX))
+}
+// Called by runV2Shadow AFTER runEngine has returned. Not awaited by the caller; every step is caught,
+// so nothing here can reach the engine run.
+function runChfShadowAfterRun({ out, preStatesP, seen, runStartedAt, trigger }) {
+  ;(async () => {
+    const [chfRate, preStates] = await Promise.all([fetchChfShadowRate().catch(() => null), preStatesP])
+    const r = runChfShadowAfter({ out, preStates, seen, chfRate, runStartedAt })
+    console.log(formatChfShadow(r))
+    if (r && !r.skipped) await bankChfShadow(r, trigger)
+  })().catch(e => console.warn(`⚠️ [v2 chf-shadow] skipped: ${e?.message}`))
 }
 async function fetchUSActuals() {
   if (isCacheFreshFor('us_actuals_fred', 12 * 60 * 60 * 1000)) return getCached('us_actuals_fred')
@@ -8342,10 +8353,6 @@ function buildV2Feeds() {
     async getRates() {
       try { return await fetchRateDifferentials() } catch (e) { console.warn(`⚠️ [v2 rates] failed: ${e?.message}`); return {} }
     },
-    // CHF shadow only (SNB 10y) — observation, never part of getRates().
-    async getChfShadowRate() {
-      try { return await fetchChfShadowRate() } catch (e) { console.warn(`⚠️ [chf-shadow] ${e?.message}`); return null }
-    },
     async getYields() {
       // LEVELS: TwelveData US2Y/US10Y (market-sourced, same-day), each leg falling back to FRED
       // DGS2/DGS10 independently inside fetchYields().
@@ -8494,11 +8501,17 @@ async function runV2Shadow(trigger) {
     return { regime: 'closed', results: [], skipped: true }
   }
   const started = Date.now()
-  const feeds = buildV2Feeds()
+  // CHF shadow, capture only: the feeds are wrapped pass-through (same values, same references — see
+  // observeFeeds) so the shadow can see exactly what the engine received, and the pre-run
+  // bias_state_v2 rows are read alongside (not before) the run so the engine starts no later.
+  const { feeds, seen: shadowSeen } = observeFeeds(buildV2Feeds())
+  const runStartedAt = Date.now()
+  const preStatesP = Promise.resolve(supabase.from('bias_state_v2').select('*')).then(r => r?.data || null, () => null)
   const onUsage = (label, model, usage) => { try { trackAI(label, model, usage) } catch (e) {} }
   const out = await runEngineV2({ supabase, feeds, onUsage })
-  // CHF shadow: bank this run's would-be result (observation only — see biasEngineV2/chfShadow.js).
-  bankChfShadow(out.chf_shadow, trigger).catch(e => console.warn(`⚠️ [chf-shadow] bank failed: ${e?.message}`))
+  // CHF shadow — runs only AFTER the engine has returned, detached and fully caught: it cannot delay,
+  // alter or fail this run (observation only — see biasEngineV2/chfShadow.js).
+  runChfShadowAfterRun({ out, preStatesP, seen: shadowSeen, runStartedAt, trigger })
   const ts = new Date().toISOString()
   const isChange = a => a === 'OPEN' || a === 'FLIP' || a === 'CLOSE'
   const changes = out.results.filter(r => isChange(r.action))
