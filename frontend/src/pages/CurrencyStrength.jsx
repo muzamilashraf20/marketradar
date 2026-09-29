@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, RefreshCw, Zap } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { authedFetch } from '../lib/authFetch';
+import { usePolling } from '../lib/usePolling';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -15,6 +16,13 @@ const COLORS = {
   Neutral: { bar: 'bg-amber-500',   text: 'text-amber-400',   badge: 'bg-amber-500/10 border-amber-500/30 text-amber-400' },
   Weak:    { bar: 'bg-red-500',     text: 'text-red-400',     badge: 'bg-red-500/10 border-red-500/30 text-red-400' },
 }
+
+// "Stale · 14:05 UTC" — the backend served its last-good read (refresh blocked or failed)
+const staleLabel = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Stale';
+  return `Stale · ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`;
+};
 
 export default function CurrencyStrength() {
   const [data, setData] = useState(null);
@@ -38,12 +46,8 @@ export default function CurrencyStrength() {
     }
   };
 
-  useEffect(() => {
-    fetchStrength();
-    // Auto refresh every 60 seconds
-    const interval = setInterval(fetchStrength, 60000);
-    return () => clearInterval(interval);
-  }, []);
+  // The server refreshes strength every 30 min, so a 5-min poll is plenty; hidden tabs don't poll.
+  usePolling(fetchStrength, 5 * 60 * 1000);
 
   const strongest = data?.currencies?.[0];
   const weakest = data?.currencies?.[data.currencies.length - 1];
@@ -61,13 +65,18 @@ export default function CurrencyStrength() {
             </div>
             <h1 className="text-3xl font-black text-white tracking-tight">Currency Strength Meter</h1>
             <p className="text-slate-400 mt-1">
-              Real-time strength of 8 major currencies. Auto-updates every 60s.
+              Strength of 8 major currencies. Data refreshes every 30 min.
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {data?.stale && (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                {staleLabel(data.staleAsOf)}
+              </span>
+            )}
             {lastUpdate && (
               <span className="text-xs text-slate-500">
-                Updated: {lastUpdate.toLocaleTimeString()}
+                Updated: {new Date(data?.updatedAt || lastUpdate).toLocaleTimeString()}
               </span>
             )}
             <button onClick={fetchStrength} disabled={loading}
@@ -86,7 +95,8 @@ export default function CurrencyStrength() {
         )}
 
         {/* Loading */}
-        {loading && (
+        {/* Skeleton on first load only — a background poll keeps the current numbers on screen */}
+        {loading && !data && (
           <div className="space-y-3">
             {[1,2,3,4,5,6,7,8].map(i => (
               <div key={i} className="h-20 bg-white/5 border border-white/10 rounded-2xl animate-pulse" />
@@ -94,7 +104,7 @@ export default function CurrencyStrength() {
           </div>
         )}
 
-        {!loading && data && (
+        {data && (
           <>
             {/* Top Stats */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

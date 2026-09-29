@@ -56,27 +56,40 @@ export function createAccessResolver({ supabase, ttlMs = 60_000, env = process.e
   const rows = new Map()    // user id → { row, at }
   const fresh = e => e && now() - e.at < ttlMs
   const cap = m => { if (m.size > 5000) m.clear() }
+  // The dashboard's parallel requests all miss together once the minute is up; they share ONE
+  // lookup instead of each making its own Supabase call.
+  const pending = new Map()
+  const shared = (key, fn) => {
+    if (pending.has(key)) return pending.get(key)
+    const p = fn().finally(() => pending.delete(key))
+    pending.set(key, p)
+    return p
+  }
 
   async function userFor(token) {
     const key = createHash('sha256').update(token).digest('hex')
     const hit = users.get(key)
     if (fresh(hit)) return hit.user
-    let user = null
-    try {
-      const { data, error } = await supabase.auth.getUser(token)
-      if (!error) user = data?.user || null
-    } catch { user = null }
-    if (user) { cap(users); users.set(key, { user, at: now() }) }
-    return user
+    return shared(`u:${key}`, async () => {
+      let user = null
+      try {
+        const { data, error } = await supabase.auth.getUser(token)
+        if (!error) user = data?.user || null
+      } catch { user = null }
+      if (user) { cap(users); users.set(key, { user, at: now() }) }
+      return user
+    })
   }
 
   async function rowFor(userId) {
     const hit = rows.get(userId)
     if (fresh(hit)) return { row: hit.row }
-    const { data, error } = await supabase.from('user_plans').select('tier,expires_at').eq('user_id', userId).maybeSingle()
-    if (error) return { unavailable: true }
-    cap(rows); rows.set(userId, { row: data || null, at: now() })
-    return { row: data || null }
+    return shared(`r:${userId}`, async () => {
+      const { data, error } = await supabase.from('user_plans').select('tier,expires_at').eq('user_id', userId).maybeSingle()
+      if (error) return { unavailable: true }
+      cap(rows); rows.set(userId, { row: data || null, at: now() })
+      return { row: data || null }
+    })
   }
 
   return {

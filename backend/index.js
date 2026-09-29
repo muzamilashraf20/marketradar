@@ -1,11 +1,13 @@
 ﻿import 'dotenv/config'
 import crypto from 'crypto'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import express from 'express'
 import {
   MONTH_NAMES, parseEconNum, parseReleaseValue, normalizePeriod,
   expectedPeriodFor, nextReleaseAfter, momPercent, leadConsensus, validateReleaseResult, validateReleaseValue, surpriseOf,
 } from './lib/releaseValue.js'
 import { withBudget } from './lib/withBudget.js'
+import { createTdBudget } from './lib/tdBudget.js'
 import { hasPro, isAdminUser, gateMode, secretMatches, createAccessResolver } from './lib/planAccess.js'
 import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from './lib/gumroadPing.js'
 import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
@@ -33,7 +35,13 @@ origin: ['http://localhost:5173', 'http://localhost:5174', 'https://www.biasforg
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+})
+// Throwaway client for user logins — keeps user sessions OFF the shared service_role client
+const makeAuthClient = () => createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+})
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
@@ -50,36 +58,50 @@ function getCached(key) { const e = API_CACHE[key]; return e ? e.data : null }
 function isCacheFresh(key) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < CACHE_TTL : false }
 function setCache(key, data) { API_CACHE[key] = { data, timestamp: Date.now() } }
 function isCacheFreshFor(key, ttlMs) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp < ttlMs : false }
+function cacheAgeMs(key) { const e = API_CACHE[key]; return e ? Date.now() - e.timestamp : Infinity }
 
-// ============================================
-// ⏳ GLOBAL TwelveData RATE LIMITER (shared by v1 + v2)
-// Basic-8 plan = 8 credits/min, billed PER SYMBOL. A burst (e.g. a 12-symbol batch, or v1+v2
-// firing together) exceeds 8/min and 429s. This is a sliding-window credit budget with headroom
-// under 8; acquisitions are serialized (FIFO) so the window accounting is race-free. Callers
-// `await tdAcquire(nSymbols)` before every TwelveData request. A run may take a few minutes —
-// there's no real-time requirement here.
-// ============================================
-const TD_CAP = 7                  // max credits per rolling 60s (1 credit of headroom under 8)
-const TD_WINDOW = 60 * 1000
-const _tdLog = []                 // [{ t, credits }] consumed within the window
-let _tdChain = Promise.resolve()  // serialize acquisitions
-async function _tdReserve(credits) {
-  credits = Math.min(TD_CAP, Math.max(1, credits | 0))
-  for (;;) {
-    const now = Date.now()
-    while (_tdLog.length && now - _tdLog[0].t >= TD_WINDOW) _tdLog.shift()
-    const used = _tdLog.reduce((s, x) => s + x.credits, 0)
-    if (used + credits <= TD_CAP) { _tdLog.push({ t: now, credits }); return }
-    const waitMs = Math.min(TD_WINDOW, TD_WINDOW - (now - _tdLog[0].t) + 50)
-    await new Promise(r => setTimeout(r, waitMs))
-  }
-}
-// Acquire N credits (≈ N symbols) before a TwelveData call; resolves when within budget.
-function tdAcquire(credits = 1) {
-  const p = _tdChain.then(() => _tdReserve(credits))
-  _tdChain = p.catch(() => {})   // keep the chain alive even if a caller rejects
+// Single-flight: concurrent callers for the same key share ONE in-progress promise instead of each
+// starting their own upstream fetch (the dashboard fires half a dozen requests at once).
+const _inFlight = new Map()
+function singleFlight(key, fn) {
+  if (_inFlight.has(key)) return _inFlight.get(key)
+  const p = Promise.resolve().then(fn).finally(() => _inFlight.delete(key))
+  _inFlight.set(key, p)
   return p
 }
+// Fire a background refresh (single-flight) and never let its rejection escape.
+function refreshInBackground(key, fn) { singleFlight(key, fn).catch(e => console.warn(`⚠️ [bg ${key}] ${e?.message || e}`)) }
+// Wait for `p` at most `ms`; resolves `fallback` on timeout. The work itself keeps running and
+// fills the cache for the next request.
+function within(p, ms, fallback = null) {
+  let t
+  return Promise.race([p, new Promise(r => { t = setTimeout(() => r(fallback), ms) })]).finally(() => clearTimeout(t))
+}
+
+// Per-item cache keys are never read again once they age out (briefs, live scores, retry markers,
+// v1 per-symbol entries), but nothing removed them. Long-lived last-good keys are NOT swept — their
+// whole job is to be served stale.
+const SWEEP_PREFIXES = ['brief_', 'perf_live_', 'room_', 'bias_', 'tdcandle_d_attempt_', 'tdcandle_w_attempt_']
+function sweepApiCache(maxAgeMs = 6 * 60 * 60 * 1000) {
+  const now = Date.now()
+  let n = 0
+  for (const [k, e] of Object.entries(API_CACHE)) {
+    // bias_calls / bias_performance_N are the few stale-while-revalidate payloads under 'bias_' — keep them
+    if (k === 'bias_calls' || k.startsWith('bias_performance_') || !SWEEP_PREFIXES.some(p => k.startsWith(p))) continue
+    if (!e || now - e.timestamp > maxAgeMs) { delete API_CACHE[k]; n++ }
+  }
+  return n
+}
+
+// ============================================
+// ⏳ TwelveData CREDIT GOVERNOR (free Basic plan: 800/day, 8/min — see lib/tdBudget.js)
+// EVERY TwelveData request goes through tdCall({ tier, credits, caller, request }). It counts the
+// UTC day's credits (persisted in app_state), gates P3 > 550 / P2 > 650 / all > 750 or on a daily
+// 429, and queues under 8/min with P1 first. Blocked calls reject → the caller serves its cache.
+//   P1 = invalidation spot + engine daily candles · P2 = cross-asset/yields · P3 = everything else
+// ============================================
+const tdBudget = createTdBudget({ supabase })
+const tdCall = tdBudget.call
 
 // ============================================
 // 📅 SHARED ECONOMIC CALENDAR (ForexFactory feed)
@@ -115,6 +137,10 @@ async function fetchFFFeed(feed) {
 // ── FMP economic calendar (PRIMARY): forward-looking, date-range, works on weekends ──
 // Docs: https://financialmodelingprep.com/stable/economic-calendar  (free tier 250 req/day, UTC times)
 const FMP_KEY = process.env.FMP_API_KEY
+// FMP's calendar has failed every call for weeks (legacy 403, stable 402), and each failure cost two
+// 12s-timeout requests before ForexFactory was even tried. Off unless FMP_ENABLED=true (Railway env);
+// the code stays so a paid key can switch it back on without a deploy.
+const FMP_ENABLED = String(process.env.FMP_ENABLED || 'false').trim().toLowerCase() === 'true'
 const MAJOR_CCY = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY']
 const CCY_FROM_COUNTRY = { US: 'USD', EU: 'EUR', EA: 'EUR', EMU: 'EUR', DE: 'EUR', FR: 'EUR', IT: 'EUR', ES: 'EUR', GB: 'GBP', UK: 'GBP', JP: 'JPY', AU: 'AUD', CA: 'CAD', CH: 'CHF', NZ: 'NZD', CN: 'CNY' }
 function normImpact(v) { const s = String(v || '').toLowerCase(); return s === 'high' ? 'High' : s === 'medium' ? 'Medium' : s === 'low' ? 'Low' : 'Low' }
@@ -134,6 +160,7 @@ function normFMPEvents(rows, from, to, label) {
   return norm
 }
 async function fetchFMPCalendar() {
+  if (!FMP_ENABLED) return null
   if (!FMP_KEY) { console.log('ℹ️ FMP_API_KEY not set — skipping FMP'); return null }
   const from = new Date().toISOString().slice(0, 10)
   const to = new Date(Date.now() + 14 * 86400 * 1000).toISOString().slice(0, 10)
@@ -165,8 +192,26 @@ async function fetchFMPCalendar() {
 let calendarCooldownUntil = 0
 const CALENDAR_FAIL_COOLDOWN = 30 * 60 * 1000
 
+// Stale-while-revalidate. Fresh cache → served. Stale cache (memory, or the app_state copy after a
+// restart) → served immediately and ONE background refresh starts. Only a process with no calendar at
+// all waits on the source, and concurrent cold callers share that one fetch.
+let _calendarHydrated = false
 async function getEconomicCalendar() {
   if (isCacheFresh('ff_calendar')) return getCached('ff_calendar')
+  if (!_calendarHydrated) {
+    _calendarHydrated = true
+    const snap = await v2LoadSnapshot('calendar_last_good')
+    if (Array.isArray(snap?.events) && snap.events.length && !API_CACHE.ff_calendar) {
+      API_CACHE.ff_calendar = { data: snap.events, timestamp: Date.parse(snap.at) || 0 }
+      if (isCacheFresh('ff_calendar')) return snap.events
+    }
+  }
+  const stale = getCached('ff_calendar')
+  if (stale) { refreshInBackground('calendar', refreshEconomicCalendar); return stale }
+  return singleFlight('calendar', refreshEconomicCalendar)
+}
+
+async function refreshEconomicCalendar() {
   // Inside the failure backoff → serve stale, hit no source. One quiet line instead of the 6-line red cascade.
   if (Date.now() < calendarCooldownUntil) {
     const stale = getCached('ff_calendar')
@@ -174,13 +219,14 @@ async function getEconomicCalendar() {
       console.log(`📦 Calendar sources rate-limited — using stale cache (backoff ${Math.ceil((calendarCooldownUntil - Date.now()) / 60000)}min)`)
       return stale
     }
+    throw new Error('calendar sources in failure backoff, nothing cached')
   }
-  // 1) PRIMARY: FMP (forward-looking, weekend-safe)
+  // 1) FMP — only when FMP_ENABLED=true (see FMP_ENABLED)
   const fmp = await fetchFMPCalendar()
-  if (fmp && fmp.length) { setCache('ff_calendar', fmp); calendarCooldownUntil = 0; return fmp }
-  // 2) FALLBACK: ForexFactory thisweek
+  if (fmp && fmp.length) { setCache('ff_calendar', fmp); calendarCooldownUntil = 0; v2SaveSnapshot('calendar_last_good', { at: new Date().toISOString(), events: fmp }); return fmp }
+  // 2) ForexFactory thisweek
   try {
-    console.log('↩️ FMP unavailable — falling back to ForexFactory')
+    if (FMP_ENABLED) console.log('↩️ FMP unavailable — falling back to ForexFactory')
     const arrays = await Promise.all(FF_FEEDS.map(fetchFFFeed))
     const raw = arrays.flat()
     if (raw.length === 0) throw new Error('FF calendar empty (all feeds failed)')
@@ -188,8 +234,9 @@ async function getEconomicCalendar() {
     const seen = new Set()
     const deduped = norm.filter(e => { const k = `${e.event}|${e.country}|${e.time}`; if (seen.has(k)) return false; seen.add(k); return true })
     const future = deduped.filter(e => new Date(e.time) >= new Date()).length
-    console.log(`📅 FF calendar (fallback): ${deduped.length} events (${future} upcoming)`)
+    console.log(`📅 FF calendar: ${deduped.length} events (${future} upcoming)`)
     setCache('ff_calendar', deduped)
+    v2SaveSnapshot('calendar_last_good', { at: new Date().toISOString(), events: deduped })
     calendarCooldownUntil = 0   // source healthy again → clear any failure backoff
     return deduped
   } catch (err) {
@@ -200,7 +247,8 @@ async function getEconomicCalendar() {
       console.log(`📦 Calendar sources rate-limited — using stale cache (backoff ${CALENDAR_FAIL_COOLDOWN / 60000}min)`)
       return stale
     }
-    console.error('❌ Calendar fetch failed (FMP + FF), no stale cache:', err.message)
+    calendarCooldownUntil = Date.now() + 5 * 60 * 1000   // cold failure: short backoff, not a retry per caller
+    console.error('❌ Calendar fetch failed, no stale cache:', err.message)
     throw err
   }
 }
@@ -231,12 +279,19 @@ async function loadTelegramSubscribers() {
 // Returns the sent Message object on success (always truthy, so `if (await sendTG(...))` callers
 // behave exactly as when this returned true) and false on failure. `extra` is merged into the
 // request body, e.g. { reply_markup } for inline buttons.
+// Every Bot API call carries a timeout. publishTodayBias is serialised on one promise chain and
+// awaits the channel post, so a single Telegram request that never settled used to wedge that chain
+// — and every later /api/today-bias that fell through to a recompute hung behind it (the dashboard's
+// intermittent endless skeleton). A timed-out call is a failed call: logged, returns false/null.
+const TG_TIMEOUT_MS = 10 * 1000
+const TG_PHOTO_TIMEOUT_MS = 30 * 1000
 async function sendTG(chatId, text, extra = {}) {
   if (!TG_API) return false
   try {
     const res = await fetch(`${TG_API}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra }),
+      signal: AbortSignal.timeout(TG_TIMEOUT_MS),
     })
     const d = await res.json()
     if (!d.ok) { console.error(`❌ TG fail ${chatId}:`, d.description); return false }
@@ -269,7 +324,7 @@ async function sendTGPhoto(chatId, buffer, caption, extra = {}) {
     fd.append('caption', truncateTGHtml(caption, 1024))
     fd.append('parse_mode', 'HTML')
     for (const [k, v] of Object.entries(extra)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v))
-    const res = await fetch(`${TG_API}/sendPhoto`, { method: 'POST', body: fd })
+    const res = await fetch(`${TG_API}/sendPhoto`, { method: 'POST', body: fd, signal: AbortSignal.timeout(TG_PHOTO_TIMEOUT_MS) })
     const d = await res.json()
     if (!d.ok) { console.error(`❌ TG photo fail ${chatId}:`, d.description); return null }
     return d.result?.message_id ?? null
@@ -282,6 +337,7 @@ async function tgCall(method, body) {
   try {
     const res = await fetch(`${TG_API}/${method}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TG_TIMEOUT_MS),
     })
     const d = await res.json()
     if (!d.ok) { console.error(`❌ TG ${method} fail:`, d.description); return null }
@@ -341,11 +397,16 @@ function tgNewsAlert(articles) {
 // 📱 TELEGRAM BOT POLLING
 // ============================================
 let tgOffset = 0
+let tgPolling = false   // the 3s interval is shorter than the 5s long-poll — never stack a second poll
 
 async function pollTelegram() {
-  if (!TG_API) return
+  if (!TG_API || tgPolling) return
+  tgPolling = true
+  try { await pollTelegramOnce() } finally { tgPolling = false }
+}
+async function pollTelegramOnce() {
   try {
-    const res = await fetch(`${TG_API}/getUpdates?offset=${tgOffset}&timeout=5&limit=20`)
+    const res = await fetch(`${TG_API}/getUpdates?offset=${tgOffset}&timeout=5&limit=20`, { signal: AbortSignal.timeout(15 * 1000) })
     const data = await res.json()
     if (!data.ok || !data.result?.length) return
 
@@ -2580,7 +2641,7 @@ app.post('/api/register', async (req, res) => {
 })
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body
-  try { const { data, error } = await supabase.auth.signInWithPassword({ email, password }); if (error) throw error; res.json({ success: true, user: data.user, session: data.session }) } catch (e) { res.status(400).json({ error: e.message }) }
+  try { const { data, error } = await makeAuthClient().auth.signInWithPassword({ email, password }); if (error) throw error; res.json({ success: true, user: data.user, session: data.session }) } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
 // ============================================
@@ -2943,7 +3004,7 @@ app.get('/api/prices', async (req, res) => {
   if (!await requireAdmin(req, res)) return
   if (isCacheFresh('prices')) return res.json(getCached('prices'))
   const stale = getCached('prices')
-  try { await tdAcquire(5); const r = await axios.get(`https://api.twelvedata.com/price?symbol=EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD&apikey=${process.env.TWELVEDATA_API_KEY}`); if (r.data?.code === 429) { if (stale) return res.json(stale); return res.json({ success: true, data: r.data }) }; const result = { success: true, data: r.data }; setCache('prices', result); res.json(result) } catch (e) { if (stale) return res.json(stale); res.status(500).json({ error: 'Price fetch failed' }) }
+  try { const r = await tdCall({ tier: 'P3', credits: 5, caller: 'admin-prices', request: () => axios.get(`https://api.twelvedata.com/price?symbol=EUR/USD,GBP/USD,USD/JPY,XAU/USD,BTC/USD&apikey=${process.env.TWELVEDATA_API_KEY}`) }); if (r.data?.code === 429) { if (stale) return res.json(stale); return res.json({ success: true, data: r.data }) }; const result = { success: true, data: r.data }; setCache('prices', result); res.json(result) } catch (e) { if (stale) return res.json(stale); res.status(500).json({ error: 'Price fetch failed' }) }
 })
 
 // ============================================
@@ -2986,27 +3047,75 @@ function widestDivergence(sorted) {
   return best ? [best] : []
 }
 
-// Returns fresh currency strength, computing it live if the cache is cold and the market is open.
-// Returns null when the forex market is closed (weekend) — strength is meaningless then.
+// ── CURRENCY STRENGTH (viewer feature, P3) ──
+// One fetcher, one 30-min cache, one last-good copy in app_state. The page polls every 60s, so the
+// cache TTL — not the poll — decides what it costs: 7 credits per 30 min, and only while someone
+// is looking. A failed/blocked refresh waits 5 min before trying again and the page serves the
+// last-good copy flagged stale, so it never renders empty and never retry-loops on a 429.
+const STRENGTH_TTL = 30 * 60 * 1000
+const STRENGTH_RETRY_GAP = 5 * 60 * 1000
+const STRENGTH_STALE_AFTER = 60 * 60 * 1000   // served unlabelled up to here while a refresh runs
+const STRENGTH_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
+let _strengthHydrated = false
+// After a restart, restore the last-good copy with its REAL timestamp: still inside the TTL it
+// serves as fresh (a deploy costs no refetch); older, it is the stale fallback.
+async function hydrateStrength() {
+  if (_strengthHydrated) return
+  _strengthHydrated = true
+  if (API_CACHE.strength) return
+  const lg = await v2LoadSnapshot('strength_last_good')
+  if (lg?.currencies?.length && !API_CACHE.strength) API_CACHE.strength = { data: lg, timestamp: Date.parse(lg.updatedAt) || 0 }
+}
+async function refreshStrength() {
+  setCache('strength_attempt', 1)
+  const pairs = STRENGTH_PAIRS
+  const r = await tdCall({ tier: 'P3', credits: pairs.length, caller: 'currency-strength',
+    request: () => axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`) })
+  if (r.data?.code) throw new Error(`TwelveData ${r.data.code}: ${r.data.message || ''}`)
+  // NOTE: no bias push from here. Currency strength is deliberately EXCLUDED from the bias engine
+  // (lagging — viewer-only), so pushing a strength-derived "Bias Change Alert" to Telegram/email
+  // contradicted the engine. Bias pushes come from the v2 engine (publishTodayBias) only.
+  const result = strengthFromDaily(p => r.data[p]?.values, new Date().toISOString())
+  if (!result.marketClosed) { setCache('strength', result); v2SaveSnapshot('strength_last_good', result) }
+  return result
+}
+// Strength maths, shared by the live fetch and the zero-credit candle fallback. valuesFor('EUR/USD')
+// → daily candles newest-first; today's % change vs the previous close, per currency, normalised 0..100.
+function strengthFromDaily(valuesFor, updatedAt) {
+  const scores = {USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0}, counts = {...scores}
+  STRENGTH_PAIRS.forEach(p => { const [b,q] = p.split('/'), v = valuesFor(p); if (!Array.isArray(v) || v.length < 2) return; const c = parseFloat(v[0].close), pr = parseFloat(v[1].close); if (!c || !pr) return; const ch = ((c-pr)/pr)*100; scores[b]+=ch; counts[b]++; scores[q]-=ch; counts[q]++ })
+  const avg = {}; Object.keys(scores).forEach(c => avg[c] = counts[c] > 0 ? scores[c]/counts[c] : 0)
+  const vals = Object.values(avg), mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1
+  const norm = {}; Object.keys(avg).forEach(c => norm[c] = Math.round(((avg[c]-mn)/rng)*100))
+  const sorted = Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
+  const allZ = sorted.every(c => c.strength === 0)
+  return { success:true, currencies:sorted, bestPairs:widestDivergence(sorted), marketClosed:allZ, updatedAt }
+}
+// No strength has EVER been cached: derive it from the engine's saved daily candles (memory, else
+// app_state). Zero TwelveData credits. Its as-of time is the oldest candle fetch used.
+async function strengthFromCandleSnapshot() {
+  const snap = (await v2LoadSnapshot('daily_candles_v2')) || {}
+  const times = []
+  const valuesFor = (p) => {
+    const k = p.replace('/', '')
+    const v = getCached(`tdcandle_dv2_${k}`) || snap[k]
+    if (Array.isArray(v)) { const t = Date.parse(snap._at?.[k] || ''); if (Number.isFinite(t)) times.push(t) }
+    return v
+  }
+  const result = strengthFromDaily(valuesFor, null)
+  if (result.marketClosed) return null
+  result.updatedAt = new Date(times.length ? Math.min(...times) : Date.now()).toISOString()
+  return result
+}
+
+// The v2 engine's JPY/CHF safe-haven read. It only reaches the Sonnet prompt (getRiskBasket →
+// biasEngine.js riskBasket → prompts.js), so it is CACHE-ONLY: the engine never pays credits for a
+// viewer feature. It reads the same 30-min cache the Currency Strength page fills; cold → null and
+// getRiskBasket's existing last-good basket fills the field. Null on weekends, as before.
 async function getLiveStrength() {
   if (isForexClosed()) return null
-  if (isCacheFresh('strength')) return getCached('strength')
-  const pairs = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
-  try {
-    await tdAcquire(pairs.length)
-    const r = await axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`)
-    if (r.data.code === 429) return getCached('strength') || null
-    const scores = {USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0}, counts = {...scores}
-    pairs.forEach(p => { const [b,q] = p.split('/'), d = r.data[p]; if (!d?.values || d.values.length < 2) return; const c = parseFloat(d.values[0].close), pr = parseFloat(d.values[1].close); if (!c || !pr) return; const ch = ((c-pr)/pr)*100; scores[b]+=ch; counts[b]++; scores[q]-=ch; counts[q]++ })
-    const avg = {}; Object.keys(scores).forEach(c => avg[c] = counts[c] > 0 ? scores[c]/counts[c] : 0)
-    const vals = Object.values(avg), mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1
-    const norm = {}; Object.keys(avg).forEach(c => norm[c] = Math.round(((avg[c]-mn)/rng)*100))
-    const sorted = Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
-    const allZ = sorted.every(c => c.strength === 0)
-    const result = { success:true, currencies:sorted, bestPairs:widestDivergence(sorted), marketClosed:allZ, updatedAt:new Date().toISOString() }
-    if (!allZ) setCache('strength', result)
-    return result
-  } catch (e) { return getCached('strength') || null }
+  await hydrateStrength()
+  return isCacheFreshFor('strength', STRENGTH_TTL) ? getCached('strength') : null
 }
 
 // Move-maturity context: how much of the typical daily range a pair has already used today.
@@ -3016,10 +3125,9 @@ async function getMoveContext(symbol, currentPrice) {
   const symbolMap = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY', XAUUSD: 'XAU/USD', GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', NZDUSD: 'NZD/USD', EURJPY: 'EUR/JPY', EURGBP: 'EUR/GBP', NAS100: 'IXIC', BTC: 'BTC/USD' }
   const pip = /JPY/i.test(symbol) ? 0.01 : /XAU/i.test(symbol) ? 0.1 : (/BTC|NAS/i.test(symbol) ? 1 : 0.0001)
   try {
-    await tdAcquire(1)
-    const r = await axios.get('https://api.twelvedata.com/time_series', {
+    const r = await tdCall({ tier: 'P3', credits: 1, caller: 'v1-move-context', request: () => axios.get('https://api.twelvedata.com/time_series', {
       params: { symbol: symbolMap[symbol] || symbol, interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-    })
+    }) })
     const vals = r.data?.values
     if (!Array.isArray(vals) || vals.length < 3) return null
     // vals[0] = today (forming), vals[1..] = completed days
@@ -3071,10 +3179,10 @@ async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix, chunkSize = 
         const group = stale.slice(i, i + CHUNK)
         const syms = group.map(p => ROOM_SYMBOL_MAP[p])
         try {
-          await tdAcquire(syms.length)   // credit-gated: waits until within budget
-          const r = await axios.get('https://api.twelvedata.com/time_series', {
+          // P3: only v1 room reads and the calendar brief's cold-cache path land here.
+          const r = await tdCall({ tier: 'P3', credits: syms.length, caller: `candles-${interval}`, request: () => axios.get('https://api.twelvedata.com/time_series', {
             params: { symbol: syms.join(','), interval, outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-          })
+          }) })
           // time_series SUCCESS carries no top-level `code`; ERROR responses do (429/400/401…).
           if (r.data?.code) {
             console.warn(`⚠️ TwelveData ${interval} error code=${r.data.code} msg="${r.data.message || ''}" (${syms.join(',')})`)
@@ -3085,7 +3193,10 @@ async function fetchCandlesBatch(pairs, interval, ttlMs, keyPrefix, chunkSize = 
               if (Array.isArray(d?.values)) { setCache(`${keyPrefix}_${p}`, d.values); out[p] = d.values; got++ }
             }
           }
-        } catch (e) { console.warn(`⚠️ Candle chunk (${interval} ${syms.join(',')}) failed: ${e?.message}`) }
+        } catch (e) {
+          console.warn(`⚠️ Candle chunk (${interval} ${syms.join(',')}) failed: ${e?.message}`)
+          if (e?.tdBlocked || e?.td429) break   // the rest would be refused too — serve stale below
+        }
       }
       console.log(`📈 [candles ${interval}] fetched ${got}/${stale.length} fresh`)
     }
@@ -3113,6 +3224,7 @@ const getWeeklyCandles = (pairs) => fetchCandlesBatch(pairs, '1week', 6 * 60 * 6
 // symbol so a partial seed survives a mid-fill 429 and the next run resumes where it left off.
 const V2_DAILY_TTL = 6 * 60 * 60 * 1000
 const V2_SEED_GAP_MS = 10 * 1000
+let _v2DailyHydrated = false
 async function getV2DailyCandles(pairs) {
   const wanted = [...new Set(pairs)].filter(p => ROOM_SYMBOL_MAP[p])
   const out = {}
@@ -3127,6 +3239,24 @@ async function getV2DailyCandles(pairs) {
   let _db = null
   const loadDb = async () => { if (_db === null) _db = (await v2LoadSnapshot('daily_candles_v2')) || {}; return _db }
 
+  // Restart / deploy: memory is empty but app_state holds the last seed. A symbol fetched < 6h ago
+  // (per-symbol time in snapshot._at) is reused with its REAL fetch time, so a restart costs no
+  // credits and the 6h refresh clock carries on where it was. Once per process.
+  if (stale.length && !_v2DailyHydrated) {
+    _v2DailyHydrated = true
+    const snap = await loadDb()
+    const at = snap._at || {}
+    let reused = 0
+    for (const p of [...stale]) {
+      const t = Date.parse(at[p] || '')
+      if (Array.isArray(snap[p]) && Number.isFinite(t) && Date.now() - t < V2_DAILY_TTL) {
+        API_CACHE[`tdcandle_dv2_${p}`] = { data: snap[p], timestamp: t }
+        out[p] = snap[p]; stale.splice(stale.indexOf(p), 1); reused++
+      }
+    }
+    if (reused) console.log(`📈 [v2 candles] boot: reused ${reused} symbol(s) from app_state (< 6h old) — no refetch`)
+  }
+
   // Slow, paced seed of stale/cold symbols — one at a time, ~10s apart. Guarded so only one seeding
   // pass runs at a time (a run's first getPairMarket call seeds all; later pairs hit the warm cache).
   if (stale.length && !isCacheFreshFor('tdcandle_dv2_seeding', 3 * 60 * 1000)) {
@@ -3135,18 +3265,21 @@ async function getV2DailyCandles(pairs) {
     let got = 0
     for (const p of stale) {
       try {
-        await tdAcquire(1)
-        const r = await axios.get('https://api.twelvedata.com/time_series', {
+        const r = await tdCall({ tier: 'P1', credits: 1, caller: 'v2-daily-candles', request: () => axios.get('https://api.twelvedata.com/time_series', {
           params: { symbol: ROOM_SYMBOL_MAP[p], interval: '1day', outputsize: 15, apikey: process.env.TWELVEDATA_API_KEY }
-        })
+        }) })
         if (r.data?.code) {
           console.warn(`⚠️ [v2 candles] ${p} error code=${r.data.code} "${r.data.message || ''}"`)
         } else if (Array.isArray(r.data?.values)) {
           setCache(`tdcandle_dv2_${p}`, r.data.values); out[p] = r.data.values; base[p] = r.data.values; got++
+          base._at = { ...(base._at || {}), [p]: new Date().toISOString() }   // per-symbol fetch time (restart reuse)
           // incremental persist of the MERGED snapshot — a partial seed survives a later 429
           v2SaveSnapshot('daily_candles_v2', base)
         }
-      } catch (e) { console.warn(`⚠️ [v2 candles] ${p} fetch failed: ${e?.message}`) }
+      } catch (e) {
+        console.warn(`⚠️ [v2 candles] ${p} fetch failed: ${e?.message}`)
+        if (e?.tdBlocked || e?.td429) break   // budget/limit says no — stale/DB recovery below covers it
+      }
       await new Promise(res => setTimeout(res, V2_SEED_GAP_MS))   // slow stagger (cold seed only)
     }
     console.log(`📈 [v2 candles] slow-seed ${got}/${stale.length} fetched → ${Object.keys(out).length}/${wanted.length} present`)
@@ -3325,22 +3458,49 @@ function buildCrossAssetContext(room, liveAssets, yields) {
 // they are the primary source for fetchYields() (FRED publishes 1-2 business days late).
 const CROSS_ASSET_CORE = 'DXY,VIX,SPY,TLT,UUP,VIXY'
 const CROSS_ASSET_BONDS = 'US2Y,US10Y'
-let _tdBondFails = 0             // consecutive batches that came back with no US2Y/US10Y data
-const TD_BOND_MAX_FAILS = 3      // after this, stop paying credits for them (FRED fallback takes over)
+const CROSS_ASSET_ALL = `${CROSS_ASSET_CORE},${CROSS_ASSET_BONDS}`.split(',')
+// Credits are billed per symbol REQUESTED, including ones the plan rejects. A symbol that comes back
+// with no usable quote 3 batches running is dropped for the rest of the UTC day, then retried once
+// the next day (one more miss re-drops it). Its consumers already fall back: VIXY/UUP stand in for
+// VIX/DXY, and fetchYields() fills a missing US2Y/US10Y leg from FRED.
+const TD_SYM_MAX_FAILS = 3
+const _xSymFails = {}                                  // sym → consecutive batches without a quote
+let _xDropped = { day: null, syms: new Set() }
+const CROSS_ASSET_RETRY_GAP = 5 * 60 * 1000            // after a failed batch, serve stale this long
+function crossAssetSymbols() {
+  const day = utcDay()
+  if (_xDropped.day !== day) {
+    for (const s of _xDropped.syms) _xSymFails[s] = TD_SYM_MAX_FAILS - 1
+    if (_xDropped.syms.size) console.log(`📈 Cross-asset: new UTC day — retrying dropped ${[..._xDropped.syms].join(',')}`)
+    _xDropped = { day, syms: new Set() }
+  }
+  return CROSS_ASSET_ALL.filter(s => !_xDropped.syms.has(s))
+}
+function noteCrossAssetMiss(sym) {
+  _xSymFails[sym] = (_xSymFails[sym] || 0) + 1
+  if (_xSymFails[sym] >= TD_SYM_MAX_FAILS && !_xDropped.syms.has(sym)) {
+    _xDropped.syms.add(sym)
+    console.log(`📈 Cross-asset: ${sym} returned no data ${TD_SYM_MAX_FAILS}x — dropped from batch until 00:00 UTC`)
+  }
+}
 async function fetchCrossAssetLive() {
   if (isCacheFreshFor('cross_asset_live', 30 * 60 * 1000)) return getCached('cross_asset_live')
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) return null
-  const withBonds = _tdBondFails < TD_BOND_MAX_FAILS
-  const symbols = withBonds ? `${CROSS_ASSET_CORE},${CROSS_ASSET_BONDS}` : CROSS_ASSET_CORE
+  // One engine run calls this twice (risk basket, then yields). After a failed batch, don't pay
+  // again for 5 min — serve the stale batch (or null → FX proxies / FRED), exactly as a failure does.
+  if (isCacheFreshFor('cross_asset_attempt', CROSS_ASSET_RETRY_GAP)) return getCached('cross_asset_live')
+  setCache('cross_asset_attempt', 1)
+  const requested = crossAssetSymbols()
+  const symbols = requested.join(',')
+  const withBonds = requested.includes('US2Y') || requested.includes('US10Y')
   try {
-    // 8 symbols = 8 credits, exactly the Basic-8 per-minute allowance. tdAcquire clamps the
-    // reservation to TD_CAP (7) — safe here, because logging 7 locks out every other TwelveData
-    // call for the rest of the window, so the 1 credit of headroom absorbs the 8th symbol.
-    await tdAcquire(String(symbols).split(',').length)
-    const r = await axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 })
+    // 8 symbols = 8 credits, exactly the Basic-8 per-minute allowance — the governor sends an
+    // oversized batch alone into an empty minute.
+    const r = await tdCall({ tier: 'P2', credits: requested.length, caller: 'cross-asset',
+      request: () => axios.get(`https://api.twelvedata.com/quote?symbol=${symbols}&apikey=${key}`, { timeout: 10000 }) })
     const result = {}
-    for (const sym of symbols.split(',')) {
+    for (const sym of requested) {
       const d = r.data[sym] || r.data
       // bond quotes (US2Y/US10Y) may key the level as `price` rather than `close` — accept either
       const px = d && d.close != null && d.close !== '' ? d.close : d?.price
@@ -3354,24 +3514,22 @@ async function fetchCrossAssetLive() {
         }
       }
     }
+    // per-symbol accounting — an empty batch counts a miss for every symbol requested
+    for (const sym of requested) { if (result[sym]) _xSymFails[sym] = 0; else noteCrossAssetMiss(sym) }
     if (Object.keys(result).length > 0) {
-      if (withBonds) {
-        if (result.US2Y || result.US10Y) _tdBondFails = 0
-        else if (++_tdBondFails >= TD_BOND_MAX_FAILS) console.log(`📈 Cross-asset: ${CROSS_ASSET_BONDS} returned no data ${TD_BOND_MAX_FAILS}x — dropped from batch, yields fall back to FRED`)
-      }
       setCache('cross_asset_live', result)
+      delete API_CACHE.cross_asset_attempt   // success: no retry gap
       console.log(`📈 Cross-asset live: ${Object.keys(result).join(', ')}`)
       return result
     }
     // empty result — never overwrite a good cache; fall back to stale
-    if (withBonds) _tdBondFails++   // a plan/symbol rejection can fail the whole batch — don't keep it forever
     const staleEmpty = getCached('cross_asset_live')
     if (staleEmpty) { console.log('📈 Cross-asset empty — using stale cache'); return staleEmpty }
   } catch (e) {
     // Only blame the bond symbols for a request-level rejection (unknown symbol / not on plan) —
-    // not for a network hiccup or a 429, which would otherwise drop them for the whole process.
+    // not for a network hiccup, a 429 or a governor block, which say nothing about the symbols.
     const st = e?.response?.status
-    if (withBonds && st >= 400 && st < 500 && st !== 429) _tdBondFails++
+    if (withBonds && st >= 400 && st < 500 && st !== 429) { for (const s of ['US2Y', 'US10Y']) if (requested.includes(s)) noteCrossAssetMiss(s) }
     const stale = getCached('cross_asset_live')
     if (stale) { console.log(`📈 Cross-asset fetch failed (${e?.message}) — using stale cache`); return stale }
     console.log(`📈 Cross-asset fetch failed: ${e?.message} — using FX proxies`)
@@ -3850,10 +4008,9 @@ async function generateBiasFor(symbol, timeframe, force = false) {
   for (let attempt = 0; attempt < 3 && currentPrice === 'unknown'; attempt++) {
     try {
       if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
-      await tdAcquire(1)
-      const pr = await axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`)
+      const pr = await tdCall({ tier: 'P3', credits: 1, caller: 'v1-price', request: () => axios.get(`https://api.twelvedata.com/price?symbol=${symbolMap[symbol] || symbol}&apikey=${process.env.TWELVEDATA_API_KEY}`) })
       if (pr.data?.price) currentPrice = pr.data.price
-    } catch (e) {}
+    } catch (e) { if (e?.tdBlocked || e?.td429) break }   // never retry into a budget block or a 429
   }
 
   // 1b. Move-maturity context (ADR vs how much price has already moved today) — powers late-bias detection
@@ -4388,10 +4545,9 @@ async function v2FetchSpot(pairs) {
   if (!wanted.length || !key) return {}
   const syms = wanted.map(p => ROOM_SYMBOL_MAP[p])
   try {
-    await tdAcquire(syms.length)
-    const r = await axios.get('https://api.twelvedata.com/price', {
+    const r = await tdCall({ tier: 'P1', credits: syms.length, caller: 'v2-spot', request: () => axios.get('https://api.twelvedata.com/price', {
       params: { symbol: syms.join(','), apikey: key }, timeout: 8000
-    })
+    }) })
     if (r.data?.code) {
       console.warn(`⚠️ [v2 spot] error code=${r.data.code} "${r.data.message || ''}" — falling back to cached price`)
       return {}
@@ -4408,6 +4564,81 @@ async function v2FetchSpot(pairs) {
     console.warn(`⚠️ [v2 spot] fetch failed (${e?.message}) — falling back to cached price`)
     return {}
   }
+}
+
+// ── INVALIDATION WATCHER CADENCE — fetch scheduling only; the breach test itself is unchanged ──
+// The watcher still ticks every 10 min and still checks EVERY running pair against its level; what
+// varies is how often a pair gets a fresh (paid) spot price instead of the cached one:
+//   < 0.5× ADR from its invalidation level → every tick (10 min)
+//   0.5–1.0× ADR                          → every 30 min
+//   > 1.0× ADR                            → every 60 min
+// Inside an EVENT WINDOW for either currency of the pair it is every tick regardless of distance:
+//   · a high-impact calendar event, 30 min before to 60 min after it
+//   · an active high-severity MarketMovers Radar item — the Radar's own "breaking" bar
+//     (impact ≥ 8, published within 120 min; MarketMoversRadar.jsx isBreaking)
+// Missing price / ADR / level → every tick (fail-safe).
+const V2_WATCH_NEAR_ADR = 0.5
+const V2_WATCH_MID_ADR = 1.0
+const V2_WATCH_MID_MIN = 30
+const V2_WATCH_FAR_MIN = 60
+const V2_EVENT_BEFORE_MS = 30 * 60 * 1000
+const V2_EVENT_AFTER_MS = 60 * 60 * 1000
+const V2_RADAR_ACTIVE_MS = 120 * 60 * 1000
+const v2SpotCheckedAt = new Map()   // pair → last spot fetch attempt (ms)
+const RADAR_CCY_WORDS = {
+  USD: /\bUSD|USD\b|DOLLAR|DXY|\bFED\b|FOMC|TREASUR/, EUR: /\bEUR|EUR\b|EURO|\bECB\b/, GBP: /\bGBP|GBP\b|STERLING|POUND|\bBOE\b/,
+  JPY: /\bJPY|JPY\b|\bYEN\b|\bBOJ\b|SAFE HAVEN/, CHF: /\bCHF|CHF\b|FRANC|\bSNB\b|SAFE HAVEN/, AUD: /\bAUD|AUD\b|AUSSIE|AUSTRALIA|\bRBA\b/,
+  NZD: /\bNZD|NZD\b|KIWI|NEW ZEALAND|RBNZ/, CAD: /\bCAD|CAD\b|LOONIE|CANAD|\bBOC\b|\bOIL\b/, XAU: /\bXAU|GOLD|SAFE HAVEN/,
+}
+// Currencies a Radar item touches, from its AI market tags, its matched mover's assets and its title.
+// Nothing recognisable → '*' (treat as touching every pair: an unattributed impact-8+ headline is
+// exactly the unscheduled move this window exists for).
+function radarItemCurrencies(a) {
+  const mover = matchMoverSrv(`${a.title} ${a.summary || ''}`)
+  const text = [...(a.marketTags || []), ...(mover?.assets || []), a.title || ''].join(' | ').toUpperCase()
+  const hit = Object.entries(RADAR_CCY_WORDS).filter(([, re]) => re.test(text)).map(([c]) => c)
+  return hit.length ? hit : ['*']
+}
+// Currencies currently inside an event window → Map(ccy → reason). Cache-only reads (the calendar's
+// own 10-min cache, the news cache the Radar and the alerts use) — costs no TwelveData credits.
+async function v2EventWindowCurrencies() {
+  const out = new Map()
+  const now = Date.now()
+  try {
+    for (const e of (await getEconomicCalendar()) || []) {
+      if (String(e.impact || '').toLowerCase() !== 'high') continue
+      const t = new Date(e.time).getTime()
+      if (Number.isFinite(t) && now >= t - V2_EVENT_BEFORE_MS && now <= t + V2_EVENT_AFTER_MS) {
+        const c = String(e.country || '').toUpperCase()
+        if (c && !out.has(c)) out.set(c, `event ${e.event}`)
+      }
+    }
+  } catch (e) { console.warn(`⚠️ [v2 inval watch] calendar unavailable for event windows: ${e?.message}`) }
+  const news = getCached('latest_news')
+  if (Array.isArray(news)) {
+    for (const a of news) {
+      if ((a.impact || 0) < 8) continue
+      const t = Date.parse(a.publishedAt || '')
+      if (!Number.isFinite(t) || now - t > V2_RADAR_ACTIVE_MS) continue
+      for (const c of radarItemCurrencies(a)) if (!out.has(c)) out.set(c, `radar "${String(a.title).slice(0, 50)}"`)
+    }
+  }
+  return out
+}
+// Minutes between paid spot checks for this row right now, plus why.
+function v2WatchInterval(row, windows) {
+  const [b, q] = [row.pair.slice(0, 3), row.pair.slice(3, 6)]
+  const win = windows.get('*') || windows.get(b) || windows.get(q)
+  if (win) return { min: 10, why: win }
+  const px = v2CachedPrice(row.pair)?.price
+  const vals = getCached(`tdcandle_dv2_${row.pair}`) || getCached(`tdcandle_d_${row.pair}`)
+  const adr = Array.isArray(vals) && vals.length >= 3 ? v2AdrFromDaily(row.pair, vals).adr : null
+  const lvl = parseFloat(row.invalidation_level)
+  if (!Number.isFinite(px) || !(adr > 0) || !Number.isFinite(lvl)) return { min: 10, why: 'no price/ADR/level' }
+  const dist = Math.abs(px - lvl) / adr
+  if (dist < V2_WATCH_NEAR_ADR) return { min: 10, why: `${dist.toFixed(2)}×ADR` }
+  if (dist <= V2_WATCH_MID_ADR) return { min: V2_WATCH_MID_MIN, why: `${dist.toFixed(2)}×ADR` }
+  return { min: V2_WATCH_FAR_MIN, why: `${dist.toFixed(2)}×ADR` }
 }
 
 // Returns the bias to publish, or null meaning "v2 genuinely has no qualifying bias right now".
@@ -4982,14 +5213,13 @@ async function scoreBias(row) {
   const fetchStart = new Date(start.getTime() - 30 * 60 * 1000)
   const fetchEnd = new Date(Math.min(windowEnd.getTime() + 30 * 60 * 1000, Date.now()))
   try {
-    await tdAcquire(1)
-    const r = await axios.get('https://api.twelvedata.com/time_series', {
+    const r = await tdCall({ tier: 'P3', credits: 1, caller: 'scoring', request: () => axios.get('https://api.twelvedata.com/time_series', {
       params: {
         symbol, interval: '15min', timezone: 'UTC',
         start_date: tdDateUTC(fetchStart), end_date: tdDateUTC(fetchEnd),
         outputsize: 120, apikey: process.env.TWELVEDATA_API_KEY
       }
-    })
+    }) })
     if (r.data?.status === 'error' || !Array.isArray(r.data?.values) || !r.data.values.length) {
       return { status: 'error', error: r.data?.message || 'No candle data returned (market closed or rate limit)' }
     }
@@ -5023,7 +5253,7 @@ async function scoreBias(row) {
       scoredAt: new Date().toISOString()
     }
   } catch (e) {
-    return { status: 'error', error: e?.message || 'TwelveData fetch failed' }
+    return { status: 'error', error: e?.message || 'TwelveData fetch failed', ...(e?.tdBlocked || e?.td429 ? { blocked: true } : {}) }
   }
 }
 
@@ -5072,7 +5302,11 @@ function biasPerformanceSummary(results) {
 // /api/bias-performance unchanged, so a schedule can run it too: finalised outcomes used to be
 // written only when someone opened the Bias History modal, and the Saturday results post needs
 // them whether or not anyone did. Returns the rows with their performance attached.
-async function scoreBiasHistory(days) {
+// closedOnly (the scheduled run): fetch ONLY biases whose 24h window has closed — the only scores it
+// can persist. A still-open window is scored for the Bias History modal alone, and that live score is
+// reused for 30 min per bias. A budget block / 429 stops further fetches for this call.
+const TRACKER_LIVE_TTL = 30 * 60 * 1000
+async function scoreBiasHistory(days, { closedOnly = false, noFetch = false } = {}) {
   const since = new Date(Date.now() - days * 86400 * 1000).toISOString()
   // v2 rows ONLY. A win rate blended across two engines describes neither, and pre-migration rows
   // have engine=null so they drop out on their own — XAUUSD included, which v2 never scores.
@@ -5085,16 +5319,26 @@ async function scoreBiasHistory(days) {
   if (error) throw error
 
   let fetches = 0
+  let blocked = false
   const results = []
   for (const row of dedupeBiasRows(rows)) {
     // Already permanently scored → reuse, zero API cost
     if (row.performance?.status === 'final') { results.push(row); continue }
-    if (fetches >= TRACKER_MAX_FETCHES) {
+    const windowOpen = Date.now() <= new Date(row.generated_at).getTime() + TRACKER_WINDOW_HOURS * 3600 * 1000
+    if (windowOpen && closedOnly) {
+      results.push({ ...row, performance: { status: 'live', correct: null, note: 'Window still open — scored when it closes' } })
+      continue
+    }
+    const liveKey = `perf_live_${row.id}`
+    if (windowOpen && isCacheFreshFor(liveKey, TRACKER_LIVE_TTL)) { results.push({ ...row, performance: getCached(liveKey) }); continue }
+    if (blocked || noFetch || fetches >= TRACKER_MAX_FETCHES) {
       results.push({ ...row, performance: { status: 'pending', note: 'Queued (rate-limit headroom) — scores on next refresh' } })
       continue
     }
     fetches++
     const perf = await scoreBias(row)
+    if (perf.blocked) blocked = true
+    if (perf.status === 'live') setCache(liveKey, perf)
     // Persist ONLY completed 24h windows — each bias costs exactly one fetch, ever
     if (perf.status === 'final') {
       try {
@@ -5107,11 +5351,11 @@ async function scoreBiasHistory(days) {
   return results
 }
 
-// The scheduled run. Same function, same TRACKER_MAX_FETCHES budget per run, same tdAcquire rate
-// limiter inside scoreBias — so it queues behind the engine's TwelveData calls instead of racing them.
+// The scheduled run. Same function, same TRACKER_MAX_FETCHES budget per run, same governor (P3)
+// inside scoreBias — so it queues behind the engine's TwelveData calls instead of racing them.
 async function runScheduledScoring() {
   try {
-    const rows = await scoreBiasHistory(7)
+    const rows = await scoreBiasHistory(7, { closedOnly: true })
     const finals = rows.filter(r => r.performance?.status === 'final').length
     console.log(`📈 [scoring] ${rows.length} v2 biases in 7d · ${finals} resolved`)
   } catch (e) { console.error(`⚠️ [scoring] scheduled run failed: ${e?.message || e}`) }
@@ -5122,18 +5366,30 @@ app.get('/api/bias-performance', requirePro, async (req, res) => {
   // performance claim by design; this endpoint was publishing one anyway, to
   // anyone, unauthenticated. It backs the Bias History modal, which is behind
   // a login, so it belongs behind one too.
-  if (!await requireUser(req, res)) return
+  // requirePro already resolved the session (cached); a second uncached getUser here cost a round trip.
+  if (!req.access?.user) return res.status(401).json({ error: 'Not authenticated' })
   try {
     const days = Math.min(parseInt(req.query.days) || 7, 90)
     const cacheKey = `bias_performance_${days}`
-    if (isCacheFresh(cacheKey)) return res.json(getCached(cacheKey))
-    const results = await scoreBiasHistory(days)
-    // Win/loss verdict only from closed 24h windows; live biases show running pips but don't count.
-    // Summary and list are the same `results` array — see biasPerformanceSummary.
-    const summary = biasPerformanceSummary(results)
-    const payload = { success: true, days, summary, history: results }
-    setCache(cacheKey, payload)
-    res.json(payload)
+    const build = async (opts) => {
+      const results = await scoreBiasHistory(days, opts)
+      // Win/loss verdict only from closed 24h windows; live biases show running pips but don't count.
+      // Summary and list are the same `results` array — see biasPerformanceSummary.
+      const summary = biasPerformanceSummary(results)
+      const payload = { success: true, days, summary, history: results }
+      if (!opts?.noFetch) setCache(cacheKey, payload)
+      return payload
+    }
+    // Scoring can queue on the TwelveData governor, so it never runs in the request: a cached payload
+    // is served and refreshed in the background; a cold one gets 8s, then the DB-only view (persisted
+    // scores, the rest "pending") while the full scoring finishes into the cache.
+    const cached = getCached(cacheKey)
+    if (cached) {
+      if (!isCacheFresh(cacheKey)) refreshInBackground(cacheKey, () => build())
+      return res.json(cached)
+    }
+    const full = await within(singleFlight(cacheKey, () => build()), 8000, null)
+    res.json(full || await build({ noFetch: true }))
   } catch (e) {
     console.error('bias-performance error:', e?.message)
     res.status(500).json({ success: false, error: e?.message || 'performance unavailable' })
@@ -5144,6 +5400,19 @@ app.get('/api/bias-performance', requirePro, async (req, res) => {
 // Reads the same table and applies the same pair filter as getV2HeadlineBias() so the panel can
 // never show a pair the engine has disabled, and the headline row is flagged rather than
 // re-derived on the client. Sorted strongest-conviction first.
+// bias_state_v2 rows for the compass — public (landing hero + dashboard), and the engine rewrites them
+// at most every couple of hours, so a 60s cache shared by concurrent callers is plenty. The per-request
+// serve-time invalidation guard below still runs on every response. On a read error, rows up to 30
+// min old are served rather than blanking the panel.
+async function compassRows() {
+  if (isCacheFreshFor('compass_rows', 60 * 1000)) return { data: getCached('compass_rows'), error: null }
+  return singleFlight('compass_rows', async () => {
+    const r = await supabase.from('bias_state_v2').select('*')
+    if (!r.error) { setCache('compass_rows', r.data || []); return r }
+    if (isCacheFreshFor('compass_rows', 30 * 60 * 1000)) { console.warn(`⚠️ [macro-compass] read failed (${r.error.message}) — serving rows from ${Math.round(cacheAgeMs('compass_rows') / 60000)}min ago`); return { data: getCached('compass_rows'), error: null } }
+    return r
+  })
+}
 app.get('/api/macro-compass', async (req, res) => {
   // Open, because the landing page's hero is this data and it has to render for
   // a visitor with no account. Callers without Pro get the rows without the
@@ -5152,7 +5421,7 @@ app.get('/api/macro-compass', async (req, res) => {
     body?.pairs ? { ...body, pairs: body.pairs.map(publicPair), publicView: true } : body)
   try {
     if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
-    const { data, error } = await supabase.from('bias_state_v2').select('*')
+    const { data, error } = await compassRows()
     if (error) throw error
 
     const rows = (data || []).filter(r => V2_CONFIG.PAIRS.includes(r.pair))
@@ -5328,12 +5597,19 @@ app.get('/api/macro-compass', async (req, res) => {
 app.get('/api/bias-calls', async (req, res) => {
   try {
     if (!supabase) return res.json({ success: false, error: 'Database unavailable' })
-    const { data, error } = await supabase
-      .from('bias_history_v2')
-      .select('pair,direction,status,closed_reason,invalidation_level,created_at')
-      .neq('direction', 'FLAT')
-      .order('created_at', { ascending: true })
-      .limit(2000)
+    // Public landing-page read of up to 2000 rows — cached 5 min and shared by concurrent callers.
+    const { data, error } = isCacheFreshFor('bias_calls', 5 * 60 * 1000)
+      ? { data: getCached('bias_calls'), error: null }
+      : await singleFlight('bias_calls', async () => {
+        const r = await supabase
+          .from('bias_history_v2')
+          .select('pair,direction,status,closed_reason,invalidation_level,created_at')
+          .neq('direction', 'FLAT')
+          .order('created_at', { ascending: true })
+          .limit(2000)
+        if (!r.error) setCache('bias_calls', r.data || [])
+        return r
+      })
     if (error) throw error
 
     const opens = new Map()
@@ -5383,7 +5659,20 @@ app.get('/api/today-bias', async (req, res) => {
     if (isCacheFreshFor('today_bias', TODAY_BIAS_TTL)) {
       return res.json({ success: true, ...getCached('today_bias'), cached: true, staleAfterMins })
     }
-    const result = await computeTodaysAIBias()
+    // Past the TTL: answer with the last PUBLISHED bias immediately and re-derive it in the
+    // background (single-flight). The recompute runs the publish tail — history insert, subscriber
+    // DMs, channel post — serialised on one chain; a user request must never wait behind that.
+    const published = getCached('today_bias')
+    if (published) {
+      refreshInBackground('today_bias', () => computeTodaysAIBias())
+      const ageMin = (Date.now() - new Date(published.updatedAt || 0).getTime()) / 60000
+      return res.json({ success: true, ...published, cached: true, refreshing: true, stale: ageMin > staleAfterMins, staleAfterMins })
+    }
+    // Nothing published in this process (restored state also lands in the cache at boot): wait at
+    // most 3s for the shared recompute, then answer "refreshing" rather than hang the card.
+    const TIMED_OUT = Symbol('timeout')
+    const result = await within(singleFlight('today_bias', () => computeTodaysAIBias()), 3000, TIMED_OUT)
+    if (result === TIMED_OUT) return res.json({ success: true, bias: null, refreshing: true, reason: 'Loading today\'s bias…', staleAfterMins })
     if (!result) return res.json({ success: true, bias: null, reason: 'No strong pair available right now', staleAfterMins })
     // computeTodaysAIBias falls back to the old cache on AI failure — flag it if it's older than the TTL
     const isStale = result.updatedAt && (Date.now() - new Date(result.updatedAt).getTime()) > TODAY_BIAS_TTL
@@ -5849,7 +6138,10 @@ app.get('/api/user/plan', async (req, res) => {
 app.get('/api/calendar', async (req, res) => {
   const mc = ['USD','EUR','GBP','JPY','AUD','CAD','CHF','NZD','CNY']
   try {
-    const events = await getEconomicCalendar()
+    // Cache-first (getEconomicCalendar serves stale + refreshes in the background). Only a process
+    // with no calendar anywhere waits, and never more than 5s.
+    const events = await within(getEconomicCalendar(), 5000, null)
+    if (!events) return res.status(503).json({ error: 'Calendar is loading — try again in a moment' })
     const norm = events.filter(e=>mc.includes(e.country)).map(e=>({ title:e.event, country:e.country, date:e.time, impact:e.impact?.toLowerCase()==='high'?'High':e.impact?.toLowerCase()==='medium'?'Medium':'Low', forecast:e.forecast||'-', previous:e.previous||'-', actual:'-' }))
     norm.sort((a,b)=>{const o={High:0,Medium:1,Low:2};return o[a.impact]!==o[b.impact]?o[a.impact]-o[b.impact]:new Date(a.date)-new Date(b.date)})
     res.json(norm)
@@ -5967,7 +6259,7 @@ async function fetchPolicyRateAndInflation() {
 }
 
 // Yield LEVELS for the brief. fetchYields() is the shared path and is tried first so a warm cache
-// costs nothing — but its primary source is the TwelveData cross-asset batch, and tdAcquire() can
+// costs nothing — but its primary source is the TwelveData cross-asset batch, and tdCall() can
 // park it behind the credit budget for minutes. When that happens the request budget expires before
 // the function ever reaches its own FRED fallback, and the brief reports no yields at all despite
 // FRED being up. So: give the shared path a short leash, then read DGS2/DGS10 directly.
@@ -6039,6 +6331,7 @@ let lastVendorStatus = null
 async function fetchRecentActuals(currency) {
   const ck = `brief_actuals_${currency}`
   if (isCacheFreshFor(ck, BRIEF_ACTUALS_TTL)) { lastVendorStatus = 'ok (cached)'; return getCached(ck) }
+  if (!FMP_ENABLED) { lastVendorStatus = 'FMP disabled (FMP_ENABLED=false)'; return null }
   if (!FMP_KEY) { lastVendorStatus = 'FMP_API_KEY not set in env'; return null }
   const to = new Date().toISOString().slice(0, 10)
   const from = new Date(Date.now() - 14 * 86400 * 1000).toISOString().slice(0, 10)
@@ -6690,7 +6983,7 @@ async function fetchLeadingIndicators(event) {
 // "favorable" against yet, so it reports the raw move from open and the range used.
 async function fetchBriefPairContext(symbols) {
   const out = {}
-  // CACHE FIRST. getDailyCandles() → tdAcquire() blocks on the TwelveData credit budget, which the
+  // CACHE FIRST. getDailyCandles() → tdCall() queues on the TwelveData credit budget, which the
   // crons and the bias engine are also drawing on; waiting there costs the whole request budget and
   // returns nothing. v1/v2 keep tdcandle_d_* warm, so read those keys directly and only pay for a
   // fetch on the symbols genuinely absent — with its own inner deadline, so whatever WAS cached
@@ -7103,25 +7396,22 @@ app.get('/api/strength', requirePro, async (req, res) => {
     })
   }
 
-  if (isCacheFresh('strength')) return res.json(getCached('strength'))
-  const stale = getCached('strength'), pairs=['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD']
-  try {
-    await tdAcquire(pairs.length)
-    const r = await axios.get(`https://api.twelvedata.com/time_series?symbol=${pairs.join(',')}&interval=1day&outputsize=2&apikey=${process.env.TWELVEDATA_API_KEY}`)
-    if(r.data.code===429){if(stale)return res.json(stale);return res.status(429).json({success:false,error:'Rate limit'})}
-    const scores={USD:0,EUR:0,GBP:0,JPY:0,AUD:0,NZD:0,CAD:0,CHF:0},counts={...scores}
-    pairs.forEach(p=>{const[b,q]=p.split('/'),d=r.data[p];if(!d?.values||d.values.length<2)return;const c=parseFloat(d.values[0].close),pr=parseFloat(d.values[1].close);if(!c||!pr)return;const ch=((c-pr)/pr)*100;scores[b]+=ch;counts[b]++;scores[q]-=ch;counts[q]++})
-    const avg={};Object.keys(scores).forEach(c=>avg[c]=counts[c]>0?scores[c]/counts[c]:0)
-    const vals=Object.values(avg),mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1
-    const norm={};Object.keys(avg).forEach(c=>norm[c]=Math.round(((avg[c]-mn)/rng)*100))
-    const sorted=Object.entries(norm).sort((a,b)=>b[1]-a[1]).map(([c,s])=>({currency:c,strength:s,raw:avg[c].toFixed(4),label:s>=65?'Strong':s>=35?'Neutral':'Weak'}))
-    const allZ=sorted.every(c=>c.strength===0)
-    const bp=widestDivergence(sorted)
-    // NOTE: no bias push from here. Currency strength is deliberately EXCLUDED from the bias engine
-    // (lagging — viewer-only), so pushing a strength-derived "Bias Change Alert" to Telegram/email
-    // contradicted the engine. Bias pushes come from the v2 engine (publishTodayBias) only.
-    const result={success:true,currencies:sorted,bestPairs:bp,marketClosed:allZ,updatedAt:new Date().toISOString()};if(!allZ){setCache('strength',result)}res.json(result)
-  } catch(e){if(stale)return res.json(stale);res.status(500).json({success:false,error:'Strength failed'})}
+  // Cache-first, never blocks on TwelveData (a refresh can sit in the governor's per-minute queue for
+  // up to a minute), never 5xx. Past the 30-min TTL one background refresh starts (at most one per
+  // 5 min) and the last-good read is served meanwhile: unlabelled while < 60 min old, and with the
+  // "Stale · HH:MM UTC" label beyond that — i.e. only when refreshes are blocked or failing.
+  await hydrateStrength()
+  const cached = getCached('strength')
+  const age = cacheAgeMs('strength')
+  if (cached && age < STRENGTH_TTL) return res.json(cached)
+  if (!isCacheFreshFor('strength_attempt', STRENGTH_RETRY_GAP)) {
+    refreshInBackground('strength', () => refreshStrength().catch(e => { if (!e?.tdBlocked) throw e }))
+  }
+  if (cached) return res.json(age >= STRENGTH_STALE_AFTER ? { ...cached, stale: true, staleAsOf: cached.updatedAt } : { ...cached, refreshing: true })
+  // Nothing ever cached anywhere: the engine's saved daily candles, zero credits, labelled stale.
+  const derived = await strengthFromCandleSnapshot().catch(() => null)
+  if (derived) return res.json({ ...derived, stale: true, staleAsOf: derived.updatedAt })
+  res.json({ success: false, refreshing: true, error: 'Currency strength is loading — try again in a minute' })
 })
 
 // ============================================
@@ -7139,35 +7429,101 @@ function sliceNews(articles, q = {}) {
   return out
 }
 
+// ── BACKGROUND NEWS REFRESH ──
+// /api/news used to fetch 5 RSS feeds (rss-parser's default timeout is 60s) and run Haiku scoring
+// INSIDE the user's request whenever the 10-min cache had lapsed — and nothing refreshed the cache
+// when nobody had the page open, so news alerts and the watcher's Radar event windows went blind.
+// Now a job keeps `latest_news` warm and every reader (News, Radar, landing, alerts, engine, watcher)
+// reads the cache. Only titles never seen before go to Haiku (newsScoreMemo), at most 40 per call;
+// the scored list and the memo are saved to app_state, so a restart shows news at once and re-scores
+// nothing. Cadence: every 5 min while forex is open; every 30 min while it is closed, EXCEPT the hour
+// before the Sunday 17:00 ET open, which runs at 5 min so weekend headlines are fresh for the gap.
+// feeds.reuters.com was dropped: that feed has been dead for years.
+const NEWS_FEEDS = [
+  { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114' },
+  { name: 'Nasdaq', url: 'https://www.nasdaq.com/feed/rssoutbound?category=Markets' },
+  { name: 'Fox Business', url: 'https://feeds.foxbusiness.com/foxbusiness/markets' },
+  { name: 'Investing.com', url: 'https://www.investing.com/rss/news.rss' },
+]
+const newsRssParser = new Parser({ timeout: 10 * 1000 })
+const NEWS_OPEN_EVERY_MS = 5 * 60 * 1000
+const NEWS_CLOSED_EVERY_MS = 30 * 60 * 1000
+const NEWS_SCORE_MAX = 40
+const NEWS_SNAPSHOT_KEY = 'news_last_good'
+let newsLastRefreshAt = 0
+let newsBootSeeded = false
+
+// The hour before the weekly open: Sunday 16:00–16:59 ET (the open is Sunday 17:00 ET, isForexClosed).
+function isPreOpenHour() { const { day, hour } = nyParts(); return day === 0 && hour === 16 }
+function newsRefreshDue() {
+  const every = isForexClosed() && !isPreOpenHour() ? NEWS_CLOSED_EVERY_MS : NEWS_OPEN_EVERY_MS
+  return Date.now() - newsLastRefreshAt >= every - 30 * 1000   // 30s slack for timer drift
+}
+
+async function refreshNews() {
+  newsLastRefreshAt = Date.now()
+  const results = await Promise.allSettled(NEWS_FEEDS.map(f => newsRssParser.parseURL(f.url).then(p => p.items.slice(0, 12).map(i => ({ source: f.name, title: i.title || '', summary: i.contentSnippet || '', url: i.link || '', publishedAt: i.pubDate ? new Date(i.pubDate).toISOString() : new Date().toISOString() })))))
+  const articles = []
+  results.forEach((r, i) => { if (r.status === 'fulfilled') articles.push(...r.value); else console.warn(`⚠️ [news] ${NEWS_FEEDS[i].name} failed: ${r.reason?.message || r.reason}`) })
+  if (!articles.length) throw new Error('all news feeds failed')
+  // Reuse previous scores; only send NEW (unseen) articles to the AI
+  const scored = articles.map(a => { const prev = newsScoreMemo.get(a.title); return prev ? { ...a, ...prev } : { ...a, impact: 5, category: 'General', bias: 'neutral', marketTags: [], oneliner: '', _unscored: true } })
+  const unscored = scored.map((a, i) => ({ a, i })).filter(x => x.a._unscored).slice(0, NEWS_SCORE_MAX)
+  if (unscored.length) {
+    try {
+      const titles = unscored.map((x, n) => `${n + 1}.[${x.a.source}]${x.a.title}`).join('\n')
+      const m = await anthropic.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 4096, system: 'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]', messages: [{ role: 'user', content: `Score:\n${titles}` }] })
+      trackAI('news-scoring', 'claude-haiku-4-5-20251001', m.usage)
+      const s = JSON.parse(m.content[0].text.trim().replace(/```json|```/g, '').trim())
+      s.forEach(x => { const u = unscored[x.index - 1]; if (u) { const f = { impact: x.impact || 5, category: x.category || 'General', bias: x.bias || 'neutral', marketTags: x.marketTags || [], oneliner: x.oneliner || '' }; Object.assign(scored[u.i], f); newsScoreMemo.set(u.a.title, f) } })
+      if (newsScoreMemo.size > 300) { const keys = [...newsScoreMemo.keys()]; keys.slice(0, keys.length - 300).forEach(k => newsScoreMemo.delete(k)) }
+      console.log(`📰 [news] scored ${unscored.length} new headline(s)`)
+    } catch (e) { console.warn(`⚠️ [news] scoring failed (${e?.message}) — unscored items keep impact 5 and retry next run`) }
+  }
+  scored.forEach(a => { delete a._unscored })
+  scored.sort((a, b) => b.impact !== a.impact ? b.impact - a.impact : new Date(b.publishedAt) - new Date(a.publishedAt))
+  // First refresh of a process that had nothing to restore: anything already older than an hour is
+  // not news to subscribers — mark it alerted so a restart cannot re-send old market-mover DMs.
+  if (!newsBootSeeded) {
+    newsBootSeeded = true
+    const hourAgo = Date.now() - 60 * 60 * 1000
+    for (const a of scored) if (Date.parse(a.publishedAt) < hourAgo) sentNewsAlerts.add(a.title)
+  }
+  setCache('latest_news', scored)
+  v2SaveSnapshot(NEWS_SNAPSHOT_KEY, { at: new Date().toISOString(), articles: scored, scores: [...newsScoreMemo.entries()] })
+  return scored
+}
+
+// Restore the last saved list + score memo after a restart. Every restored title counts as already
+// alerted — it was either alerted before the restart or is old news by now.
+async function hydrateNews() {
+  if (API_CACHE.latest_news) return
+  const snap = await v2LoadSnapshot(NEWS_SNAPSHOT_KEY)
+  if (!Array.isArray(snap?.articles) || !snap.articles.length) return
+  API_CACHE.latest_news = { data: snap.articles, timestamp: Date.parse(snap.at) || 0 }
+  for (const [t, f] of snap.scores || []) if (!newsScoreMemo.has(t)) newsScoreMemo.set(t, f)
+  for (const a of snap.articles) sentNewsAlerts.add(a.title)
+  newsBootSeeded = true
+  console.log(`📰 [news] restored ${snap.articles.length} articles + ${newsScoreMemo.size} scores from app_state (${snap.at})`)
+}
+
+function newsTick() {
+  if (!newsRefreshDue()) return
+  refreshInBackground('news', refreshNews)
+}
+
 app.get('/api/news', requirePro, async (req, res) => {
-  if (isCacheFresh('latest_news')) return res.json({ success: true, articles: sliceNews(getCached('latest_news'), req.query) })
-  const feeds=[{name:'CNBC',url:'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'},{name:'Nasdaq',url:'https://www.nasdaq.com/feed/rssoutbound?category=Markets'},{name:'Fox Business',url:'https://feeds.foxbusiness.com/foxbusiness/markets'},{name:'Reuters',url:'https://feeds.reuters.com/reuters/topNews'},{name:'Investing.com',url:'https://www.investing.com/rss/news.rss'}]
-  try {
-    const results=await Promise.allSettled(feeds.map(f=>rssParser.parseURL(f.url).then(p=>p.items.slice(0,12).map(i=>({source:f.name,title:i.title||'',summary:i.contentSnippet||'',url:i.link||'',publishedAt:i.pubDate?new Date(i.pubDate).toISOString():new Date().toISOString()})))))
-    let articles=[];results.forEach((r,i)=>{if(r.status==='fulfilled')articles.push(...r.value)})
-    if(!articles.length)return res.status(502).json({success:false,error:'All feeds failed'})
-    // Reuse previous scores; only send NEW (unseen) articles to the AI — was re-scoring all ~50 articles every 10 min
-    let scored=articles.map(a=>{const prev=newsScoreMemo.get(a.title);return prev?{...a,...prev}:{...a,impact:5,category:'General',bias:'neutral',marketTags:[],oneliner:'',_unscored:true}})
-    const unscored=scored.map((a,i)=>({a,i})).filter(x=>x.a._unscored)
-    if(unscored.length){
-      try{
-        const titles=unscored.map((x,n)=>`${n+1}.[${x.a.source}]${x.a.title}`).join('\n')
-        const m=await anthropic.messages.create({model:'claude-haiku-4-5-20251001',max_tokens:4096,system:'Macro analyst for BiasForge. Return ONLY JSON array.\n[{"index":1,"impact":8,"category":"Central Bank","bias":"bearish","marketTags":["USD↓"],"oneliner":"..."}]',messages:[{role:'user',content:`Score:\n${titles}`}]})
-        trackAI('news-scoring','claude-haiku-4-5-20251001',m.usage)
-        const s=JSON.parse(m.content[0].text.trim().replace(/```json|```/g,'').trim())
-        s.forEach(x=>{const u=unscored[x.index-1];if(u){const f={impact:x.impact||5,category:x.category||'General',bias:x.bias||'neutral',marketTags:x.marketTags||[],oneliner:x.oneliner||''};Object.assign(scored[u.i],f);newsScoreMemo.set(u.a.title,f)}})
-        if(newsScoreMemo.size>300){const keys=[...newsScoreMemo.keys()];keys.slice(0,keys.length-300).forEach(k=>newsScoreMemo.delete(k))}
-      }catch(e){}
-    }
-    scored.forEach(a=>{delete a._unscored})
-    scored.sort((a,b)=>b.impact!==a.impact?b.impact-a.impact:new Date(b.publishedAt)-new Date(a.publishedAt))
-    setCache('latest_news',scored)
-    // The full set is what the dashboard feed wants and what gets cached. The
-    // landing page wants the few highest-impact ones and nothing else, so it can
-    // ask for them rather than pulling ~50 articles to render four cards.
-    // Both filters are optional; without them the response is unchanged.
-    res.json({success:true,articles:sliceNews(scored,req.query)})
-  } catch(e){res.status(500).json({success:false,error:'News failed'})}
+  // Cache only — the background job keeps it warm. A process with nothing cached or saved waits at
+  // most 8s for the in-flight refresh, then answers with an empty, flagged list.
+  let articles = getCached('latest_news')
+  if (!articles) { await hydrateNews(); articles = getCached('latest_news') }
+  if (!articles) articles = await within(singleFlight('news', refreshNews).catch(() => null), 8000, null)
+  if (!articles) return res.json({ success: true, articles: [], refreshing: true })
+  // The full set is what the dashboard feed wants and what gets cached. The
+  // landing page wants the few highest-impact ones and nothing else, so it can
+  // ask for them rather than pulling ~50 articles to render four cards.
+  // Both filters are optional; without them the response is unchanged.
+  res.json({ success: true, articles: sliceNews(articles, req.query), updatedAt: new Date(API_CACHE.latest_news?.timestamp || Date.now()).toISOString() })
 })
 
 // ============================================
@@ -7175,8 +7531,32 @@ app.get('/api/news', requirePro, async (req, res) => {
 // ============================================
 // Reusable COT fetcher (cached 24h — CFTC data updates weekly on Fridays; a single fetch
 // failure falls back to the last cached value instead of zeroing positioning).
+// Stale-while-revalidate: a stale copy (memory, or app_state after a restart) is returned at once and
+// ONE background refresh runs; a failed refresh waits 30 min before the next attempt. Only a process
+// with no COT anywhere waits on CFTC, and concurrent callers share that fetch.
+const COT_TTL = 24 * 60 * 60 * 1000
+const COT_FAIL_COOLDOWN = 30 * 60 * 1000
+let _cotHydrated = false
 async function getCOTData() {
-  if (isCacheFreshFor('cot_data', 24 * 60 * 60 * 1000)) return getCached('cot_data')
+  if (isCacheFreshFor('cot_data', COT_TTL)) return getCached('cot_data')
+  if (!_cotHydrated) {
+    _cotHydrated = true
+    const snap = await v2LoadSnapshot('cot_last_good')
+    if (snap?.payload?.data?.length && !API_CACHE.cot_data) {
+      API_CACHE.cot_data = { data: snap.payload, timestamp: Date.parse(snap.at) || 0 }
+      if (isCacheFreshFor('cot_data', COT_TTL)) return snap.payload
+    }
+  }
+  const stale = getCached('cot_data')
+  const refresh = () => {
+    if (isCacheFreshFor('cot_attempt', COT_FAIL_COOLDOWN)) return Promise.resolve(stale || { data: [], reportDate: '' })
+    setCache('cot_attempt', 1)
+    return fetchCOTFresh()
+  }
+  if (stale?.data?.length) { refreshInBackground('cot', refresh); return stale }
+  return singleFlight('cot', refresh)
+}
+async function fetchCOTFresh() {
   // ── Dataset 1: TFF (gpe5-46if) — Currencies + USD Index ──
   const FINANCIAL_MAP = {
     'EURO FX':              { currency: 'EUR', flag: '🇪🇺' },
@@ -7200,6 +7580,13 @@ async function getCOTData() {
   const seen = new Set()
   let reportDate = ''
   try {
+    // Both CFTC datasets are requested together (they used to run back to back, up to 2×12s).
+    // NOTE: trailing comma in the IN(...) list makes Socrata 400 → gold silently missing. No trailing comma.
+    const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
+                '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
+                '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27)'
+    const comP = fetch(comUrl, { headers: FF_HEADERS, signal: AbortSignal.timeout(12000) })
+      .catch(e => ({ ok: false, status: `error: ${e?.message}` }))
     // ── Fetch 1: Financial instruments (currencies) ──
     const finUrl = 'https://publicreporting.cftc.gov/resource/gpe5-46if.json?' +
                    '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=500'
@@ -7260,12 +7647,8 @@ async function getCOTData() {
       }
     }
 
-    // ── Fetch 2: Disaggregated (commodities + crypto) ──
-   // NOTE: trailing comma in the IN(...) list makes Socrata 400 → gold silently missing. No trailing comma.
-   const comUrl = 'https://publicreporting.cftc.gov/resource/72hh-3qpy.json?' +
-               '%24order=report_date_as_yyyy_mm_dd%20DESC&%24limit=50&' +
-               '%24where=commodity_name%20in(%27GOLD%27,%27SILVER%27)'
-    const comRes = await fetch(comUrl, { headers: FF_HEADERS, signal: AbortSignal.timeout(12000) })
+    // ── Fetch 2: Disaggregated (commodities + crypto) — already in flight since the top ──
+    const comRes = await comP
     if (!comRes.ok) console.warn(`⚠️ COT commodity fetch HTTP ${comRes.status} — gold/XAU positioning unavailable`)
 
     if (comRes.ok) {
@@ -7356,12 +7739,15 @@ const sdl = p(row.swap_positions_long_all), sds = p(row.swap_positions_short_all
   console.log(`📊 COT loaded (${results.length}): ${results.map(r => `${r.currency}(${r.netPosition > 0 ? '+' : ''}${r.netPosition})`).join(', ')}${results.some(r => r.currency === 'XAU') ? '' : ' ⚠️ NO XAU'}`)
   const payload = { data: results, reportDate }
   setCache('cot_data', payload)
+  delete API_CACHE.cot_attempt
+  v2SaveSnapshot('cot_last_good', { at: new Date().toISOString(), payload })
   return payload
 }
 
 app.get('/api/cot', requirePro, async (req, res) => {
   try {
-    const cot = await getCOTData()
+    const cot = await within(getCOTData(), 8000, null)   // cold process only; otherwise instant
+    if (!cot) return res.status(503).json({ success: false, error: 'COT data is loading — try again in a moment' })
     res.json({ success: true, data: cot.data, reportDate: cot.reportDate, fetchedAt: new Date().toISOString() })
   } catch (e) {
     console.error('COT error:', e.message)
@@ -7373,9 +7759,31 @@ app.get('/api/cot', requirePro, async (req, res) => {
 // ============================================
 // 📅 EARNINGS
 // ============================================
+// Finnhub earnings calendar. It used to be fetched (no timeout, no cache) on EVERY page load.
+// Now: 30-min cache, served stale while one background refresh runs; only a cold process waits (≤8s).
+const EARNINGS_TTL = 30 * 60 * 1000
+async function refreshEarnings() {
+  const apiKey = process.env.FINNHUB_API_KEY
+  if (!apiKey) throw new Error('FINNHUB_API_KEY not set')
+  const now = new Date(), from = new Date(now), to = new Date(now); from.setDate(now.getDate() - 1); to.setDate(now.getDate() + 14)
+  const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from.toISOString().split('T')[0]}&to=${to.toISOString().split('T')[0]}&token=${apiKey}`, { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(10 * 1000) })
+  if (!r.ok) throw new Error(`Finnhub HTTP ${r.status}`)
+  const d = await r.json()
+  const norm = (d.earningsCalendar || []).map(i => ({ symbol: i.symbol || '—', date: i.date || '', hour: i.hour || 'amc', epsEstimate: i.epsEstimate ?? null, epsActual: i.epsActual ?? null, revenueEstimate: i.revenueEstimate ?? null, revenueActual: i.revenueActual ?? null, quarter: i.quarter || null, year: i.year || null }))
+  norm.sort((a, b) => a.date !== b.date ? new Date(a.date) - new Date(b.date) : a.symbol.localeCompare(b.symbol))
+  const payload = { success: true, earnings: norm, total: norm.length, fetchedAt: new Date().toISOString() }
+  setCache('earnings', payload)
+  return payload
+}
 app.get('/api/earnings', requirePro, async (req, res) => {
-  const apiKey=process.env.FINNHUB_API_KEY;if(!apiKey)return res.status(500).json({error:'No key'})
-  try{const now=new Date(),from=new Date(now),to=new Date(now);from.setDate(now.getDate()-1);to.setDate(now.getDate()+14);const r=await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${from.toISOString().split('T')[0]}&to=${to.toISOString().split('T')[0]}&token=${apiKey}`,{headers:{'Accept':'application/json'}});if(!r.ok)throw new Error('Finnhub error');const d=await r.json();const norm=(d.earningsCalendar||[]).map(i=>({symbol:i.symbol||'—',date:i.date||'',hour:i.hour||'amc',epsEstimate:i.epsEstimate??null,epsActual:i.epsActual??null,revenueEstimate:i.revenueEstimate??null,revenueActual:i.revenueActual??null,quarter:i.quarter||null,year:i.year||null}));norm.sort((a,b)=>a.date!==b.date?new Date(a.date)-new Date(b.date):a.symbol.localeCompare(b.symbol));res.json({success:true,earnings:norm,total:norm.length,fetchedAt:new Date().toISOString()})}catch(e){res.status(502).json({success:false,error:'Earnings failed'})}
+  const cached = getCached('earnings')
+  if (cached) {
+    if (!isCacheFreshFor('earnings', EARNINGS_TTL)) refreshInBackground('earnings', refreshEarnings)
+    return res.json(cached)
+  }
+  const fresh = await within(singleFlight('earnings', refreshEarnings).catch(e => { console.warn(`⚠️ [earnings] ${e?.message}`); return null }), 8000, null)
+  if (fresh) return res.json(fresh)
+  res.status(503).json({ success: false, error: 'Earnings are loading — try again in a moment' })
 })
 
 // ============================================
@@ -8262,6 +8670,21 @@ app.listen(5000, () => {
   } else {
     console.log('🔁 Site rebuild cron off — set VERCEL_DEPLOY_HOOK to enable')
   }
+  // Background news: restore the saved list first, then a 1-min tick that refreshes when due
+  // (5 min while forex is open or in the hour before the Sunday open, 30 min while it is closed).
+  hydrateNews().catch(e => console.warn(`⚠️ [news] restore failed: ${e?.message}`)).finally(() => setTimeout(newsTick, 20 * 1000))
+  setInterval(newsTick, 60 * 1000)
+  console.log('📰 Background news refresh (5min open / 30min closed, 5min in the hour before the Sunday open)')
+  // Hourly health line: memory split (JS heap vs native/external — the social renderer's satori/resvg
+  // buffers live outside the heap) and event-loop delay, plus the per-item cache sweep.
+  const loopDelay = monitorEventLoopDelay({ resolution: 20 })
+  loopDelay.enable()
+  setInterval(() => {
+    const swept = sweepApiCache()
+    const m = process.memoryUsage(), mb = b => Math.round(b / 1048576)
+    console.log(`🩺 [health] rss ${mb(m.rss)}MB · heap ${mb(m.heapUsed)}/${mb(m.heapTotal)}MB · external ${mb(m.external)}MB · arrayBuffers ${mb(m.arrayBuffers)}MB · cache keys ${Object.keys(API_CACHE).length} (swept ${swept}) · loop delay p50 ${Math.round(loopDelay.percentile(50) / 1e6)}ms p99 ${Math.round(loopDelay.percentile(99) / 1e6)}ms max ${Math.round(loopDelay.max / 1e6)}ms`)
+    loopDelay.reset()
+  }, 60 * 60 * 1000)
   if (TG_API) { setInterval(pollTelegram, 3000); console.log('📱 Telegram bot polling (3s)') }
   else console.log('⚠️ No TELEGRAM_BOT_TOKEN — bot disabled')
   // Social publisher. A Railway restart resets the interval, so the first tick comes 60s after boot
@@ -8327,6 +8750,7 @@ app.listen(5000, () => {
     // 10min while price sits the wrong side of the level.
     const V2_INVAL_COOLDOWN = 30 * 60 * 1000
     const v2InvalFiredAt = new Map()   // pair → last trigger ms
+    const v2WatchLastIv = new Map()    // pair → last logged cadence (logs only on change)
     setInterval(async () => {
       try {
         if (!supabase || isForexClosed()) return
@@ -8341,7 +8765,21 @@ app.listen(5000, () => {
           .filter(r => V2_CONFIG.PAIRS.includes(r.pair))
           .filter(r => now - (v2InvalFiredAt.get(r.pair) || 0) > V2_INVAL_COOLDOWN)
         if (!watch.length) return
-        const spot = await v2FetchSpot(watch.map(r => r.pair))
+        // Cadence (see v2WatchInterval): only pairs whose check is due pay for a fresh spot. Every
+        // pair is still tested below; a not-due pair is tested against its cached price, exactly as
+        // a pair whose fetch failed always was. 1 min of slack absorbs timer drift between ticks.
+        const windows = await v2EventWindowCurrencies()
+        const due = []
+        for (const r of watch) {
+          const iv = v2WatchInterval(r, windows)
+          if (v2WatchLastIv.get(r.pair) !== iv.min) {
+            console.log(`🔬 [v2 inval watch] ${r.pair} spot cadence → ${iv.min}min (${iv.why})`)
+            v2WatchLastIv.set(r.pair, iv.min)
+          }
+          if (now - (v2SpotCheckedAt.get(r.pair) || 0) >= iv.min * 60 * 1000 - 60 * 1000) due.push(r)
+        }
+        for (const r of due) v2SpotCheckedAt.set(r.pair, now)
+        const spot = due.length ? await v2FetchSpot(due.map(r => r.pair)) : {}
         const hits = watch.filter(r => v2BreachedAtServeTime(r, '[v2 inval watch]', {
           action: 're-running engine',
           price: spot[r.pair] ?? null,   // absent → helper falls back to the candle cache
