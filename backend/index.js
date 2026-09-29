@@ -9,6 +9,7 @@ import {
 import { withBudget } from './lib/withBudget.js'
 import { createTdBudget } from './lib/tdBudget.js'
 import { createJwtVerifier } from './lib/jwtVerify.js'
+import { deadChatReason } from './lib/tgDead.js'
 import { hasPro, isAdminUser, gateMode, secretMatches, createAccessResolver } from './lib/planAccess.js'
 import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from './lib/gumroadPing.js'
 import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
@@ -324,9 +325,32 @@ async function sendTG(chatId, text, extra = {}) {
       signal: AbortSignal.timeout(TG_TIMEOUT_MS),
     })
     const d = await res.json()
-    if (!d.ok) { console.error(`❌ TG fail ${chatId}:`, d.description); return false }
+    if (!d.ok) {
+      // A subscriber who blocked the bot / deleted their account / is gone: switch the row off once
+      // instead of failing on every alert forever. Only telegram_subscribers rows are touched — the
+      // public channel and any non-subscriber chat just log as before.
+      const dead = deadChatReason(d)
+      if (dead && await deactivateTelegramSubscriber(chatId, dead, d.description)) return false
+      console.error(`❌ TG fail ${chatId}:`, d.description); return false
+    }
     return d.result || true
   } catch (e) { console.error(`❌ TG error ${chatId}:`, e.message); return false }
+}
+
+// Marks a subscriber inactive (row kept; /start upserts it back to active). Every send loop filters
+// telegramSubscribers on `active`, so flipping the in-memory row stops all further sends at once.
+// Returns true when this chat was an active subscriber that has now been switched off (logged once).
+async function deactivateTelegramSubscriber(chatId, reason, description) {
+  const id = String(chatId)
+  const sub = telegramSubscribers.find(s => s.chat_id === id)
+  if (!sub || !sub.active) return false
+  sub.active = false
+  console.warn(`📵 [tg] subscriber ${id} (${sub.username || 'unknown'}) deactivated — ${reason} ("${description}"). Row kept; /start re-activates.`)
+  try {
+    const { error } = await supabase.from('telegram_subscribers').update({ active: false }).eq('chat_id', id)
+    if (error) console.error(`⚠️ [tg] could not persist deactivation of ${id}: ${error.message}`)
+  } catch (e) { console.error(`⚠️ [tg] could not persist deactivation of ${id}: ${e?.message}`) }
+  return true
 }
 
 // Cut Telegram HTML to `max` characters without leaving a broken tag or entity, then close any
@@ -3678,6 +3702,9 @@ const RATE_TTL = 60 * 60 * 1000   // 1h — these are daily series, no need to h
 // holiday or a single missing print doesn't drop a currency out of the cross-section.
 const RATE_HISTORY_KEEP = 8
 let lastGoodRates = null
+// NZD/RBNZ: after a 403 (Cloudflare challenge) retry once a day, not on every hourly refresh.
+const NZD_BLOCK_BACKOFF = 24 * 60 * 60 * 1000
+let nzdBlockedUntil = 0
 async function fetchRateDifferentials() {
   const cached = getCached('rate_diffs_v2')
   if (isCacheFreshFor('rate_diffs_v2', RATE_TTL) && cached) return cached
@@ -3839,7 +3866,16 @@ async function fetchRateDifferentials() {
   //     request, not the agent string. Sending the headers a real browser download carries — Accept,
   //     Accept-Language, Referer from the B2 page, and the Sec-Fetch-* set — is the cheap fix to try
   //     before resorting to a third-party fetch-through, which would put someone else in the data path.
-  try {
+  //   - UPDATE 2026-09-29: that no longer suffices. rbnz.govt.nz now serves a Cloudflare managed
+  //     challenge (`cf-mitigated: challenge`, 403) to every non-browser client — residential IPs and a
+  //     full browser header set included. That is a JavaScript challenge; it is not worked around here.
+  //     No free, unprotected replacement for the NZ 2y exists today (stooq and NZDM are challenged too,
+  //     TwelveData lists no NZ government bonds), so NZD falls back to last-good, then drops out of the
+  //     cross-section once stale → NZDUSD runs macro=REDIST, exactly as before. After a 403 the fetch
+  //     retries once a day instead of hourly; if RBNZ lifts the challenge NZD returns on its own.
+  if (Date.now() < nzdBlockedUntil) {
+    // inside the 24h back-off — no request; the last-good / REDIST path below handles NZD
+  } else try {
     const r = await axios.get('https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/statistics/series/b/b2/hb2-daily-close.xlsx', {
       timeout: 30000, responseType: 'arraybuffer',
       headers: {
@@ -3871,7 +3907,13 @@ async function fetchRateDifferentials() {
     } else {
       console.warn('⚠️ [rates] NZD/RBNZ: series INM.DG102.NZZCF not found — B2 sheet layout may have changed')
     }
-  } catch (e) { console.warn(`⚠️ [rates] NZD/RBNZ failed: ${e?.message}`) }
+  } catch (e) {
+    if (e?.response?.status === 403) {
+      nzdBlockedUntil = Date.now() + NZD_BLOCK_BACKOFF
+      const challenged = /challenge/i.test(String(e?.response?.headers?.['cf-mitigated'] || ''))
+      console.warn(`⚠️ [rates] NZD/RBNZ 403${challenged ? ' (Cloudflare challenge)' : ''} — NZD uses last-good / REDIST; next try in 24h`)
+    } else console.warn(`⚠️ [rates] NZD/RBNZ failed: ${e?.message}`)
+  }
 
   // Per-currency last-good fallback so one flaky source never blanks the whole set.
   const merged = { ...out }
@@ -3880,6 +3922,47 @@ async function fetchRateDifferentials() {
   if (fresh.length) { lastGoodRates = { ...(lastGoodRates || {}), ...Object.fromEntries(fresh.map(c => [c, out[c]])) }; setCache('rate_diffs_v2', merged) }
   console.log(`   [v2 rates] ${fresh.length}/7 fresh → ${Object.entries(merged).map(([c, r]) => `${c}=${r.value}(${r.change >= 0 ? '+' : ''}${r.change})`).join(' ')}`)
   return merged
+}
+
+// ── CHF SHADOW RATE — SNB 10y Confederation spot rate (RSS series R10) ──
+// The SNB stopped publishing daily 2Y Confederation yields after 2025-07-31 (cube rendoblid is frozen
+// and answers ANY later date with that final row). The one daily CHF government yield it still
+// publishes is the 10y spot rate, in its official interest-rate RSS (last ~5 sessions). It feeds ONLY
+// the CHF shadow (biasEngineV2/chfShadow.js) — never `rates`, which reaches the scoring prompt.
+// Every print is banked in app_state so the series grows past the RSS window and survives restarts.
+const CHF_R10_KEY = 'chf_r10_history_v2'
+const CHF_R10_KEEP = 40
+async function fetchChfShadowRate() {
+  if (isCacheFreshFor('chf_r10', RATE_TTL)) return getCached('chf_r10')
+  const banked = (await v2LoadSnapshot(CHF_R10_KEY)) || {}   // { 'YYYY-MM-DD': value }
+  let fresh = 0
+  try {
+    const r = await axios.get('https://www.snb.ch/public/rss/en/interestRates', {
+      timeout: 15000, responseType: 'text', headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+    })
+    for (const m of String(r.data).matchAll(/<title>\s*CH:\s*(-?\d+(?:\.\d+)?)\s+R10\s+(\d{4}-\d{2}-\d{2})\b/g)) {
+      const v = parseFloat(m[1]), d = m[2]
+      if (Number.isFinite(v) && banked[d] !== v) { banked[d] = v; fresh++ }
+    }
+  } catch (e) { console.warn(`⚠️ [chf-shadow] SNB R10 fetch failed: ${e?.message} — using banked history`) }
+  const dates = Object.keys(banked).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse().slice(0, CHF_R10_KEEP)
+  const trimmed = Object.fromEntries(dates.map(d => [d, banked[d]]))
+  if (fresh) v2SaveSnapshot(CHF_R10_KEY, trimmed)
+  if (dates.length < 2) return null
+  const history = dates.slice(0, RATE_HISTORY_KEEP).map(d => ({ d, v: trimmed[d] }))
+  const out = { value: history[0].v, change: +(history[0].v - history[1].v).toFixed(3), date: history[0].d, history }
+  setCache('chf_r10', out)
+  return out
+}
+// Shadow results banked per engine run (ring buffer) for the 2-week comparison.
+const CHF_SHADOW_KEY = 'chf_shadow_v2'
+const CHF_SHADOW_MAX = 400   // ~33 days at the 2h cadence, plus event-triggered runs
+async function bankChfShadow(entry, trigger) {
+  if (!entry) return
+  const cur = (await v2LoadSnapshot(CHF_SHADOW_KEY)) || []
+  const list = Array.isArray(cur) ? cur : []
+  list.push({ ...entry, trigger })
+  v2SaveSnapshot(CHF_SHADOW_KEY, list.slice(-CHF_SHADOW_MAX))
 }
 async function fetchUSActuals() {
   if (isCacheFreshFor('us_actuals_fred', 12 * 60 * 60 * 1000)) return getCached('us_actuals_fred')
@@ -8259,6 +8342,10 @@ function buildV2Feeds() {
     async getRates() {
       try { return await fetchRateDifferentials() } catch (e) { console.warn(`⚠️ [v2 rates] failed: ${e?.message}`); return {} }
     },
+    // CHF shadow only (SNB 10y) — observation, never part of getRates().
+    async getChfShadowRate() {
+      try { return await fetchChfShadowRate() } catch (e) { console.warn(`⚠️ [chf-shadow] ${e?.message}`); return null }
+    },
     async getYields() {
       // LEVELS: TwelveData US2Y/US10Y (market-sourced, same-day), each leg falling back to FRED
       // DGS2/DGS10 independently inside fetchYields().
@@ -8410,6 +8497,8 @@ async function runV2Shadow(trigger) {
   const feeds = buildV2Feeds()
   const onUsage = (label, model, usage) => { try { trackAI(label, model, usage) } catch (e) {} }
   const out = await runEngineV2({ supabase, feeds, onUsage })
+  // CHF shadow: bank this run's would-be result (observation only — see biasEngineV2/chfShadow.js).
+  bankChfShadow(out.chf_shadow, trigger).catch(e => console.warn(`⚠️ [chf-shadow] bank failed: ${e?.message}`))
   const ts = new Date().toISOString()
   const isChange = a => a === 'OPEN' || a === 'FLIP' || a === 'CLOSE'
   const changes = out.results.filter(r => isChange(r.action))
@@ -8675,6 +8764,9 @@ async function triggerSiteRebuild(reason) {
 
 app.listen(5000, () => {
   console.log('✅ Backend running on port 5000')
+  // Which Railway region this replica runs in (Railway sets RAILWAY_REPLICA_REGION at runtime). The
+  // database is in Seoul (AWS ap-northeast-2), so this line says how far every DB call travels.
+  console.log(`🌍 Railway region: ${process.env.RAILWAY_REPLICA_REGION || 'unknown (RAILWAY_REPLICA_REGION not set)'} · Supabase: ap-northeast-2 (Seoul)`)
   loadSubscribers()
   loadTelegramSubscribers()
   loadTodayBiasState()
