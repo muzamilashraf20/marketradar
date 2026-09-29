@@ -115,6 +115,22 @@ const acc = createAccessResolver({ supabase: sb, env: { ADMIN_USER_IDS: ID }, no
   const b = await down.resolve(req('ta'))
   check('plan table error → admin still pro', b.pro === true && b.unavailable === false)
 }
+{
+  // Local JWT check: verifyToken is used instead of getUser; strict always asks Supabase.
+  const sb = fakeSupabase({ users, rows })
+  let local = 0
+  const loc = createAccessResolver({ supabase: sb, env: {}, now: () => clock, verifyToken: async (t) => { local++; return t === 'jwt-ok' ? { id: 'u-pro' } : null } })
+  const a = await loc.resolve(req('jwt-ok'))
+  check('verifyToken path: user from local check, no getUser', a.user?.id === 'u-pro' && a.pro === true && local === 1 && sb.calls.getUser === 0)
+  const bad = await loc.resolve(req('jwt-bad'))
+  check('verifyToken rejects → anonymous, no getUser', bad.user === null && sb.calls.getUser === 0)
+  const s = await loc.resolve(req('tp'), { strict: true })
+  check('strict → full getUser even with verifyToken', s.user?.id === 'u-pro' && sb.calls.getUser === 1)
+  await loc.resolve(req('tp'), { strict: true })
+  check('strict is never served from the token cache', sb.calls.getUser === 2)
+  const r = await Promise.all([1, 2, 3].map(() => loc.resolve(req('jwt-par'))))
+  check('parallel local checks for one token share one verify', local === 3 && r.every(x => x.user === null))
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

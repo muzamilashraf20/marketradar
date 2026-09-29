@@ -1,8 +1,6 @@
-import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCleanMode } from '../../hooks/useCleanMode'
-import { authedFetch } from '../../lib/authFetch'
 import {
   LayoutDashboard, TrendingUp, Newspaper, Calendar,
   ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
@@ -27,23 +25,14 @@ const NAV_ITEMS = [
 // Appended only for the admin. whoami never 401s, so an ordinary user just gets admin:false here
 // and the item is never rendered for them.
 const ADMIN_ITEM = { label: 'Content Studio', icon: Megaphone, path: '/studio', pro: false }
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
 export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, isPro, isActualPro, trialExpired, planLoaded, logout } = useAuth()
+  // isAdmin comes from AuthContext, which asks /api/admin/whoami once per signed-in user — the
+  // sidebar re-mounts on every page, and used to ask on every one.
+  const { user, isPro, isActualPro, trialExpired, planLoaded, logout, isAdmin } = useAuth()
   const cleanMode = useCleanMode()
-  const [isAdmin, setIsAdmin] = useState(false)
-
-  useEffect(() => {
-    let alive = true
-    authedFetch(`${API_BASE}/api/admin/whoami`)
-      .then(r => r.json())
-      .then(d => { if (alive && d?.admin) setIsAdmin(true) })
-      .catch(() => {})
-    return () => { alive = false }
-  }, [user?.id])
 
   const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS
 

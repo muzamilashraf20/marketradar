@@ -227,13 +227,14 @@ export default function MacroCompass() {
   // The compass endpoint answers signed-out callers too, with the levels stripped
   // — that is what the landing page renders. In here we want the full rows, so
   // the session goes with the request.
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [openPair, setOpenPair] = useState(null)
 
   const load = async () => {
+    if (authLoading) return   // the session hasn't landed yet — the poll restarts when it does
     setLoading(true); setError('')
     try {
       // Without a token this returns the public shape — no invalidation levels,
@@ -249,12 +250,10 @@ export default function MacroCompass() {
     }
   }
 
-  // Keyed on the token: AuthContext resolves the session after first paint, so a
-  // mount-only effect could fire the one request that matters before there is
-  // anything to authenticate it with, and the panel would sit on the public
-  // shape — no levels — until something else forced a reload.
+  // Waits for AuthContext, then keyed on the user (not the token, which refreshes hourly): fetching
+  // before the session lands returned the public shape — no levels — and then fetched again.
   // engine writes at most every 2h; 5min keeps it fresh cheaply. Hidden tabs don't poll.
-  usePolling(load, 5 * 60 * 1000, [user?.token])
+  usePolling(load, 5 * 60 * 1000, [authLoading, user?.id])
 
   const active = (data?.pairs || []).filter(p => p.direction !== 'FLAT')
   const flat = (data?.pairs || []).filter(p => p.direction === 'FLAT')

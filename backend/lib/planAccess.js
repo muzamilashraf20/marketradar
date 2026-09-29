@@ -51,7 +51,11 @@ const bearer = req => {
 // gated requests at once, so the token → user and user → plan lookups are cached briefly.
 // /api/user/plan calls remember() with the row it just read, so a fresh purchase is seen as soon as
 // the app refetches its plan rather than after the cache runs out.
-export function createAccessResolver({ supabase, ttlMs = 60_000, env = process.env, now = () => Date.now() }) {
+//
+// verifyToken (optional): async (token) => user | null — the LOCAL JWT check (lib/jwtVerify.js).
+// When given it is the default path; resolve(req, { strict: true }) always asks Supabase instead
+// (uncached getUser) — for account changes that must honour a session revoked a minute ago.
+export function createAccessResolver({ supabase, verifyToken = null, ttlMs = 60_000, env = process.env, now = () => Date.now() }) {
   const users = new Map()   // sha256(token) → { user, at }
   const rows = new Map()    // user id → { row, at }
   const fresh = e => e && now() - e.at < ttlMs
@@ -66,16 +70,20 @@ export function createAccessResolver({ supabase, ttlMs = 60_000, env = process.e
     return p
   }
 
-  async function userFor(token) {
+  async function fullUser(token) {
+    try {
+      const { data, error } = await supabase.auth.getUser(token)
+      return error ? null : (data?.user || null)
+    } catch { return null }
+  }
+
+  async function userFor(token, strict = false) {
     const key = createHash('sha256').update(token).digest('hex')
+    if (strict) return shared(`s:${key}`, () => fullUser(token))
     const hit = users.get(key)
     if (fresh(hit)) return hit.user
     return shared(`u:${key}`, async () => {
-      let user = null
-      try {
-        const { data, error } = await supabase.auth.getUser(token)
-        if (!error) user = data?.user || null
-      } catch { user = null }
+      const user = verifyToken ? await verifyToken(token) : await fullUser(token)
       if (user) { cap(users); users.set(key, { user, at: now() }) }
       return user
     })
@@ -93,9 +101,9 @@ export function createAccessResolver({ supabase, ttlMs = 60_000, env = process.e
   }
 
   return {
-    async resolve(req) {
+    async resolve(req, { strict = false } = {}) {
       const token = bearer(req)
-      const user = token ? await userFor(token) : null
+      const user = token ? await userFor(token, strict) : null
       if (!user) return { user: null, row: null, pro: false, admin: false, unavailable: false }
       const admin = isAdminUser(user, env)
       let got

@@ -8,6 +8,7 @@ import {
 } from './lib/releaseValue.js'
 import { withBudget } from './lib/withBudget.js'
 import { createTdBudget } from './lib/tdBudget.js'
+import { createJwtVerifier } from './lib/jwtVerify.js'
 import { hasPro, isAdminUser, gateMode, secretMatches, createAccessResolver } from './lib/planAccess.js'
 import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from './lib/gumroadPing.js'
 import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
@@ -30,8 +31,28 @@ const rssParser = new Parser()
 
 app.use(cors({
 origin: ['http://localhost:5173', 'http://localhost:5174', 'https://www.biasforge.co', 'https://biasforge.co', 'https://marketradar-taupe.vercel.app'],
-  credentials: true
+  credentials: true,
+  // Every request carrying a session token is preceded by a CORS preflight. Without a max-age the
+  // browser remembers the answer for only 5s, so each authenticated call paid an extra round trip
+  // (~420ms from Pakistan). 7200s is Chrome's ceiling.
+  maxAge: 7200,
 }))
+// Server-side handler time on every response (DevTools → Network → Timing shows it as "app"), so
+// server work can be told apart from network. Handlers slower than 300ms are also logged.
+app.use((req, res, next) => {
+  const t0 = process.hrtime.bigint()
+  const writeHead = res.writeHead
+  res.writeHead = function (...args) {
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6
+    try {
+      res.setHeader('Server-Timing', `app;dur=${ms.toFixed(1)}`)
+      res.setHeader('Timing-Allow-Origin', 'https://www.biasforge.co')
+    } catch { /* headers already sent */ }
+    if (ms > 300 && req.method !== 'OPTIONS') console.log(`🐢 [slow] ${req.method} ${req.path} ${Math.round(ms)}ms → ${args[0]}`)
+    return writeHead.apply(this, args)
+  }
+  next()
+})
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
@@ -42,6 +63,15 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const makeAuthClient = () => createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
 })
+// Local access-token verification (lib/jwtVerify.js): signature against the project JWKS + exp, iss,
+// aud and role. Anything it cannot decide falls back to the full getUser() below — never accepted
+// unverified. Full getUser() stays on billing, admin and email-alert changes (requireUser / strict).
+async function fullGetUser(token) {
+  const { data, error } = await supabase.auth.getUser(token)
+  return error ? null : (data?.user || null)
+}
+const jwtVerifier = createJwtVerifier({ supabaseUrl: process.env.SUPABASE_URL, getUser: fullGetUser })
+const verifyUserToken = (token) => jwtVerifier.verify(token)
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'
@@ -1053,8 +1083,10 @@ app.post('/api/admin/social/test-draft', socialGenerateHandler)   // original pa
 // gets admin:false rather than an error to handle.
 app.get('/api/admin/whoami', async (req, res) => {
   try {
-    const user = await optionalUser(req)
-    const admin = isAdmin(user)
+    // LOCAL check for everyone (this runs on every app load). A caller the local check says is the
+    // admin is re-confirmed with the FULL check before any admin-only field goes out.
+    const local = await optionalUser(req)
+    const admin = isAdmin(local) && isAdmin(await fullGetUser(req.headers.authorization.replace('Bearer ', '').trim()).catch(() => null))
     const base = {
       admin,
       autopilot: socialAutopilotOn() ? 'on' : 'off',
@@ -2667,6 +2699,8 @@ function esc(s) {
 
 // Resolve the caller's Supabase session. Replies 401 and returns null when the
 // caller isn't signed in, so routes can `if (!user) return` and move on.
+// FULL check (supabase.auth.getUser, a round trip): used by billing, every admin route and admin
+// action, and trade writes — places that must honour a session revoked a minute ago.
 async function requireUser(req, res) {
   const authHeader = req.headers.authorization
   if (!authHeader) { res.status(401).json({ error: 'Not authenticated' }); return null }
@@ -2683,13 +2717,17 @@ async function requireUser(req, res) {
 // Resolve the caller's session WITHOUT rejecting anonymous callers. Routes that
 // serve both the public site and the signed-in app use this to decide which
 // payload to send, rather than whether to answer at all.
+// LOCAL check (verifyUserToken). Read-only callers only.
 async function optionalUser(req) {
   const authHeader = req.headers.authorization
   if (!authHeader || !supabase) return null
-  try {
-    const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
-    return user || null
-  } catch { return null }
+  return verifyUserToken(authHeader.replace('Bearer ', '').trim())
+}
+// Reads that must be signed in, LOCAL check. Replies 401 and returns null otherwise.
+async function requireUserLocal(req, res) {
+  const user = await optionalUser(req)
+  if (!user) { res.status(401).json({ error: req.headers.authorization ? 'Invalid token' : 'Not authenticated' }); return null }
+  return user
 }
 
 // ── Access gates ─────────────────────────────────────────────────────────────
@@ -2699,7 +2737,8 @@ async function optionalUser(req) {
 // PRO_GATE (Railway env) is the rollout switch: unset or "log" serves every request exactly as before
 // and logs who WOULD be refused; "enforce" refuses them. It lets the frontend start sending tokens
 // before anything depends on them, and it is rolled back by changing one variable.
-const access = createAccessResolver({ supabase })
+// Pro gate + public-shape trim use the LOCAL check; callerEmail (email-alert changes) passes strict.
+const access = createAccessResolver({ supabase, verifyToken: verifyUserToken })
 const uidTag = user => (user?.id ? ` uid=${String(user.id).slice(0, 8)}` : '')
 
 async function requirePro(req, res, next) {
@@ -2739,7 +2778,7 @@ async function trimUnlessPro(req, res, trim) {
 // request. Until PRO_GATE=enforce a caller with no session falls back to the address it sent (the old
 // behaviour) and is logged; enforce refuses it. Replies itself and returns null when it refuses.
 async function callerEmail(req, res, sent) {
-  const a = await access.resolve(req)
+  const a = await access.resolve(req, { strict: true })   // email-alert changes: FULL check
   if (a.user?.email) return a.user.email.toLowerCase().trim()
   if (gateMode() === 'enforce') {
     res.status(401).json({ success: false, code: 'login_required', error: 'Sign in to manage email alerts.' })
@@ -5922,13 +5961,10 @@ app.post('/api/crypto/webhook', async (req, res) => {
 // 📓 TRADE JOURNAL
 // ============================================
 app.get('/api/trades', async (req, res) => {
-  const authHeader = req.headers.authorization
-  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
-  
+  // Read → LOCAL token check. The write routes below keep the full getUser().
   try {
-    const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
-    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+    const user = await requireUserLocal(req, res)
+    if (!user) return
 
     const { data, error } = await supabase
       .from('trades')
@@ -6056,21 +6092,25 @@ app.delete('/api/trades/:id', requirePro, async (req, res) => {
 // ============================================
 // 👤 USER PLAN
 // ============================================
+// Full plan rows served by /api/user/plan, cached 60s per user. ONLY a Pro row is served from the
+// cache: anything else is re-read every time, so a purchase unlocks the moment the app refetches.
+const planRowCache = new Map()   // user id → { row, at }
+const PLAN_ROW_TTL = 60 * 1000
+
 app.get('/api/user/plan', async (req, res) => {
-  const authHeader = req.headers.authorization
-  if (!authHeader) return res.status(401).json({ error: 'Not authenticated' })
-
   try {
-    const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
-    if (authError || !user) return res.status(401).json({ error: 'Invalid token' })
+    // LOCAL token check — this runs on every app load.
+    const user = await requireUserLocal(req, res)
+    if (!user) return
 
+    const hit = planRowCache.get(user.id)
+    let plan = hit && Date.now() - hit.at < PLAN_ROW_TTL && hasPro(hit.row) ? hit.row : null
     // Check if plan exists
-    let { data: plan } = await supabase
+    if (!plan) ({ data: plan } = await supabase
       .from('user_plans')
       .select('*')
       .eq('user_id', user.id)
-      .single()
+      .single())
 
     // No row under this user id — but someone who paid before signing up (or whose account the
     // webhook could not find) has a row under their email with user_id NULL. Claim that row rather
@@ -6116,6 +6156,7 @@ app.get('/api/user/plan', async (req, res) => {
     // Refresh the gate's cache with the row just read, so a new purchase unlocks the Pro routes as
     // soon as the app refetches its plan.
     access.remember(user.id, plan)
+    if (plan) { if (planRowCache.size > 5000) planRowCache.clear(); planRowCache.set(user.id, { row: plan, at: hit?.row === plan ? hit.at : Date.now() }) }
 
     res.json({
       success: true,

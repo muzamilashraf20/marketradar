@@ -1,9 +1,20 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { ACCESS_DENIED_EVENT } from '../lib/authFetch'
+import { ACCESS_DENIED_EVENT, authedFetch } from '../lib/authFetch'
 
 const AuthContext = createContext(null)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+
+// One /api/user/plan request at a time, and not again within 30s for the same user unless forced
+// (login, a Pro route refusing us). A dashboard load used to fire it 2–3 times: once from initAuth,
+// and again each time Supabase re-announced SIGNED_IN (it does so whenever the tab becomes visible).
+const PLAN_REFETCH_GAP = 30 * 1000
+function dedupePlanFetch(state, uid, force, run) {
+  if (state.p) return state.p
+  if (!force && uid && state.uid === uid && Date.now() - state.at < PLAN_REFETCH_GAP) return Promise.resolve()
+  state.p = run().finally(() => { state.p = null; state.at = Date.now(); state.uid = uid })
+  return state.p
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -15,9 +26,31 @@ export function AuthProvider({ children }) {
     return !!localStorage.getItem('bf_plan')
   })
 
+  const userIdRef = useRef(null)
+  const planReq = useRef({ p: null, at: 0, uid: null })
+  const fetchPlan = (userId, { force = false } = {}) =>
+    dedupePlanFetch(planReq.current, userId || userIdRef.current, force, () => fetchPlanNow(userId))
+
+  // Admin flag (sidebar's Content Studio link): asked once per signed-in user, not on every page mount.
+  // Stored with the id it belongs to, so a sign-out or a different user reads false without a reset.
+  const [adminFor, setAdminFor] = useState({ id: null, admin: false })
+  const isAdmin = !!user?.id && adminFor.id === user.id && adminFor.admin
+  useEffect(() => {
+    const id = user?.id
+    if (!id) return
+    let alive = true
+    authedFetch(`${API_URL}/api/admin/whoami`, { token: user?.token })
+      .then(r => r.json())
+      .then(d => { if (alive) setAdminFor({ id, admin: !!d?.admin }) })
+      .catch(() => {})
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id])
+  useEffect(() => { userIdRef.current = user?.id || null }, [user?.id])
+
   // The server decides access: /api/user/plan returns plan.pro, the same rule every Pro route
   // enforces. The cached plan is painted only until the server answers, never trusted on its own.
-  const fetchPlan = async (userId) => {
+  const fetchPlanNow = async (userId) => {
     let cached = null
     try { cached = JSON.parse(localStorage.getItem('bf_plan') || 'null') } catch { cached = null }
     try {
@@ -47,7 +80,7 @@ export function AuthProvider({ children }) {
       //    (RLS lets a signed-in user read their own row). Not cached, so the server's
       //    answer replaces it next time.
       if (cached) return
-      const uid = userId || user?.id
+      const uid = userId || userIdRef.current
       if (uid) {
         const { data } = await supabase
           .from('user_plans')
@@ -103,6 +136,7 @@ export function AuthProvider({ children }) {
 
         if (session) {
           const payload = buildUserFromSession(session)
+          userIdRef.current = session.user.id
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
           fetchPlan(session.user.id)
@@ -111,6 +145,7 @@ export function AuthProvider({ children }) {
           if (stored) {
             try {
               const parsed = JSON.parse(stored)
+              userIdRef.current = parsed.id || null
               setUser(parsed)
               fetchPlan(parsed.id)
             } catch {
@@ -129,11 +164,17 @@ export function AuthProvider({ children }) {
           const payload = buildUserFromSession(session)
           setUser(payload)
           localStorage.setItem('bf_user', JSON.stringify(payload))
-          localStorage.removeItem('bf_plan')
-          fetchPlan(session.user.id)
+          // Supabase re-announces SIGNED_IN for the SAME session whenever the tab becomes visible.
+          // Only a different user is a new sign-in: drop the old plan and ask the server.
+          if (session.user.id !== userIdRef.current) {
+            userIdRef.current = session.user.id
+            localStorage.removeItem('bf_plan')
+            fetchPlan(session.user.id, { force: true })
+          }
         }
 
         if (event === 'SIGNED_OUT') {
+          userIdRef.current = null
           setUser(null)
           setPlan(null)
           setPlanLoaded(false)
@@ -188,7 +229,7 @@ export function AuthProvider({ children }) {
         const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: {} }))
         if (!session) { await logout(); return }
       }
-      fetchPlan()
+      fetchPlan(undefined, { force: true })
     }
     window.addEventListener(ACCESS_DENIED_EVENT, onDenied)
     return () => window.removeEventListener(ACCESS_DENIED_EVENT, onDenied)
@@ -198,8 +239,9 @@ export function AuthProvider({ children }) {
     const payload = { ...userData, token: session?.access_token, createdAt: session?.user?.created_at || new Date().toISOString() }
     localStorage.setItem('bf_user', JSON.stringify(payload))
     localStorage.removeItem('bf_plan')
+    userIdRef.current = payload.id || null
     setUser(payload)
-    fetchPlan(payload.id)
+    fetchPlan(payload.id, { force: true })
     // Hand the session to the supabase client so it auto-refreshes the JWT
     // (same as the OAuth flow — without this, email users' tokens expire after ~1h → "Invalid token")
     if (session?.access_token && session?.refresh_token) {
@@ -241,7 +283,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded,
+      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded, isAdmin,
       login, loginWithGoogle, logout, loading, fetchPlan
     }}>
       {children}
