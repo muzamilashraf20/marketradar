@@ -2850,15 +2850,24 @@ async function findAuthUserByEmail(email) {
 // public: a level nobody can trade any more is evidence, not inventory. It is
 // what makes the locked panel on the landing page credible.
 const PUBLIC_THESIS_CHARS = 190
+// A price written into the prose (156.720, 1.08450, 2,650.30): 2–5 decimals, not followed by % or
+// bp, so rates and moves ("4.25%", "0.25bp") stay. Redacted after shortening — the one sentence
+// that is kept can still quote the level.
+const PRICE_LIKE = /(?<![\d.])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2,5}(?!\.?\d)(?!\s*(?:%|bps?\b))/g
 function publicThesis(t) {
   if (!t) return t
   const clean = String(t).trim()
-  if (clean.length <= PUBLIC_THESIS_CHARS) return clean
-  const cut = clean.slice(0, PUBLIC_THESIS_CHARS)
-  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
-  if (stop > PUBLIC_THESIS_CHARS * 0.5) return cut.slice(0, stop + 1)
-  const space = cut.lastIndexOf(' ')
-  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+  let short = clean
+  if (clean.length > PUBLIC_THESIS_CHARS) {
+    const cut = clean.slice(0, PUBLIC_THESIS_CHARS)
+    const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+    if (stop > PUBLIC_THESIS_CHARS * 0.5) short = cut.slice(0, stop + 1)
+    else {
+      const space = cut.lastIndexOf(' ')
+      short = (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+    }
+  }
+  return short.replace(PRICE_LIKE, 'key level')
 }
 
 // A live bias row, minus the level and minus the full read. hasInvalidation is
@@ -2875,15 +2884,23 @@ function publicPair(p) {
 
 // The Today's Bias payload. whatWouldFlipIt is the invalidation stated in prose,
 // and runnerUps names the engine's other picks — both are the paid view.
+// The headline also nests the bias itself (getV2HeadlineBias's `bias`), level
+// included — trim that copy too, or the level rides through untouched.
 function publicTodayBias(body) {
   if (!body || typeof body !== 'object') return body
   const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, ...rest } = body
-  return {
+  const out = {
     ...rest,
     reasoning: publicThesis(rest.reasoning),
     hasInvalidation: whatWouldFlipIt != null,
     publicView: true,
   }
+  if (rest.bias && typeof rest.bias === 'object') {
+    const { invalidation, levels, invalidationReasoning, ...b } = rest.bias
+    out.bias = { ...b, reasoning: publicThesis(b.reasoning), hasInvalidation: invalidation != null }
+    out.hasInvalidation = out.hasInvalidation || invalidation != null
+  }
+  return out
 }
 
 // Swap res.json for a trimming version when the caller is anonymous, so every
