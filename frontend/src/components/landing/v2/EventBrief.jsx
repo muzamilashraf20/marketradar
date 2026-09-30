@@ -1,4 +1,4 @@
-import { Search } from 'lucide-react'
+import { Search, ArrowLeft, ArrowRight, ArrowUp, ArrowDown } from 'lucide-react'
 import { DEMO_BRIEF as B } from './demoData'
 import DemoTag from './DemoTag'
 import { useMotion } from './useMotion'
@@ -6,15 +6,18 @@ import { useMotion } from './useMotion'
 /* The event brief, rendered — with the evidence balance that makes "no call"
    visible rather than asserted.
 
-   EVIDENCE BALANCE. A horizontal meter from SELL to BUY with a shaded no-call
-   zone in the middle. Macro pushes one way, flow and sentiment the other; the
-   needle is where they net out. Statically (no JavaScript, reduced motion, or
-   before the brief is scrolled to) the needle rests inside the zone — the
-   engine's actual answer. With motion, on arrival, the needle is pushed toward
-   BUY by macro, pulled back toward SELL by flow and sentiment, swings with
-   shrinking amplitude and settles inside the zone; only then does "No
-   directional call" resolve in, and the beat/miss chips slide in from opposite
-   sides. Timing lives in landing.css (bf-bal-* / bf-resolve / bf-chip-*).
+   EVIDENCE BALANCE. Three component vectors — macro, flow, sentiment — each
+   drawn from a centre line toward BUY or SELL, then a horizontal meter from
+   SELL to BUY with a shaded no-call zone in the middle; the needle is where the
+   three net out. Statically (no JavaScript, reduced motion, or before the brief
+   is scrolled to) every vector is at full length and the needle rests inside
+   the zone — the engine's actual answer. With motion, on arrival, macro's
+   vector grows and pushes the needle toward BUY, flow's and sentiment's grow in
+   turn and pull it back toward SELL, it swings with shrinking amplitude and
+   settles inside the zone; only then does "No directional call" resolve in,
+   and the beat/miss chips slide in from opposite sides, their arrows nudging
+   once. Timing lives in landing.css (bf-vec-* / bf-bal-* / bf-resolve /
+   bf-chip-* / bf-arrow-*).
 
    Everything here is demo data and labelled as such. */
 export default function EventBrief() {
@@ -55,15 +58,34 @@ export default function EventBrief() {
             <p className="text-[10px] font-semibold uppercase tracking-wider bf-t3 bf-mono">{B.currency}</p>
           </div>
 
-          <div className="mt-3 flex items-center justify-between gap-3 text-[11px]">
-            <span className="bf-bal-force-sell font-medium text-bf-bear-soft">&larr; Flow · Sentiment</span>
-            <span className="bf-bal-force-buy font-medium text-bf-bull-soft">Macro &rarr;</span>
-          </div>
+          {/* The three components, each its own vector from the centre line:
+              right for buy, left for sell, length for relative weight. */}
+          <ul className="mt-3 space-y-1.5" aria-label="Component vectors">
+            {B.vectors.map((v, i) => {
+              const buy = v.leans === 'BUY'
+              return (
+                <li key={v.label} className="grid grid-cols-[4.75rem_1fr_3.25rem] items-center gap-2 text-[11px]">
+                  <span className="font-medium text-slate-300">{v.label}</span>
+                  <span className="relative h-2" aria-hidden="true">
+                    <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/[0.08]" />
+                    <span className="absolute left-1/2 top-0 bottom-0 w-px -ml-px bg-white/20" />
+                    <span
+                      className={`bf-vec absolute top-0 bottom-0 rounded-full ${buy ? 'bf-vec-buy left-1/2 bg-bf-bull/70' : 'bf-vec-sell right-1/2 bg-bf-bear/70'}`}
+                      style={{ width: `${v.weight / 2}%`, '--i': i }}
+                    />
+                  </span>
+                  <span className={`inline-flex items-center gap-1 font-semibold uppercase tracking-wider text-[10px] ${buy ? 'justify-end text-bf-bull-soft' : 'justify-start text-bf-bear-soft'}`}>
+                    {buy ? <>Buy <ArrowRight size={11} strokeWidth={2.5} aria-hidden="true" /></> : <><ArrowLeft size={11} strokeWidth={2.5} aria-hidden="true" /> Sell</>}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
 
           <div
-            className="relative mt-2 h-9"
+            className="relative mt-3 h-9"
             role="img"
-            aria-label="Evidence balance: macro pushes toward buy, flow and sentiment toward sell; the net sits inside the no-call zone"
+            aria-label="Evidence balance: macro pushes toward buy, flow and sentiment each pull toward sell; the net sits inside the no-call zone"
           >
             {/* Track */}
             <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/[0.08]" />
@@ -118,9 +140,11 @@ export default function EventBrief() {
           {/* One lead each way — the split, shown rather than described. */}
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <span className="bf-chip-beat inline-flex items-center gap-1.5 rounded-chip border border-bf-bull/25 bg-bf-bull/10 px-2 py-1 text-[11px] font-semibold text-bf-bull-soft">
+              <ArrowUp size={12} strokeWidth={2.5} className="bf-arrow-beat shrink-0" aria-hidden="true" />
               Beat · {B.leadBeat}
             </span>
             <span className="bf-chip-miss inline-flex items-center gap-1.5 rounded-chip border border-bf-bear/25 bg-bf-bear/10 px-2 py-1 text-[11px] font-semibold text-bf-bear-soft">
+              <ArrowDown size={12} strokeWidth={2.5} className="bf-arrow-miss shrink-0" aria-hidden="true" />
               Miss · {B.leadMiss}
             </span>
           </div>

@@ -61,13 +61,22 @@ export default function Features() {
       <Lede>Six areas, in the order you use them.</Lede>
 
       {/* Motion: cards land in turn, each icon draws its strokes in, and a card
-          lifts with a faint cyan glow on hover (landing.css, bf-feat / bf-draw). */}
+          lifts with a faint cyan glow on hover (landing.css, bf-feat / bf-draw).
+          Then a thin line lights along the top edge of each card in reading
+          order — Today → Bias → Events → Markets → Account → Journal — one
+          segment finishing as the next starts, so the order is seen rather than
+          stated. One segment per card, so it follows the 1-, 2- and 3-column
+          grids without measuring anything. Static: every segment lit. */}
       <ul ref={motion} className="mt-8 sm:mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {AREAS.map((a, i) => (
           <Card as="li" key={a.name} tone="subtle" padding="md" className="bf-feat relative" style={{ '--i': i }}>
+            <span className="bf-feat-line absolute left-4 right-4 top-0 h-px bg-bf-accent/70" aria-hidden="true" />
             <h3 className="flex items-center gap-2 text-sm font-semibold text-bf-text">
               <a.icon size={16} className="bf-draw text-bf-accent shrink-0" aria-hidden="true" strokeWidth={1.75} />
               {a.name}
+              <span className="bf-feat-step ml-auto bf-mono text-3xs font-semibold tabular-nums text-bf-muted" aria-hidden="true">
+                {String(i + 1).padStart(2, '0')}
+              </span>
             </h3>
             <dl className="mt-3 space-y-2.5">
               {a.items.map(([name, line]) => (

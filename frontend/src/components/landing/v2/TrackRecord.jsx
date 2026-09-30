@@ -4,7 +4,7 @@ import DirectionBadge from '../../ui/DirectionBadge'
 import StatusBadge from '../../ui/StatusBadge'
 import LevelRow from '../../ui/LevelRow'
 import EmptyState from '../../ui/EmptyState'
-import { statusFromOutcome } from '../../ui/styles'
+import { statusFromOutcome, statusStyle, FOCUS_RING } from '../../ui/styles'
 import { fmtPair } from '../../ui/format'
 import { useBiasCalls, fmtDate } from './useBiasCalls'
 import { useMotion } from './useMotion'
@@ -28,20 +28,43 @@ import { useMotion } from './useMotion'
    or "held" state, because the engine never records one. */
 const SHOWN = 6
 
+/* Each card is focusable. Hovering it, or focusing it (Tab, or a tap on touch),
+   slides its close reason up over the foot of the card — an overlay, so nothing
+   around it moves. The reason is the same sentence the status legend uses, and
+   it is also the card's accessible description, so a screen reader hears it on
+   focus. The data on the card is untouched. */
 function Call({ c, i }) {
+  const status = statusFromOutcome(c.outcome)
+  const s = statusStyle(status)
+  const reasonId = `bf-rec-reason-${i}`
   return (
-    <Card as="li" tone="subtle" padding="md" className="bf-rec-card flex flex-col gap-3 min-w-0" style={{ '--i': i }}>
+    <Card
+      as="li"
+      tone="subtle"
+      padding="md"
+      tabIndex={0}
+      aria-label={`${c.direction} ${fmtPair(c.pair)}, ${s.label}, closed ${fmtDate(c.closedAt)}`}
+      aria-describedby={reasonId}
+      className={`bf-rec-card group relative flex flex-col gap-3 min-w-0 overflow-hidden outline-none ${FOCUS_RING}`}
+      style={{ '--i': i }}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <DirectionBadge direction={c.direction} size="sm" />
           <span className="text-sm font-semibold text-bf-text tabular-nums">{fmtPair(c.pair)}</span>
         </span>
         {/* One-time "stamp" as the card lands (landing.css, bf-stamp). */}
-        <span className="bf-stamp inline-flex shrink-0"><StatusBadge status={statusFromOutcome(c.outcome)} size="sm" describe /></span>
+        <span className="bf-stamp inline-flex shrink-0"><StatusBadge status={status} size="sm" /></span>
       </div>
       <LevelRow pair={c.pair} value={c.invalidationLevel} size="sm" />
       <p className="text-2xs text-bf-muted tabular-nums">
         {c.openedAt ? `Opened ${fmtDate(c.openedAt)} · ` : ''}Closed {fmtDate(c.closedAt)}
+      </p>
+      <p
+        id={reasonId}
+        className="bf-rec-reason pointer-events-none absolute inset-x-0 bottom-0 border-t border-white/10 bg-bf-raised px-4 py-2.5 text-2xs leading-relaxed text-bf-text-2 opacity-0 translate-y-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none group-hover:opacity-100 group-hover:translate-y-0 group-focus:opacity-100 group-focus:translate-y-0"
+      >
+        <span className="font-semibold text-bf-text">Why it closed: </span>{s.note}
       </p>
     </Card>
   )

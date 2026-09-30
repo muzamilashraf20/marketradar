@@ -44,20 +44,25 @@ export const DEMO_NOTE = 'Demo data — not the current market read.'
    shown: on a sample they would be numbers with no scale behind them.
    The no-call reason is the backend's own wording for that case.
 
-   THE THREE DEMO BIASES are deliberately different pairs, directions and
-   scores, so the page does not read as one call repeated:
-     hero        XAU/USD BUY   84 A   (A needs 82+ and FRESH timing)
-     framework   AUD/USD SELL  67 B   (64–73, not LATE)
-     invalidation USD/CAD BUY  (the card shows no score)
+   THE DEMO PAIRS are deliberately different pairs, directions and scores, so
+   the page does not read as one call repeated:
+     hero         XAU/USD BUY   84 A   (A needs 82+ and FRESH timing)
+     hero         EUR/USD no call
+     framework    USD/JPY SELL  67 B   (64–73, not LATE)
+     invalidation AUD/USD SELL  (the card shows no score)
    Grades follow the engine's lines — 55 / 64 / 74 / 82, timing folded in —
    see computeConfidence in backend/biasEngineV2/biasEngine.js.
 
-   Levels were set near real prices when written (late September 2026: gold
-   ~4188, AUD/USD ~0.7024, USD/CAD ~1.4152), rounded, and placed on the side
-   the engine would put them: below price for a BUY, above for a SELL. They
-   are illustrative and will drift from the market; every panel says "Demo
-   data". Theses name only standing macro relationships — no dates, events or
-   data prints that could turn out false. */
+   Levels were set from real prices when written (late September 2026), rounded,
+   and placed on the side the engine would put them: below price for a BUY,
+   above for a SELL. Gold ~4188. USD/JPY: the engine's own USD/JPY BUY closed on
+   a level break at 156.720 on 28 Sep, so price was trading below that; the SELL
+   level sits above the recent highs. AUD/USD: the engine's SELLs at 0.71815 and
+   0.71467 were both broken by price rising through them (18 and 21 Sep), which
+   is exactly the move the invalidation section draws. They are illustrative and
+   will drift from the market; every panel says "Demo data". Theses name only
+   standing macro relationships — no dates, events or data prints that could
+   turn out false. */
 export const DEMO_BIASES = [
   {
     pair: 'XAUUSD',
@@ -97,14 +102,14 @@ export const DEMO_BIASES = [
 
 /* The framework section's annotated card. */
 export const DEMO_SHOWCASE = {
-  pair: 'AUDUSD',
+  pair: 'USDJPY',
   direction: 'SELL',
   confidence: 67,
   grade: 'B',
   entryTiming: 'EXTENDED',
   thesis:
-    'The rate outlook favours the dollar over the Australian dollar, and softer risk appetite is weighing on the currency more than positioning is supporting it.',
-  invalidationLevel: 0.7082,
+    'The rate differential that has carried the dollar against the yen is narrowing as the Bank of Japan normalises policy, and sentiment leans the same way even though flow has yet to follow.',
+  invalidationLevel: 157.6,
   hasInvalidation: true,
   isHeadline: true,
   components: [
@@ -114,13 +119,14 @@ export const DEMO_SHOWCASE = {
   ],
 }
 
-/* The invalidation section's bias: a BUY, so it is wrong below its level and
-   the demo chart shows price falling through it. */
+/* The invalidation section's bias: a SELL, so it is wrong above its level and
+   the demo chart shows price rising through it. */
 export const DEMO_INVALIDATION = {
-  pair: 'USDCAD',
-  direction: 'BUY',
-  thesis: "The dollar's rate edge over the Canadian dollar holds while softer crude weighs on the loonie.",
-  invalidationLevel: 1.4068,
+  pair: 'AUDUSD',
+  direction: 'SELL',
+  thesis:
+    'A patient Reserve Bank of Australia, softer Chinese demand for Australian exports and fragile risk appetite leave the Australian dollar exposed against the US dollar.',
+  invalidationLevel: 0.7147,
 }
 
 /* Named but never given a direction or a grade, the same as the live panel did:
@@ -190,6 +196,15 @@ export const DEMO_BRIEF = {
   reasoning:
     'The forecast of 55.2 against a prior 55.6 implies a modest pullback that stays in expansionary territory. Leading indicators are split, so there is no clean directional lean.',
   indicatorsVerdict: 'mixed',
+  /* The three component vectors behind the balance, as the engine splits them.
+     `weight` is a relative bar length only — no value is printed, because on a
+     sample it would be a number with no scale behind it. They net out just
+     right of centre (60 − 35 − 20 = +5), which is where the needle rests. */
+  vectors: [
+    { label: 'Macro', leans: 'BUY', weight: 60 },
+    { label: 'Flow', leans: 'SELL', weight: 35 },
+    { label: 'Sentiment', leans: 'SELL', weight: 20 },
+  ],
   // Generic labels for the two leads that disagree. No figures, no dates.
   leadBeat: 'manufacturing lead',
   leadMiss: 'services lead',

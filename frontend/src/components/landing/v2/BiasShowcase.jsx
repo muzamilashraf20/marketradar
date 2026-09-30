@@ -34,7 +34,7 @@ function Marker({ n, children }) {
 
    No overflow-hidden on the frame, so the conviction tooltip is never clipped. */
 export default function BiasShowcase() {
-  // Its own demo pair (AUD/USD SELL), so the framework card is not a repeat of
+  // Its own demo pair (USD/JPY SELL), so the framework card is not a repeat of
   // the hero's. See demoData.js.
   const row = DEMO_SHOWCASE
   // Called before the early return so the hook order never changes.

@@ -548,6 +548,11 @@
 }
 /* Where the evidence nets out: just right of centre, inside the no-call zone. */
 .bf-bal-needle { transform: translateX(3%); }
+/* Component vectors grow out of the centre line, toward the side they lean. */
+.bf-vec-buy { transform-origin: left center; }
+.bf-vec-sell { transform-origin: right center; }
+/* Features: the reading-order line is drawn from the left of each card. */
+.bf-feat-line { transform-origin: left center; }
 .bf-resolve { text-shadow: 0 0 14px rgba(148, 163, 184, 0.35); }
 .bf-resolve::after {
   content: '';
@@ -577,10 +582,12 @@
   /* ── No call: the needle is pushed and pulled, then settles in the zone ── */
   [data-motion='armed'] .bf-bal-needle { transform: translateX(0); }
   [data-motion='play'] .bf-bal-needle { animation: bf-bal 2800ms cubic-bezier(0.45, 0, 0.2, 1) 200ms backwards; }
-  [data-motion='armed'] .bf-bal-force-buy,
-  [data-motion='armed'] .bf-bal-force-sell { opacity: 0.35; }
-  [data-motion='play'] .bf-bal-force-buy { animation: bf-force-buy 2800ms linear 200ms backwards; }
-  [data-motion='play'] .bf-bal-force-sell { animation: bf-force-sell 2800ms linear 200ms backwards; }
+  /* Each vector grows as it acts on the needle: macro as the needle swings to
+     BUY, then flow and sentiment in turn as it is pulled back toward SELL. */
+  [data-motion='armed'] .bf-vec { transform: scaleX(0); }
+  [data-motion='play'] .bf-vec { animation: bf-grow-x 460ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+  [data-motion='play'] .bf-vec-buy { animation-delay: 200ms; }
+  [data-motion='play'] .bf-vec-sell { animation-delay: calc(700ms + (var(--i, 1) - 1) * 250ms); }
   /* …then "No directional call" resolves in behind a scan line… */
   [data-motion='armed'] .bf-resolve { opacity: 0; }
   [data-motion='play'] .bf-resolve { animation: bf-fade-in 700ms ease-out 2900ms backwards; }
@@ -590,6 +597,9 @@
   [data-motion='armed'] .bf-chip-miss { opacity: 0; transform: translateX(24px); }
   [data-motion='play'] .bf-chip-beat { animation: bf-chip-l 520ms cubic-bezier(0.16, 1, 0.3, 1) 3300ms backwards; }
   [data-motion='play'] .bf-chip-miss { animation: bf-chip-r 520ms cubic-bezier(0.16, 1, 0.3, 1) 3420ms backwards; }
+  /* Once landed, each arrow nudges once the way it points. */
+  [data-motion='play'] .bf-arrow-beat { animation: bf-nudge-up 600ms ease-in-out 3850ms; }
+  [data-motion='play'] .bf-arrow-miss { animation: bf-nudge-down 600ms ease-in-out 3970ms; }
 
   /* ── Prop firm: rings fill, then the pre-trade check lands ── */
   [data-motion='armed'] .bf-ring-value { stroke-dashoffset: 100px; transition: none; }
@@ -607,6 +617,18 @@
   [data-motion='play'] .bf-draw :is(path, circle, line, rect, polyline, polygon, ellipse) {
     animation: bf-draw 1000ms ease-out backwards;
     animation-delay: calc(var(--i, 0) * 90ms + 220ms);
+  }
+  /* The reading-order line: one segment per card, each starting as the one
+     before it finishes, and the card's step number lights as its segment ends. */
+  [data-motion='armed'] .bf-feat-line { transform: scaleX(0); }
+  [data-motion='play'] .bf-feat-line {
+    animation: bf-grow-x 380ms linear backwards;
+    animation-delay: calc(700ms + var(--i, 0) * 380ms);
+  }
+  [data-motion='armed'] .bf-feat-step { opacity: 0.35; }
+  [data-motion='play'] .bf-feat-step {
+    animation: bf-step-lit 300ms ease-out backwards;
+    animation-delay: calc(700ms + (var(--i, 0) + 1) * 380ms);
   }
 
   /* ── Record: cards in turn, each status stamped once, legend dot breathes ── */
@@ -638,20 +660,10 @@
   82%  { transform: translateX(5%); }
   100% { transform: translateX(3%); }
 }
-@keyframes bf-force-buy {
-  0%   { opacity: 0.35; }
-  8%   { opacity: 1; }
-  28%  { opacity: 0.35; }
-  88%  { opacity: 0.35; }
-  100% { opacity: 1; }
-}
-@keyframes bf-force-sell {
-  0%, 26% { opacity: 0.35; }
-  34%  { opacity: 1; }
-  52%  { opacity: 0.35; }
-  88%  { opacity: 0.35; }
-  100% { opacity: 1; }
-}
+@keyframes bf-grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes bf-step-lit { from { opacity: 0.35; } to { opacity: 1; } }
+@keyframes bf-nudge-up { 0%, 100% { transform: none; } 50% { transform: translateY(-3px); } }
+@keyframes bf-nudge-down { 0%, 100% { transform: none; } 50% { transform: translateY(3px); } }
 @keyframes bf-scan { from { transform: translateX(-110%); } to { transform: translateX(110%); } }
 @keyframes bf-chip-l { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }
 @keyframes bf-chip-r { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }

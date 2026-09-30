@@ -11,7 +11,7 @@ import { useMotion } from './useMotion'
 
 /* Every thesis needs a point of failure.
 
-   The same demo bias (USD/CAD BUY) twice — live, then after price crosses its level — with a
+   The same demo bias (AUD/USD SELL) twice — live, then after price crosses its level — with a
    price chart between them. Static (no JavaScript, reduced motion, or before
    the section is scrolled to) the chart is fully drawn with the crossing
    marked, and both cards read as they always have.
@@ -83,7 +83,7 @@ function PriceChart({ level, side }) {
         </g>
       </svg>
       <p className="text-2xs font-medium text-bf-text-2 md:max-w-[11rem]">
-        Price trades {side} <span className="tabular-nums text-bf-bear-soft">{level}</span>
+        A move {side} <span className="tabular-nums text-bf-bear-soft">{level}</span> closes the bias.
       </p>
     </div>
   )

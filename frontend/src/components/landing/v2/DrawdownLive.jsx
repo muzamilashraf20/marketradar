@@ -31,10 +31,13 @@ const GAUGES = [
   { key: 'total', label: 'Total drawdown', used: 1640, max: MAX_TOTAL, maxLabel: 'Max total loss', note: 'Runs for the life of the account' },
 ]
 
-// A planned trade checked against the daily room left — the check Prop Firm
-// Mode runs (/api/trade-check). Worked on the same example numbers.
-const PLANNED_RISK = 400
-const DAILY_ROOM = MAX_DAILY - GAUGES[0].used
+// A planned trade checked against the room left on both limits — the check
+// Prop Firm Mode runs (/api/trade-check). Worked on the same example numbers:
+// daily $2,500 − $890 − $300 = $1,310, total $5,000 − $1,640 − $300 = $3,060.
+const PLANNED_RISK = 300
+const DAILY_AFTER = MAX_DAILY - GAUGES[0].used - PLANNED_RISK
+const TOTAL_AFTER = MAX_TOTAL - GAUGES[1].used - PLANNED_RISK
+const dollars = n => '$' + Math.round(n).toLocaleString('en-US')
 
 /* Zones: under 50% of a limit is room, 50–80% is caution, over 80% is danger.
    Full static class strings and hex strokes — nothing assembled at runtime. */
@@ -153,20 +156,26 @@ export default function DrawdownLive() {
         {GAUGES.map(g => <Gauge key={g.key} g={g} />)}
       </div>
 
-      {/* Pre-trade check: the planned risk against the daily room still left. */}
-      <div className="bf-pretrade mx-3 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-        <div className="min-w-0">
+      {/* Pre-trade check: the planned risk, and what both limits have left once it is taken. */}
+      <div className="bf-pretrade mx-3 mb-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <p className="text-[10px] font-bold uppercase tracking-wider bf-t3">Pre-trade check</p>
-          <p className="mt-1 text-[12.5px] text-slate-300">
-            Planned risk <span className="bf-mono tabular-nums text-slate-100">{money(PLANNED_RISK)}</span>
-            {' '}vs{' '}
-            <span className="bf-mono tabular-nums text-slate-100">{money(DAILY_ROOM)}</span> daily room left
+          <p className="text-[12.5px] text-slate-300">
+            Planned risk <span className="bf-mono tabular-nums text-slate-100">{dollars(PLANNED_RISK)}</span>
           </p>
         </div>
-        <span className="bf-pretrade-ok inline-flex items-center gap-1.5 rounded-chip border border-bf-bull/25 bg-bf-bull/10 px-2.5 py-1 text-[11px] font-semibold text-bf-bull-soft">
-          <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-          Within limits
-        </span>
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12px] text-slate-400">
+          <span className="bf-pretrade-ok inline-flex items-center gap-1.5 rounded-chip border border-bf-bull/25 bg-bf-bull/10 px-2.5 py-1 text-[11px] font-semibold text-bf-bull-soft">
+            <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+            Within limits
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>
+            <span className="bf-mono tabular-nums text-slate-100">{dollars(DAILY_AFTER)}</span> daily
+            {' / '}
+            <span className="bf-mono tabular-nums text-slate-100">{dollars(TOTAL_AFTER)}</span> total left after this trade
+          </span>
+        </p>
       </div>
 
       <p className="bf-hairline-t px-4 py-3 text-[10.5px] leading-relaxed bf-t3">
