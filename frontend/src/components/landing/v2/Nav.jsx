@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Activity, Menu, X } from 'lucide-react'
 import Button from '../../ui/Button'
 import { FOCUS_RING } from '../../ui/styles'
+import { PRICING_HREF, toPricing } from './toPricing'
 
 /* Root-relative anchors ("/#…"), so they also work from /about, which reuses
    this nav. "How it works" and "The record" move to /methodology and /record
@@ -54,7 +55,7 @@ export default function Nav() {
           <a href="/login" className={`px-3 py-2 text-[14px] text-bf-text-2 hover:text-bf-text transition-colors rounded ${FOCUS_RING}`}>
             Sign in
           </a>
-          <Button href="/login" size="sm">Get started</Button>
+          <Button href={PRICING_HREF} onClick={toPricing} size="sm">Get BiasForge Pro</Button>
         </div>
 
         <button
@@ -82,7 +83,15 @@ export default function Nav() {
             </a>
           ))}
           <a href="/login" className="py-3 text-[15px] text-slate-300">Sign in</a>
-          <Button href="/login" size="lg" fullWidth className="mt-2">Get started</Button>
+          <Button
+            href={PRICING_HREF}
+            onClick={e => { setOpen(false); toPricing(e) }}
+            size="lg"
+            fullWidth
+            className="mt-2"
+          >
+            Get BiasForge Pro
+          </Button>
         </div>
       )}
     </header>

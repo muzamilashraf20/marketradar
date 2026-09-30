@@ -3,6 +3,7 @@ import Button from '../../ui/Button'
 import LiveCompass from './LiveCompass'
 import EventTicker from './EventTicker'
 import { useCompassData } from './useCompassData'
+import { PRICING_HREF, toPricing } from './toPricing'
 
 export default function Hero() {
   const compass = useCompassData()
@@ -35,8 +36,8 @@ export default function Hero() {
           </p>
 
           <div className="mt-9 flex flex-wrap items-center gap-3 bf-rise" style={{ '--d': '240ms' }}>
-            <Button href="/login" size="lg" iconRight={<ArrowRight size={16} aria-hidden="true" />}>
-              Create free account
+            <Button href={PRICING_HREF} onClick={toPricing} size="lg" iconRight={<ArrowRight size={16} aria-hidden="true" />}>
+              Get BiasForge Pro
             </Button>
             <Button href="#framework" variant="secondary" size="lg">
               How it works

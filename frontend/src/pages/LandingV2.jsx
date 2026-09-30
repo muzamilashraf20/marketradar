@@ -38,6 +38,20 @@ export default function LandingV2() {
     return () => document.documentElement.classList.remove('bf-js')
   }, [])
 
+  // Arriving from another page on a section link (/#pricing from the nav on
+  // /about, say). The browser's own jump to the hash can run before the
+  // section exists — it always does when the page is rendered client-side —
+  // so once the page has mounted, go to the section. One instant jump, no
+  // smooth scroll: this is a page load, not an in-page move.
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1))
+    if (!id) return
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ block: 'start' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
   return (
     <div className="bf-landing min-h-screen overflow-x-hidden">
       <Nav />
