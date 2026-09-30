@@ -1,10 +1,8 @@
 {
   "day": "2026-09-30",
   "mode": "upcoming",
-  "summary": "5 high-impact release row(s) ahead",
+  "summary": "3 high-impact release row(s) ahead",
   "releases": [
-    "2026-09-30T12:30:00.000Z|USD|Core PCE Price Index m/m|0.3%|0.2%",
-    "2026-09-30T12:30:00.000Z|USD|Final GDP q/q|1.5%|1.5%",
     "2026-10-02T12:30:00.000Z|USD|Average Hourly Earnings m/m|0.3%|0.3%",
     "2026-10-02T12:30:00.000Z|USD|Non-Farm Employment Change|90K|162K",
     "2026-10-02T12:30:00.000Z|USD|Unemployment Rate|4.1%|4.1%"
