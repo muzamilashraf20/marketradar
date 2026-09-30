@@ -670,6 +670,7 @@ function socialFactsBlock(contentType, facts = {}) {
     const e = facts.event || {}
     const nums = [e.forecast && `f ${e.forecast}`, e.previous && `p ${e.previous}`].filter(Boolean).join(', ')
     lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}${e.impact ? ` [${esc(e.impact)}]` : ''}${nums ? ` (${esc(nums)})` : ''}`)
+    if (facts.reactsIn?.length) lines.push(`reacts in: ${esc(facts.reactsIn.join(', '))}`)
   } else if (contentType === 'called_it') {
     const c = facts.call || {}
     const p = facts.priorPost || {}
@@ -1042,7 +1043,7 @@ const socialGenerateHandler = async (req, res) => {
       } else if (contentType === 'event_explainer') {
         const { events, why } = await nextEventPreview([])
         if (!events.length) return res.status(400).json({ error: why === 'none-ahead(USD)' ? 'No upcoming high-impact USD events today' : `The next high-impact USD event is too far off (${why.replace('next-in-', '')})` })
-        facts = { dateLabel: dateLabel(now), event: events[0] }
+        facts = { dateLabel: dateLabel(now), event: events[0], reactsIn: eventReactsIn(events[0].currency) }
       } else if (contentType === 'scorecard') {
         const rows = await socialScorecardRows()
         const resolved = rows.filter(r => r.outcome !== 'open')
@@ -1896,7 +1897,7 @@ async function planIgCarousel(now, nowMs) {
   // 2. A high-impact USD event still ahead takes the day's slot.
   const { events } = await nextEventPreview([], nowMs)
   if (events.length) {
-    return { type: 'event_explainer', facts: { dateLabel: dateLabel(now), event: events[0] }, sourceRef: { trigger: 'planner', eventKey: eventKey(events[0]) } }
+    return { type: 'event_explainer', facts: { dateLabel: dateLabel(now), event: events[0], reactsIn: eventReactsIn(events[0].currency) }, sourceRef: { trigger: 'planner', eventKey: eventKey(events[0]) } }
   }
 
   // 3. The weekday plan, with its own conditions.
@@ -6321,6 +6322,13 @@ const BRIEF_PAIRS = {
   CHF: ['USDCHF', 'EURUSD', 'XAUUSD'],
   NZD: ['NZDUSD', 'AUDUSD', 'EURUSD', 'XAUUSD'],
   CNY: ['AUDUSD', 'USDJPY', 'XAUUSD'],
+}
+
+// The instruments an event_explainer deck may name, from BRIEF_PAIRS, with non-FX symbols spelled
+// out so the writer can say "gold" and still be grounded. Unknown currency: none.
+const REACTS_IN_ALIAS = { XAUUSD: 'XAUUSD (gold)' }
+function eventReactsIn(currency) {
+  return (BRIEF_PAIRS[currency] || []).map(p => REACTS_IN_ALIAS[p] || p)
 }
 
 // Which already-released prints LEAD a given event. `match` classifies the event the user clicked;

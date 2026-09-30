@@ -24,6 +24,9 @@ const MAX_LENGTH = { x: 270, instagram: 2200, linkedin: 2800 }   // Instagram: M
 const HASHTAG_MAX = { x: 1, linkedin: 3, instagram: 8 }
 const SIMILARITY_LIMIT = 0.35
 const SHARED_RUN_WORDS = 6
+// A hashtag token. Shared by the hashtag count and the duplicate check, which strips them first.
+const HASHTAG_RE = /(?<![\p{L}\p{N}_&])#\p{L}[\p{L}\p{N}_]*/gu
+const stripHashtags = t => String(t ?? '').replace(HASHTAG_RE, ' ')
 
 // Lowercase, drop apostrophes (so "can't" stays one word), turn every other non-letter/digit into
 // a space, and split. Used by every word-level comparison so they all agree on what a word is.
@@ -55,11 +58,12 @@ export function similarityScore(a, b) {
   return shared / (sa.size + sb.size - shared)
 }
 
+// The first run of n words the two texts share, or null.
 function hasSharedRun(a, b, n) {
   const sb = shingles(words(b), n)
-  if (!sb.size) return false
-  for (const s of shingles(words(a), n)) if (sb.has(s)) return true
-  return false
+  if (!sb.size) return null
+  for (const s of shingles(words(a), n)) if (sb.has(s)) return s
+  return null
 }
 
 function decimalsOf(s) {
@@ -263,15 +267,19 @@ export function validateSocialPost(text, opts) {
 
   // Near-identical posts get downranked by every platform and look automated to followers.
   // Two checks: overall shingle overlap catches rewording, the shared run catches a recycled
-  // sentence dropped into otherwise new copy.
+  // sentence dropped into otherwise new copy. Hashtags are stripped from both sides first: a
+  // reused tag line is normal on Instagram and is not a recycled sentence.
+  const plain = stripHashtags(text)
   for (let i = 0; i < pastTexts.length; i++) {
-    const score = similarityScore(text, pastTexts[i])
+    const past = stripHashtags(pastTexts[i])
+    const score = similarityScore(plain, past)
     if (score >= SIMILARITY_LIMIT) {
       hard('duplicate', `Too similar to past post #${i} (similarity ${score.toFixed(2)})`)
       break
     }
-    if (hasSharedRun(text, pastTexts[i], SHARED_RUN_WORDS)) {
-      hard('duplicate', `Shares a run of ${SHARED_RUN_WORDS}+ words with past post #${i}`)
+    const run = hasSharedRun(plain, past, SHARED_RUN_WORDS)
+    if (run) {
+      hard('duplicate', `Shares a run of ${SHARED_RUN_WORDS}+ words with past post #${i}: "${run}"`)
       break
     }
   }
@@ -292,7 +300,7 @@ export function validateSocialPost(text, opts) {
 
   // Hashtag stacking reads as spam, but where the line sits depends on the platform: one on X,
   // a few on LinkedIn, and on Instagram a handful is simply how posts get found.
-  const tags = (text.match(/(?<![\p{L}\p{N}_&])#\p{L}[\p{L}\p{N}_]*/gu) || []).length
+  const tags = (text.match(HASHTAG_RE) || []).length
   const maxTags = HASHTAG_MAX[platform] ?? HASHTAG_MAX.x
   if (tags > maxTags) soft('hashtag_heavy', `${tags} hashtags; keep it to ${maxTags === 1 ? 'one' : `${maxTags} or fewer`}`)
 
