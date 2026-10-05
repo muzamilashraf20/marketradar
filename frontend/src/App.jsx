@@ -10,10 +10,9 @@ import Dashboard from './pages/Dashboard'
 import NewsFeed from './pages/NewsFeed'
 import MarketMoversRadar from './pages/MarketMoversRadar'
 import BiasMatrix from './pages/BiasMatrix'
+import BiasHistory from './pages/BiasHistory'
 import EconomicCalendar from './pages/EconomicCalendar'
-import Sessions from './pages/Sessions'
 import COTReport from './pages/COTReport'
-import Pricing from './pages/Pricing'
 import Terms from './pages/Terms'
 import Privacy from './pages/Privacy'
 import Refund from './pages/Refund'
@@ -22,12 +21,14 @@ import Changelog from './pages/Changelog'
 import PropFirm from './pages/PropFirm'
 import Playbooks from './pages/Playbooks'
 import SettingsPage from './pages/Settings'
+import Billing from './pages/Billing'
+import Subscribe from './pages/Subscribe'
 import CurrencyStrength from './pages/CurrencyStrength'
 import TradeJournal from './pages/TradeJournal'
 import ContentStudio from './pages/ContentStudio'
 import NotFound from './pages/NotFound'
-import ProtectedRoute from './components/common/ProtectedRoute'
-import ProGate from './components/common/ProGate'
+import RequirePro from './components/common/RequirePro'
+import { LegacyRedirect, DashboardRedirect, PricingRedirect } from './components/common/Redirects'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -36,8 +37,11 @@ function RootRedirect() {
   // HTML away and hand Google a redirect on its entry point. The landing is
   // also what shows while auth resolves, so there is no spinner flash over
   // markup the browser has already painted.
-  return user && !loading ? <Navigate to="/dashboard" replace /> : <LandingV2 />
+  return user && !loading ? <Navigate to="/today" replace /> : <LandingV2 />
 }
+
+const pro = page => <RequirePro>{page}</RequirePro>
+const unpaid = page => <RequirePro allowUnpaid>{page}</RequirePro>
 
 export default function App() {
   return (
@@ -52,7 +56,6 @@ export default function App() {
         <Route path="/landing-old" element={<Navigate to="/" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/pricing" element={<Pricing />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
@@ -60,25 +63,42 @@ export default function App() {
         <Route path="/contact" element={<Contact />} />
         <Route path="/changelog" element={<Changelog />} />
 
-        {/* Protected Routes — FREE users can access */}
-        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/bias" element={<ProtectedRoute><BiasMatrix /></ProtectedRoute>} />
-        <Route path="/sessions" element={<ProtectedRoute><Sessions /></ProtectedRoute>} />
-        <Route path="/calendar" element={<ProtectedRoute><EconomicCalendar /></ProtectedRoute>} />
-        <Route path="/news" element={<ProtectedRoute><NewsFeed /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-        {/* Admin only — the page itself checks whoami and redirects anyone else to /dashboard */}
-        <Route path="/studio" element={<ProtectedRoute><ContentStudio /></ProtectedRoute>} />
+        {/* The app. No free tier: every page is Pro (RequirePro), except the few an
+            unpaid account needs — the checkout screen, Settings and Billing. Paths
+            are flat; the six areas (Today, Bias, Events, Markets, Account, Journal)
+            exist in the sidebar grouping only — see components/layout/navConfig.js. */}
+        <Route path="/today" element={pro(<Dashboard />)} />
 
-        {/* Protected Routes — PRO only */}
-        <Route path="/strength" element={<ProtectedRoute><ProGate title="Currency Strength" subtitle="Real-time currency strength meter"><CurrencyStrength /></ProGate></ProtectedRoute>} />
-        <Route path="/prop-firm" element={<ProtectedRoute><ProGate title="Prop Firm Mode" subtitle="Drawdown tracker & risk calculator"><PropFirm /></ProGate></ProtectedRoute>} />
-        <Route path="/playbooks" element={<ProtectedRoute><ProGate title="Event Playbooks" subtitle="FOMC, NFP, CPI, ECB, BOE templates"><Playbooks /></ProGate></ProtectedRoute>} />
-        <Route path="/cot" element={<ProtectedRoute><ProGate title="COT Report" subtitle="Institutional positioning data"><COTReport /></ProGate></ProtectedRoute>} />
-        <Route path="/earnings" element={<ProtectedRoute><ProGate title="Earnings Calendar" subtitle="Upcoming earnings reports"><Earnings /></ProGate></ProtectedRoute>} />
-        <Route path="/market-movers" element={<ProtectedRoute><ProGate title="MarketMovers Radar" subtitle="Track market-moving events"><MarketMoversRadar /></ProGate></ProtectedRoute>} />
-        <Route path="/trump" element={<ProtectedRoute><ProGate title="MarketMovers Radar" subtitle="Track market-moving events"><MarketMoversRadar /></ProGate></ProtectedRoute>} />
-        <Route path="/journal" element={<ProtectedRoute><ProGate title="Trade Journal" subtitle="Log trades & track P&L"><TradeJournal /></ProGate></ProtectedRoute>} />
+        <Route path="/bias" element={pro(<BiasMatrix />)} />
+        <Route path="/bias/history" element={pro(<BiasHistory />)} />
+        <Route path="/strength" element={pro(<CurrencyStrength />)} />
+
+        <Route path="/calendar" element={pro(<EconomicCalendar />)} />
+        <Route path="/news" element={pro(<NewsFeed />)} />
+        <Route path="/playbooks" element={pro(<Playbooks />)} />
+        <Route path="/earnings" element={pro(<Earnings />)} />
+
+        <Route path="/cot" element={pro(<COTReport />)} />
+        <Route path="/market-movers" element={pro(<MarketMoversRadar />)} />
+
+        <Route path="/prop-firm" element={pro(<PropFirm />)} />
+        <Route path="/settings" element={unpaid(<SettingsPage />)} />
+        <Route path="/billing" element={unpaid(<Billing />)} />
+
+        <Route path="/journal" element={pro(<TradeJournal />)} />
+
+        <Route path="/subscribe" element={unpaid(<Subscribe />)} />
+        {/* Admin only — the page itself checks whoami and sends anyone else away */}
+        <Route path="/studio" element={pro(<ContentStudio />)} />
+
+        {/* Old paths, kept for good: bookmarks, Telegram and email alerts, Google
+            sign-in's return URL and the crypto checkout's return URLs use them.
+            Query string and hash are carried over. */}
+        <Route path="/dashboard" element={<DashboardRedirect />} />
+        <Route path="/sessions" element={<LegacyRedirect to="/today" />} />
+        <Route path="/market-dashboard" element={<LegacyRedirect to="/today" />} />
+        <Route path="/trump" element={<LegacyRedirect to="/market-movers" />} />
+        <Route path="/pricing" element={<PricingRedirect />} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />

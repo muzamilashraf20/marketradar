@@ -40,7 +40,7 @@ export default function NotFound() {
           Go Back
         </button>
         <button
-          onClick={() => navigate('/dashboard')}
+          onClick={() => navigate('/today')}
           className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
         >
           <Home size={14} />

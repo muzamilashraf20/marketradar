@@ -32,15 +32,13 @@ function ToggleSwitch({ checked, onChange, disabled }) {
 }
 
 export default function SettingsPage() {
-  const { user, plan: planRow, planLoaded, logout } = useAuth()
+  const { user, isPro, planLoaded, logout } = useAuth()
   const navigate = useNavigate()
 
   const email = user?.email || ''
-  // `user` is the Supabase auth user — it has no .plan. The tier lives on the
-  // separate `plan` value from AuthContext; reading user?.plan meant this card
-  // showed "Pro Plan" to everyone, free accounts included.
-  const tier = planRow?.tier || null
-  const planLabel = !planLoaded ? '—' : tier === 'pro' ? 'Pro' : 'Free'
+  // isPro is the server's verdict (expiry and admins included), the same one every Pro page is
+  // gated on. The raw tier column showed an expired crypto plan as Pro and an admin as not.
+  const planLabel = !planLoaded ? '—' : isPro ? 'Pro Plan' : 'No active plan'
 
   // Email notification state
   const [emailSub, setEmailSub] = useState({
@@ -69,27 +67,24 @@ const [copied, setCopied] = useState(false)
     const text = encodeURIComponent(`Check out BiasForge — AI macro trading tools for funded traders: ${referralLink}`)
     window.open(`https://wa.me/?text=${text}`, '_blank')
   }
-  // Load email subscription status on mount
+  // Load email subscription status on mount. emailLoading starts true, so this only has to clear it
+  // when the answer arrives; state is set in the promise callbacks, never in the effect body.
   useEffect(() => {
     if (!email) return
-    fetchEmailStatus()
-  }, [email])
-
-  const fetchEmailStatus = async () => {
-    try {
-      setEmailLoading(true)
-      const res = await authedFetch(`${API_BASE}/api/email/status?email=${encodeURIComponent(email)}`)
-      const data = await res.json()
-      setEmailSub({
-        subscribed: data.subscribed || false,
-        preferences: data.preferences || { calendar: true, news: true },
+    let alive = true
+    authedFetch(`${API_BASE}/api/email/status?email=${encodeURIComponent(email)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (!alive) return
+        setEmailSub({
+          subscribed: data.subscribed || false,
+          preferences: data.preferences || { calendar: true, news: true },
+        })
       })
-    } catch (e) {
-      console.error('Email status fetch error:', e)
-    } finally {
-      setEmailLoading(false)
-    }
-  }
+      .catch(e => console.error('Email status fetch error:', e))
+      .finally(() => { if (alive) setEmailLoading(false) })
+    return () => { alive = false }
+  }, [email])
 
   const handleSubscribe = async () => {
     setEmailSaving(true)
@@ -107,7 +102,7 @@ const [copied, setCopied] = useState(false)
       } else {
         setEmailMessage({ type: 'error', text: data.error || 'Subscription failed' })
       }
-    } catch (e) {
+    } catch {
       setEmailMessage({ type: 'error', text: 'Network error. Try again.' })
     } finally {
       setEmailSaving(false)
@@ -119,7 +114,7 @@ const [copied, setCopied] = useState(false)
     setEmailSaving(true)
     setEmailMessage({ type: '', text: '' })
     try {
-      const res = await authedFetch(`${API_BASE}/api/email/subscribe`, {
+      await authedFetch(`${API_BASE}/api/email/subscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, preferences: emailSub.preferences }),
@@ -132,7 +127,7 @@ const [copied, setCopied] = useState(false)
       })
       setEmailSub(prev => ({ ...prev, subscribed: false }))
       setEmailMessage({ type: 'success', text: 'Unsubscribed from all email alerts.' })
-    } catch (e) {
+    } catch {
       setEmailMessage({ type: 'error', text: 'Network error. Try again.' })
     } finally {
       setEmailSaving(false)
@@ -258,15 +253,15 @@ const [copied, setCopied] = useState(false)
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-white font-semibold text-sm truncate">{email}</p>
-            <p className="text-cyan-400 text-xs">{planLabel} Plan</p>
+            <p className="text-cyan-400 text-xs">{planLabel}</p>
           </div>
-          {/* Was hardcoded "Active" — read the resolved tier like the label does. */}
+          {/* Was hardcoded "Active" — read the resolved plan like the label does. */}
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
-            tier === 'pro'
+            isPro
               ? 'border-cyan-500/20 bg-cyan-500/10 text-cyan-400'
               : 'border-white/10 bg-white/5 text-slate-400'
           }`}>
-            {!planLoaded ? '…' : tier === 'pro' ? 'Active' : 'Inactive'}
+            {!planLoaded ? '…' : isPro ? 'Active' : 'Inactive'}
           </span>
         </div>
 
@@ -446,7 +441,7 @@ const [copied, setCopied] = useState(false)
           </div>
           <div className="px-5 py-4 flex items-center justify-between">
             <div>
-              <p className="text-sm text-white font-medium">{planLabel} Plan</p>
+              <p className="text-sm text-white font-medium">{planLabel}</p>
               <p className="text-xs text-slate-500 mt-0.5">Manage your subscription and billing details</p>
             </div>
             <button

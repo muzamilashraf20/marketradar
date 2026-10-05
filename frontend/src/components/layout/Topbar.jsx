@@ -3,10 +3,10 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCleanMode } from '../../hooks/useCleanMode'
 import {
-  Menu, Search, Bell, Settings, LogOut, User, ChevronDown, X,
-  BarChart3, Newspaper, Calendar, Shield, BookOpen, FileText,
-  TrendingUp, Zap, Globe, Clock, AlertTriangle, Info, CheckCircle
+  Menu, Search, Bell, Settings, LogOut, ChevronDown, X,
+  Newspaper, Shield, Clock, AlertTriangle, Info, CheckCircle
 } from 'lucide-react'
+import { NAV_PAGES } from './navConfig'
 
 /* ───────── Session helper ─────────
    Forex week: Sunday 5PM ET → Friday 5PM ET.
@@ -37,57 +37,10 @@ function getSession() {
   return { name: 'Sydney', color: 'text-emerald-400', dot: 'bg-emerald-400', closed: false }
 }
 
-/* ───────── Searchable pages list ───────── */
-const PAGES = [
-  { name: 'Dashboard', path: '/', icon: BarChart3, desc: 'Overview & stats' },
-  { name: 'AI Bias Engine', path: '/bias', icon: Zap, desc: 'AI-powered trade bias' },
-  { name: 'News Feed', path: '/news', icon: Newspaper, desc: 'Live macro news' },
-  { name: 'Economic Calendar', path: '/calendar', icon: Calendar, desc: 'Upcoming events' },
-  { name: 'Prop Firm Mode', path: '/prop-firm', icon: Shield, desc: 'Risk management' },
-  { name: 'Event Playbooks', path: '/playbooks', icon: BookOpen, desc: 'FOMC, NFP, CPI guides' },
-  { name: 'COT Report', path: '/cot', icon: FileText, desc: 'Commitment of Traders' },
-  { name: 'Earnings Calendar', path: '/earnings', icon: TrendingUp, desc: 'Earnings releases' },
-  { name: 'Trump Tracker', path: '/trump', icon: Globe, desc: 'Policy impact tracker' },
-  { name: 'Market Dashboard', path: '/market-dashboard', icon: BarChart3, desc: 'Market overview' },
-  { name: 'Settings', path: '/settings', icon: Settings, desc: 'Account settings' },
-]
-
-/* ───────── Static notifications ───────── */
-function generateNotifications() {
-  const now = Date.now()
-  return [
-    {
-      id: 1, type: 'alert',
-      title: 'High Impact Event Soon',
-      message: 'FOMC Rate Decision in 2 hours — check your playbook',
-      time: now - 5 * 60 * 1000, read: false,
-    },
-    {
-      id: 2, type: 'news',
-      title: 'Breaking: USD Volatility Spike',
-      message: 'DXY moved +0.8% after Treasury auction — news feed updated',
-      time: now - 22 * 60 * 1000, read: false,
-    },
-    {
-      id: 3, type: 'system',
-      title: 'Prop Firm Risk Check',
-      message: 'Your daily drawdown is at 1.8% — approaching caution zone',
-      time: now - 45 * 60 * 1000, read: false,
-    },
-    {
-      id: 4, type: 'info',
-      title: 'New Playbook Available',
-      message: 'BOE Interest Rate playbook has been added to Event Playbooks',
-      time: now - 3 * 60 * 60 * 1000, read: true,
-    },
-    {
-      id: 5, type: 'news',
-      title: 'CPI Data Released',
-      message: 'US CPI came in at 3.2% vs 3.1% expected — check bias matrix',
-      time: now - 5 * 60 * 60 * 1000, read: true,
-    },
-  ]
-}
+/* ───────── Searchable pages list ─────────
+   The same pages, names and grouping as the sidebar (navConfig.js), so Ctrl+K
+   can never offer a page the sidebar does not have. */
+const PAGES = NAV_PAGES.map(p => ({ name: p.label, path: p.path, icon: p.icon, desc: `${p.group} · ${p.desc}` }))
 
 function timeAgo(ts) {
   const diff = Math.floor((Date.now() - ts) / 1000)
@@ -342,7 +295,7 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
               <div className="absolute right-0 top-full mt-2 w-48 bg-[#0a1628] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
                 <div className="px-4 py-3 border-b border-white/10">
                   {!cleanMode && <p className="text-xs text-white font-semibold truncate">{email}</p>}
-                  <p className={`text-[10px] mt-0.5 ${!planLoaded ? 'text-slate-400' : isPro ? 'text-cyan-400' : 'text-amber-400'}`}>{!planLoaded ? '··· Plan' : isPro ? 'Pro Plan' : 'Locked'}</p>
+                  <p className={`text-[10px] mt-0.5 ${planLoaded && isPro ? 'text-cyan-400' : 'text-slate-400'}`}>{!planLoaded ? '··· Plan' : isPro ? 'Pro Plan' : 'No active plan'}</p>
                 </div>
                 <div className="py-1">
                   <button

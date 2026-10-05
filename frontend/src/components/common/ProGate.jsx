@@ -13,8 +13,9 @@ const PRO_FEATURES = [
   { icon: Zap, text: 'Trade Journal with cloud sync' },
 ]
 
+// No longer used: RequirePro (App.jsx) gates every app route. Kept for the cleanup review.
 export default function ProGate({ title, subtitle, children }) {
-  const { isPro, trialExpired } = useAuth()
+  const { isPro, needsSubscription } = useAuth()
   const navigate = useNavigate()
 
   if (isPro) return children
@@ -25,21 +26,21 @@ export default function ProGate({ title, subtitle, children }) {
         <div className="max-w-lg w-full text-center">
           {/* Icon */}
           <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 ${
-            trialExpired
+            needsSubscription
               ? 'bg-red-500/10 border border-red-500/20'
               : 'bg-amber-500/10 border border-amber-500/20'
           }`}>
-            {trialExpired
+            {needsSubscription
               ? <AlertTriangle size={28} className="text-red-400" />
               : <Lock size={28} className="text-amber-400" />
             }
           </div>
 
           <h2 className="text-2xl font-black text-white mb-2">
-            {trialExpired ? 'Subscribe to Continue' : 'Pro Feature'}
+            {needsSubscription ? 'Subscribe to Continue' : 'Pro Feature'}
           </h2>
           <p className="text-slate-400 text-sm mb-8 max-w-md mx-auto">
-            {trialExpired
+            {needsSubscription
               ? 'BiasForge is a paid subscription. Upgrade to Pro to unlock all trading tools.'
               : `Upgrade to BiasForge Pro to unlock ${title?.toLowerCase() || 'this feature'} and all premium trading tools.`
             }

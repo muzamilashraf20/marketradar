@@ -1,176 +1,181 @@
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCleanMode } from '../../hooks/useCleanMode'
-import {
-  LayoutDashboard, TrendingUp, Newspaper, Calendar,
-  ShieldCheck, BookOpen, PieChart, DollarSign, Flag,
-  Settings, LogOut, Activity, X, ChevronRight, BarChart2,
-  Lock, Megaphone
-} from 'lucide-react'
+import { LogOut, Activity, X, ChevronDown } from 'lucide-react'
+import { FOCUS_RING } from '../ui/styles'
+import { NAV_GROUPS, ADMIN_GROUP, sectionOf } from './navConfig'
 
-const NAV_ITEMS = [
-  { label: 'Overview',          icon: LayoutDashboard, path: '/dashboard',  pro: false },
-  { label: 'AI Bias',           icon: TrendingUp,      path: '/bias',       pro: false },
-  { label: 'Live News',         icon: Newspaper,       path: '/news',       pro: false },
-  { label: 'Econ Calendar',     icon: Calendar,        path: '/calendar',   pro: false },
-  { label: 'Currency Strength', icon: BarChart2,       path: '/strength',   pro: true },
-  { label: 'Prop Firm Mode',    icon: ShieldCheck,     path: '/prop-firm',  pro: true },
-  { label: 'Event Playbooks',   icon: BookOpen,        path: '/playbooks',  pro: true },
-  { label: 'COT Report',        icon: PieChart,        path: '/cot',        pro: true },
-  { label: 'Earnings',          icon: Calendar,        path: '/earnings',   pro: true },
-  { label: 'MarketMovers Radar',icon: Flag,            path: '/trump',      pro: true },
-  { label: 'Trade Journal',     icon: BookOpen,        path: '/journal',    pro: true },
-]
+/* The dashboard's six areas — Today, Bias, Events, Markets, Account, Journal —
+   as groups (navConfig.js). A one-page area is a plain link; the others fold.
+   The area holding the current page is highlighted and always open, whatever
+   the reader folded, so the page you are on is never hidden.
 
-// Appended only for the admin. whoami never 401s, so an ordinary user just gets admin:false here
-// and the item is never rendered for them.
-const ADMIN_ITEM = { label: 'Content Studio', icon: Megaphone, path: '/studio', pro: false }
+   No locks and no upgrade banner: an account without Pro never gets here. It is
+   sent to /subscribe before any dashboard page mounts (RequirePro), and the only
+   pages it may open — Settings and Billing — render this sidebar unchanged. */
+const FOLD_KEY = 'bf_nav_folded'
+
+function readFolded() {
+  try { return new Set(JSON.parse(localStorage.getItem(FOLD_KEY) || '[]')) } catch { return new Set() }
+}
 
 export default function Sidebar({ onClose }) {
   const navigate = useNavigate()
-  const location = useLocation()
-  // isAdmin comes from AuthContext, which asks /api/admin/whoami once per signed-in user — the
-  // sidebar re-mounts on every page, and used to ask on every one.
-  const { user, isPro, isActualPro, trialExpired, planLoaded, logout, isAdmin } = useAuth()
+  const { pathname } = useLocation()
+  // isAdmin comes from AuthContext, which asks /api/admin/whoami once per signed-in user.
+  const { user, isPro, planLoaded, logout, isAdmin } = useAuth()
   const cleanMode = useCleanMode()
+  const [folded, setFolded] = useState(readFolded)
 
-  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS
+  const groups = isAdmin ? [...NAV_GROUPS, ADMIN_GROUP] : NAV_GROUPS
+  const activeSection = sectionOf(pathname)
+
+  const toggle = id => {
+    setFolded(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      try { localStorage.setItem(FOLD_KEY, JSON.stringify([...next])) } catch { /* storage blocked */ }
+      return next
+    })
+  }
 
   const handleLogout = () => {
     logout()
     navigate('/login')
   }
 
-  const handleNav = (path, isProFeature) => {
-    navigate(path)
-    onClose?.()
-  }
-
   const email = user?.email || ''
   const initial = email.charAt(0).toUpperCase() || 'U'
-
-  // Plan badge logic
-  let planLabel, planBadgeClass
-  if (!planLoaded) {
-    // Plan still resolving — show neutral state instead of flashing "Expired"
-    planLabel = '···'
-    planBadgeClass = 'bg-white/5 text-slate-400 border border-white/10'
-  } else if (isActualPro) {
-    planLabel = 'Pro'
-    planBadgeClass = 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20'
-  } else {
-    planLabel = 'Locked'
-    planBadgeClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
-  }
+  const planLabel = !planLoaded ? '···' : isPro ? 'Pro' : 'No active plan'
 
   return (
-    <div className="w-[240px] h-full bg-[#020617] border-r border-white/10 flex flex-col">
+    <div className="w-[240px] h-full bg-bf-deep border-r border-white/10 flex flex-col">
 
       {/* Logo */}
       <div className="px-5 py-5 border-b border-white/10 flex items-center justify-between">
-        <div
-          className="flex items-center gap-2.5 cursor-pointer"
-          onClick={() => handleNav('/dashboard', false)}
-        >
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center shrink-0">
-            <Activity size={16} className="text-black" strokeWidth={3} />
-          </div>
-          <div>
-            <div className="text-sm font-black tracking-tight text-white leading-none">
-              Bias<span className="text-cyan-400">Forge</span>
-            </div>
-            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full mt-0.5 inline-block ${planBadgeClass}`}>
-              {planLabel}
-            </span>
-          </div>
-        </div>
+        <Link to="/today" onClick={onClose} className={`flex items-center gap-2.5 rounded-md ${FOCUS_RING}`}>
+          <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center shrink-0">
+            <Activity size={16} className="text-black" strokeWidth={3} aria-hidden="true" />
+          </span>
+          <span className="text-sm font-black tracking-tight text-bf-text leading-none">
+            Bias<span className="text-cyan-400">Forge</span>
+          </span>
+        </Link>
 
         <button
+          type="button"
           onClick={onClose}
-          className="md:hidden text-slate-500 hover:text-white transition-colors"
+          aria-label="Close menu"
+          className={`md:hidden text-bf-muted hover:text-bf-text transition-colors rounded ${FOCUS_RING}`}
         >
-          <X size={18} />
+          <X size={18} aria-hidden="true" />
         </button>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {navItems.map((item) => {
-          const Icon = item.icon
-          const isActive = location.pathname === item.path
-          const isLocked = trialExpired ? !isActualPro : (item.pro && !isPro)
+      {/* Areas */}
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto" aria-label="Dashboard">
+        {groups.map(g => {
+          const Icon = g.icon
+          const sectionActive = activeSection === g.id
 
+          // A one-page area: the header is the link.
+          if (g.items.length === 1) {
+            const item = g.items[0]
+            const current = pathname === item.path
+            return (
+              <Link
+                key={g.id}
+                to={item.path}
+                onClick={onClose}
+                aria-current={current ? 'page' : undefined}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
+                  current
+                    ? 'bg-bf-accent/10 border-bf-accent text-bf-text'
+                    : 'border-transparent text-bf-text-2 hover:text-bf-text hover:bg-white/5'
+                }`}
+              >
+                <Icon size={16} className={current ? 'text-bf-accent' : 'text-bf-muted'} aria-hidden="true" />
+                {g.label}
+              </Link>
+            )
+          }
+
+          const open = sectionActive || !folded.has(g.id)
+          const listId = `bf-nav-${g.id}`
           return (
-            <button
-              key={item.path}
-              onClick={() => handleNav(item.path, item.pro)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 text-left group ${
-                isActive
-                  ? 'bg-cyan-500/10 border-l-2 border-cyan-400 text-white pl-[10px]'
-                  : isLocked
-                  ? 'text-slate-500 hover:text-slate-400 hover:bg-white/[0.02] border-l-2 border-transparent'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5 border-l-2 border-transparent'
-              }`}
-            >
-              <Icon
-                size={16}
-                className={
-                  isActive ? 'text-cyan-400' 
-                  : isLocked ? 'text-slate-600' 
-                  : 'text-slate-500 group-hover:text-slate-300'
-                }
-              />
-              <span className={isLocked ? 'text-slate-500' : ''}>{item.label}</span>
-              {isLocked && (
-                <Lock size={10} className="ml-auto text-amber-500/60" />
+            <div key={g.id}>
+              <button
+                type="button"
+                onClick={() => toggle(g.id)}
+                aria-expanded={open}
+                aria-controls={listId}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
+                  sectionActive
+                    ? 'border-bf-accent text-bf-text'
+                    : 'border-transparent text-bf-text-2 hover:text-bf-text hover:bg-white/5'
+                }`}
+              >
+                <Icon size={16} className={sectionActive ? 'text-bf-accent' : 'text-bf-muted'} aria-hidden="true" />
+                <span className="flex-1 text-left">{g.label}</span>
+                <ChevronDown
+                  size={14}
+                  aria-hidden="true"
+                  className={`text-bf-muted transition-transform motion-reduce:transition-none ${open ? '' : '-rotate-90'}`}
+                />
+              </button>
+
+              {open && (
+                <ul id={listId} className="mt-0.5 mb-1 ml-[22px] border-l border-white/10 pl-2 space-y-0.5">
+                  {g.items.map(item => {
+                    const current = pathname === item.path
+                    return (
+                      <li key={item.path}>
+                        <Link
+                          to={item.path}
+                          onClick={onClose}
+                          aria-current={current ? 'page' : undefined}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${FOCUS_RING} ${
+                            current
+                              ? 'bg-bf-accent/10 text-bf-accent-soft font-medium'
+                              : 'text-bf-text-2 hover:text-bf-text hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex-1 truncate">{item.label}</span>
+                          {item.hint && (
+                            <span className="text-[9.5px] uppercase tracking-wider text-bf-muted">{item.hint}</span>
+                          )}
+                        </Link>
+                      </li>
+                    )
+                  })}
+                </ul>
               )}
-              {isActive && !isLocked && (
-                <ChevronRight size={12} className="ml-auto text-cyan-400/60" />
-              )}
-            </button>
+            </div>
           )
         })}
       </nav>
 
-      {/* Upgrade banner for locked (non-subscribed) users */}
-      {trialExpired && (
-        <div className="mx-3 mb-3">
-          <button
-            onClick={() => window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')}
-            className="w-full px-3 py-3 rounded-xl bg-gradient-to-r from-amber-500/10 to-cyan-500/10 border border-amber-500/20 text-center hover:border-amber-500/40 transition-all"
-          >
-            <p className="text-[11px] font-bold text-amber-400">Subscribe to Unlock</p>
-            <p className="text-[9px] text-slate-500 mt-0.5">Pro · $40/mo or $399/yr</p>
-          </button>
-        </div>
-      )}
-
       <div className="mx-3 border-t border-white/10" />
 
       <div className="px-3 py-4 space-y-1">
-        <button
-          onClick={() => handleNav('/settings', false)}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 transition-all duration-150"
-        >
-          <Settings size={16} className="text-slate-500" />
-          Settings
-        </button>
-
-        <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 mt-2">
-          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0">
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white/5 border border-white/10">
+          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0" aria-hidden="true">
             {initial}
           </div>
           <div className="flex-1 min-w-0">
-            {!cleanMode && <p className="text-xs text-white font-medium truncate">{email}</p>}
-            <p className={`text-[10px] ${!planLoaded ? 'text-slate-400' : isActualPro ? 'text-cyan-400' : 'text-amber-400'}`}>{planLabel}</p>
+            {!cleanMode && <p className="text-xs text-bf-text font-medium truncate">{email}</p>}
+            <p className={`text-[10px] ${planLoaded && isPro ? 'text-bf-accent' : 'text-bf-muted'}`}>{planLabel}</p>
           </div>
         </div>
 
         <button
+          type="button"
           onClick={handleLogout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-red-400 hover:bg-red-500/5 transition-all duration-150 group"
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-bf-text-2 hover:text-red-400 hover:bg-red-500/5 transition-colors group ${FOCUS_RING}`}
         >
-          <LogOut size={16} className="text-slate-500 group-hover:text-red-400" />
+          <LogOut size={16} className="text-bf-muted group-hover:text-red-400" aria-hidden="true" />
           Sign Out
         </button>
       </div>

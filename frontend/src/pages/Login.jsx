@@ -1,12 +1,28 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { Eye, EyeOff, Activity, ArrowLeft } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
+import { nextFromSearch, rememberNext } from '../lib/nextPath'
+
+// The message for a failed Google sign-in, from the error Supabase puts in the URL hash.
+function oauthErrorFromHash() {
+  if (typeof window === 'undefined') return ''
+  const hash = window.location.hash
+  if (!hash.includes('error')) return ''
+  const params = new URLSearchParams(hash.replace('#', '?'))
+  const desc = params.get('error_description')
+  if (params.get('error') === 'access_denied') return 'Google sign-in was cancelled. Please try again.'
+  if (desc) return desc.replace(/\+/g, ' ')
+  return 'Sign-in failed. Please try again.'
+}
 
 export default function Login() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login, loginWithGoogle, user } = useAuth()
+  // Where RequirePro was sending this visitor before it asked them to sign in.
+  const next = nextFromSearch(location.search) || '/today'
 
   const [tab, setTab] = useState('signin')
   const [mode, setMode] = useState('auth') // 'auth' or 'forgot'
@@ -16,28 +32,18 @@ export default function Login() {
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
-  const [error, setError] = useState('')
+  // A failed Google sign-in comes back with the reason in the URL hash; read it once, up front.
+  const [error, setError] = useState(oauthErrorFromHash)
   const [success, setSuccess] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
 
   useEffect(() => {
-    if (user) navigate('/dashboard', { replace: true })
-  }, [user, navigate])
-// Detect OAuth redirect errors from URL
+    if (user) navigate(next, { replace: true })
+  }, [user, navigate, next])
+  // Clear the OAuth error out of the URL once it has been read. The query (?next=) is kept.
   useEffect(() => {
-    const hash = window.location.hash
-    if (hash.includes('error')) {
-      const params = new URLSearchParams(hash.replace('#', '?'))
-      const errorType = params.get('error')
-      const desc = params.get('error_description')
-      if (errorType === 'access_denied') {
-        setError('Google sign-in was cancelled. Please try again.')
-      } else if (desc) {
-        setError(desc.replace(/\+/g, ' '))
-      } else {
-        setError('Sign-in failed. Please try again.')
-      }
-      window.history.replaceState(null, '', window.location.pathname)
+    if (window.location.hash.includes('error')) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
     }
   }, [])
   const validate = () => {
@@ -79,7 +85,7 @@ export default function Login() {
 
       if (data.success) {
         login(data.user, data.session)
-        navigate('/dashboard', { replace: true })
+        navigate(next, { replace: true })
       } else {
         setError(data.error || 'Something went wrong. Please try again.')
       }
@@ -94,6 +100,8 @@ export default function Login() {
     setError('')
     setGoogleLoading(true)
     try {
+      // Google returns to /dashboard (the URL Supabase allows); park `next` for that redirect.
+      rememberNext(next)
       await loginWithGoogle()
     } catch (err) {
       const msg = err?.message?.toLowerCase() || ''

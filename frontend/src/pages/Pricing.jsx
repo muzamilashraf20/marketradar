@@ -13,7 +13,8 @@ export default function Pricing() {
   const [cryptoError, setCryptoError] = useState('')
   // Whether the payment-method choice is expanded under the primary CTA. Presentation only.
   const [showPayChoice, setShowPayChoice] = useState(false)
-  const { isTrialActive, trialDaysLeft, user } = useAuth()
+  // No longer routed: /pricing redirects to /subscribe (signed in) or /#pricing. Kept for cleanup.
+  const { user } = useAuth()
 
   const handleCheckout = () => {
     window.open('https://biasforge.gumroad.com/l/ntjpje', '_blank')
@@ -35,7 +36,7 @@ export default function Pricing() {
         throw new Error(data.error || 'Could not start crypto checkout')
       }
       window.location.href = data.invoice_url // redirect to NOWPayments hosted invoice
-    } catch (e) {
+    } catch {
       setCryptoError('Crypto checkout failed. Please try again or use card payment.')
       setCryptoLoading(false)
     }
@@ -72,9 +73,7 @@ export default function Pricing() {
             Upgrade to Pro
           </h1>
           <p className="text-slate-400 text-lg max-w-2xl mx-auto">
-            {isTrialActive
-              ? `You have ${trialDaysLeft} days left in your trial. Upgrade now to keep access.`
-              : 'Get full access to all BiasForge trading tools.'}
+            Get full access to all BiasForge trading tools.
           </p>
         </div>
 

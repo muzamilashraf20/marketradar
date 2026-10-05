@@ -25,6 +25,10 @@ export function AuthProvider({ children }) {
   const [planLoaded, setPlanLoaded] = useState(() => {
     return !!localStorage.getItem('bf_plan')
   })
+  // The server could not give a verdict and there is no cached plan to stand in for it. RequirePro
+  // shows "Couldn't confirm your plan · Retry" for this — never the checkout, because a paying user
+  // must not be sent to pay again just because the backend or Supabase hiccupped.
+  const [planError, setPlanError] = useState(false)
 
   const userIdRef = useRef(null)
   const planReq = useRef({ p: null, at: 0, uid: null })
@@ -70,6 +74,7 @@ export function AuthProvider({ children }) {
           const d = await res.json()
           if (d.success && d.plan) {
             setPlan(d.plan)
+            setPlanError(false)
             localStorage.setItem('bf_plan', JSON.stringify(d.plan))
             return
           }
@@ -78,19 +83,24 @@ export function AuthProvider({ children }) {
 
       // 3. Backend unreachable: keep the cache if there is one, else read the row directly
       //    (RLS lets a signed-in user read their own row). Not cached, so the server's
-      //    answer replaces it next time.
-      if (cached) return
+      //    answer replaces it next time. The direct read can confirm Pro, but it cannot confirm
+      //    "not Pro" (no expiry or admin rule behind it), so anything short of Pro is an error.
+      if (cached) { setPlanError(false); return }
       const uid = userId || userIdRef.current
+      let direct = null
       if (uid) {
         const { data } = await supabase
           .from('user_plans')
           .select('*')
           .eq('user_id', uid)
           .maybeSingle()
-        if (data) setPlan(data)
+        direct = data || null
       }
+      if (direct?.tier === 'pro') { setPlan(direct); setPlanError(false) }
+      else setPlanError(true)
     } catch (e) {
       console.error('Failed to fetch plan:', e.message)
+      if (!cached) setPlanError(true)
     } finally {
       setPlanLoaded(true)
     }
@@ -169,6 +179,10 @@ export function AuthProvider({ children }) {
           if (session.user.id !== userIdRef.current) {
             userIdRef.current = session.user.id
             localStorage.removeItem('bf_plan')
+            // Not the previous user's plan: RequirePro waits for this one.
+            setPlan(null)
+            setPlanLoaded(false)
+            setPlanError(false)
             fetchPlan(session.user.id, { force: true })
           }
         }
@@ -178,6 +192,7 @@ export function AuthProvider({ children }) {
           setUser(null)
           setPlan(null)
           setPlanLoaded(false)
+          setPlanError(false)
           localStorage.removeItem('bf_user')
           localStorage.removeItem('bf_plan')
         }
@@ -216,9 +231,21 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  // Declared before the effect below that calls it. Uses only state setters and the supabase client,
+  // which never change, so the effect's first-render copy is always current.
+  const logout = async () => {
+    localStorage.removeItem('bf_user')
+    localStorage.removeItem('bf_plan')
+    setUser(null)
+    setPlan(null)
+    setPlanLoaded(false)
+    setPlanError(false)
+    await supabase.auth.signOut().catch(() => {})
+  }
+
   // A Pro route refused us (see authFetch.js), so the plan on screen is stale. Ask the server again;
-  // a lapsed plan comes back pro:false and DashboardLayout shows the lock wall. A 401 with no session
-  // left means the login itself is gone, so sign out rather than show an app that cannot load.
+  // a lapsed plan comes back pro:false and RequirePro sends the account to /subscribe. A 401 with no
+  // session left means the login itself is gone, so sign out rather than show an app that cannot load.
   // Throttled: one refused dashboard load fires several requests at once.
   useEffect(() => {
     let last = 0
@@ -241,6 +268,9 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('bf_plan')
     userIdRef.current = payload.id || null
     setUser(payload)
+    setPlan(null)
+    setPlanLoaded(false)
+    setPlanError(false)
     fetchPlan(payload.id, { force: true })
     // Hand the session to the supabase client so it auto-refreshes the JWT
     // (same as the OAuth flow — without this, email users' tokens expire after ~1h → "Invalid token")
@@ -259,31 +289,18 @@ export function AuthProvider({ children }) {
     if (error) throw error
   }
 
-  const logout = async () => {
-    localStorage.removeItem('bf_user')
-    localStorage.removeItem('bf_plan')
-    setUser(null)
-    setPlan(null)
-    setPlanLoaded(false)
-    await supabase.auth.signOut().catch(() => {})
-  }
-
-  // No free trial — BiasForge is paid-only. Access requires an active Pro plan.
+  // No free tier — BiasForge is paid-only. Every dashboard feature needs an active Pro plan.
   // plan.pro is the server's verdict (expiry and admins included). The tier check covers only a plan
   // that did not come from the server — an old cache, or the direct read while the backend is down —
   // and is replaced as soon as /api/user/plan answers.
-  const isActualPro = typeof plan?.pro === 'boolean' ? plan.pro : plan?.tier === 'pro'
-  const trialDaysLeft = 0
-  const isTrialActive = false
-  // "Locked": a signed-in user whose plan has resolved and is not Pro → must subscribe.
-  // (Kept the trialExpired name so downstream gating/lock-wall logic stays unchanged.)
-  const trialExpired = !!(user && planLoaded && !isActualPro)
-
-  const isPro = isActualPro
+  const isPro = typeof plan?.pro === 'boolean' ? plan.pro : plan?.tier === 'pro'
+  // A signed-in user whose plan has been CONFIRMED as not Pro → the checkout screen. An unconfirmed
+  // plan (planError) is never treated as "not Pro".
+  const needsSubscription = !!(user && planLoaded && !planError && !isPro)
 
   return (
     <AuthContext.Provider value={{
-      user, plan, isPro, isActualPro, isTrialActive, trialDaysLeft, trialExpired, planLoaded, isAdmin,
+      user, plan, isPro, needsSubscription, planError, planLoaded, isAdmin,
       login, loginWithGoogle, logout, loading, fetchPlan
     }}>
       {children}
@@ -291,6 +308,8 @@ export function AuthProvider({ children }) {
   )
 }
 
+// The provider's own hook, kept beside it on purpose (every consumer imports it from here).
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   return useContext(AuthContext)
 }
