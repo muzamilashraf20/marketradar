@@ -545,12 +545,12 @@ Slide plan, in this order:
 
   event_explainer: {
     slides: [5, 7],
-    facts: f => ({ ...pick(f, ['dateLabel']), event: pick(f.event || {}, ['time', 'currency', 'title', 'forecast', 'previous', 'impact']) }),
+    facts: f => ({ ...pick(f, ['dateLabel', 'reactsIn']), event: pick(f.event || {}, ['time', 'currency', 'title', 'forecast', 'previous', 'impact']) }),
     brief: `Explain one high-impact event on today's calendar, FACTS.event.
 Slide plan, in this order:
 1. cover — the event and its time, exactly as FACTS gives it (UTC).
 2. concept — what the release actually measures, in plain English.
-3. points — which pairs and assets tend to react, and through what mechanism.
+3. points — which of FACTS.reactsIn tend to react and through what mechanism. Name ONLY instruments listed in FACTS.reactsIn; never name any other pair or asset.
 4. concept — what traders watch when it lands: the gap between the forecast and the release, and what separates a lasting repricing from a knee-jerk move.
 5. callout — one honest line. Say plainly that this is not a prediction of the number or the direction.
 6. cta.

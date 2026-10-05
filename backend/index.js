@@ -670,6 +670,7 @@ function socialFactsBlock(contentType, facts = {}) {
     const e = facts.event || {}
     const nums = [e.forecast && `f ${e.forecast}`, e.previous && `p ${e.previous}`].filter(Boolean).join(', ')
     lines.push(`• ${esc(e.time)} ${esc(e.currency)} ${esc(e.title)}${e.impact ? ` [${esc(e.impact)}]` : ''}${nums ? ` (${esc(nums)})` : ''}`)
+    if (facts.reactsIn?.length) lines.push(`reacts in: ${esc(facts.reactsIn.join(', '))}`)
   } else if (contentType === 'called_it') {
     const c = facts.call || {}
     const p = facts.priorPost || {}
@@ -1042,7 +1043,7 @@ const socialGenerateHandler = async (req, res) => {
       } else if (contentType === 'event_explainer') {
         const { events, why } = await nextEventPreview([])
         if (!events.length) return res.status(400).json({ error: why === 'none-ahead(USD)' ? 'No upcoming high-impact USD events today' : `The next high-impact USD event is too far off (${why.replace('next-in-', '')})` })
-        facts = { dateLabel: dateLabel(now), event: events[0] }
+        facts = { dateLabel: dateLabel(now), event: events[0], reactsIn: eventReactsIn(events[0].currency) }
       } else if (contentType === 'scorecard') {
         const rows = await socialScorecardRows()
         const resolved = rows.filter(r => r.outcome !== 'open')
@@ -1896,7 +1897,7 @@ async function planIgCarousel(now, nowMs) {
   // 2. A high-impact USD event still ahead takes the day's slot.
   const { events } = await nextEventPreview([], nowMs)
   if (events.length) {
-    return { type: 'event_explainer', facts: { dateLabel: dateLabel(now), event: events[0] }, sourceRef: { trigger: 'planner', eventKey: eventKey(events[0]) } }
+    return { type: 'event_explainer', facts: { dateLabel: dateLabel(now), event: events[0], reactsIn: eventReactsIn(events[0].currency) }, sourceRef: { trigger: 'planner', eventKey: eventKey(events[0]) } }
   }
 
   // 3. The weekday plan, with its own conditions.
@@ -2849,15 +2850,24 @@ async function findAuthUserByEmail(email) {
 // public: a level nobody can trade any more is evidence, not inventory. It is
 // what makes the locked panel on the landing page credible.
 const PUBLIC_THESIS_CHARS = 190
+// A price written into the prose (156.720, 1.08450, 2,650.30): 2–5 decimals, not followed by % or
+// bp, so rates and moves ("4.25%", "0.25bp") stay. Redacted after shortening — the one sentence
+// that is kept can still quote the level.
+const PRICE_LIKE = /(?<![\d.])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2,5}(?!\.?\d)(?!\s*(?:%|bps?\b))/g
 function publicThesis(t) {
   if (!t) return t
   const clean = String(t).trim()
-  if (clean.length <= PUBLIC_THESIS_CHARS) return clean
-  const cut = clean.slice(0, PUBLIC_THESIS_CHARS)
-  const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
-  if (stop > PUBLIC_THESIS_CHARS * 0.5) return cut.slice(0, stop + 1)
-  const space = cut.lastIndexOf(' ')
-  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+  let short = clean
+  if (clean.length > PUBLIC_THESIS_CHARS) {
+    const cut = clean.slice(0, PUBLIC_THESIS_CHARS)
+    const stop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+    if (stop > PUBLIC_THESIS_CHARS * 0.5) short = cut.slice(0, stop + 1)
+    else {
+      const space = cut.lastIndexOf(' ')
+      short = (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…'
+    }
+  }
+  return short.replace(PRICE_LIKE, 'key level')
 }
 
 // A live bias row, minus the level and minus the full read. hasInvalidation is
@@ -2874,15 +2884,24 @@ function publicPair(p) {
 
 // The Today's Bias payload. whatWouldFlipIt is the invalidation stated in prose,
 // and runnerUps names the engine's other picks — both are the paid view.
+// The headline also nests the bias itself (getV2HeadlineBias's `bias`), level
+// included — trim that copy too, or the level rides through untouched. Entry
+// timing (FRESH / EXTENDED / LATE) is the paid view as well, at either depth.
 function publicTodayBias(body) {
   if (!body || typeof body !== 'object') return body
-  const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, ...rest } = body
-  return {
+  const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, entryTiming, entryTimingNote, ...rest } = body
+  const out = {
     ...rest,
     reasoning: publicThesis(rest.reasoning),
     hasInvalidation: whatWouldFlipIt != null,
     publicView: true,
   }
+  if (rest.bias && typeof rest.bias === 'object') {
+    const { invalidation, levels, invalidationReasoning, entryTiming, entryTimingNote, ...b } = rest.bias
+    out.bias = { ...b, reasoning: publicThesis(b.reasoning), hasInvalidation: invalidation != null }
+    out.hasInvalidation = out.hasInvalidation || invalidation != null
+  }
+  return out
 }
 
 // Swap res.json for a trimming version when the caller is anonymous, so every
@@ -6321,6 +6340,13 @@ const BRIEF_PAIRS = {
   CHF: ['USDCHF', 'EURUSD', 'XAUUSD'],
   NZD: ['NZDUSD', 'AUDUSD', 'EURUSD', 'XAUUSD'],
   CNY: ['AUDUSD', 'USDJPY', 'XAUUSD'],
+}
+
+// The instruments an event_explainer deck may name, from BRIEF_PAIRS, with non-FX symbols spelled
+// out so the writer can say "gold" and still be grounded. Unknown currency: none.
+const REACTS_IN_ALIAS = { XAUUSD: 'XAUUSD (gold)' }
+function eventReactsIn(currency) {
+  return (BRIEF_PAIRS[currency] || []).map(p => REACTS_IN_ALIAS[p] || p)
 }
 
 // Which already-released prints LEAD a given event. `match` classifies the event the user clicked;
