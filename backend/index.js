@@ -2885,10 +2885,11 @@ function publicPair(p) {
 // The Today's Bias payload. whatWouldFlipIt is the invalidation stated in prose,
 // and runnerUps names the engine's other picks — both are the paid view.
 // The headline also nests the bias itself (getV2HeadlineBias's `bias`), level
-// included — trim that copy too, or the level rides through untouched.
+// included — trim that copy too, or the level rides through untouched. Entry
+// timing (FRESH / EXTENDED / LATE) is the paid view as well, at either depth.
 function publicTodayBias(body) {
   if (!body || typeof body !== 'object') return body
-  const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, ...rest } = body
+  const { whatWouldFlipIt, runnerUps, selectionReasoning, movePotential, primaryDriver, entryTiming, entryTimingNote, ...rest } = body
   const out = {
     ...rest,
     reasoning: publicThesis(rest.reasoning),
@@ -2896,7 +2897,7 @@ function publicTodayBias(body) {
     publicView: true,
   }
   if (rest.bias && typeof rest.bias === 'object') {
-    const { invalidation, levels, invalidationReasoning, ...b } = rest.bias
+    const { invalidation, levels, invalidationReasoning, entryTiming, entryTimingNote, ...b } = rest.bias
     out.bias = { ...b, reasoning: publicThesis(b.reasoning), hasInvalidation: invalidation != null }
     out.hasInvalidation = out.hasInvalidation || invalidation != null
   }
