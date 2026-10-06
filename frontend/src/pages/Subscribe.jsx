@@ -155,7 +155,7 @@ export default function Subscribe() {
   return (
     <div className="min-h-screen bg-bf-bg text-bf-text px-4 py-10 sm:py-14">
       <div className="mx-auto w-full max-w-md">
-        <a href="/" className={`flex items-center gap-2 justify-center rounded-md ${FOCUS_RING}`}>
+        <a href="/" className={`flex items-center gap-2 justify-center min-h-10 rounded-md ${FOCUS_RING}`}>
           <span className="w-8 h-8 rounded-[9px] bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center">
             <Activity size={17} className="text-black" strokeWidth={3} aria-hidden="true" />
           </span>
@@ -224,7 +224,7 @@ export default function Subscribe() {
                   type="button"
                   onClick={() => setAnnual(o.on)}
                   aria-pressed={annual === o.on}
-                  className={`bf-pill px-4 py-1.5 transition-colors ${FOCUS_RING} ${
+                  className={`bf-pill px-4 py-1.5 min-h-10 transition-colors ${FOCUS_RING} ${
                     annual === o.on ? 'bg-bf-text text-bf-bg font-medium' : 'text-bf-text-2 hover:text-bf-text'
                   }`}
                 >
@@ -298,16 +298,16 @@ export default function Subscribe() {
         )}
 
         <div className="mt-6 flex flex-col items-center gap-3 text-[13px] text-bf-text-2">
-          <button type="button" onClick={contactAboutEmail} className={`hover:text-bf-text underline decoration-white/20 underline-offset-[3px] rounded ${FOCUS_RING}`}>
+          <button type="button" onClick={contactAboutEmail} className={`min-h-10 px-1 hover:text-bf-text underline decoration-white/20 underline-offset-[3px] rounded ${FOCUS_RING}`}>
             Paid with a different email?
           </button>
           <div className="flex items-center gap-5">
-            <button type="button" onClick={() => navigate('/billing')} className={`hover:text-bf-text rounded ${FOCUS_RING}`}>Billing</button>
-            <button type="button" onClick={() => navigate('/settings')} className={`hover:text-bf-text rounded ${FOCUS_RING}`}>Settings</button>
+            <button type="button" onClick={() => navigate('/billing')} className={`min-h-10 px-1 hover:text-bf-text rounded ${FOCUS_RING}`}>Billing</button>
+            <button type="button" onClick={() => navigate('/settings')} className={`min-h-10 px-1 hover:text-bf-text rounded ${FOCUS_RING}`}>Settings</button>
             <button
               type="button"
               onClick={async () => { await logout(); navigate('/login') }}
-              className={`hover:text-bf-text rounded ${FOCUS_RING}`}
+              className={`min-h-10 px-1 hover:text-bf-text rounded ${FOCUS_RING}`}
             >
               Sign out
             </button>

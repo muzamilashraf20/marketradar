@@ -484,7 +484,7 @@ export default function TradeJournal() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
           <button
             onClick={() => { resetForm(); setShowForm(true) }}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
+            className="flex items-center gap-2 px-4 py-2.5 min-h-10 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
           >
             <Plus size={14} />
             Log Trade
@@ -497,7 +497,7 @@ export default function TradeJournal() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search trades..."
-              className="w-full pl-9 pr-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
+              className="w-full pl-9 pr-3 py-2 min-h-10 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
             />
           </div>
 
@@ -505,7 +505,7 @@ export default function TradeJournal() {
             <select
               value={filterPair}
               onChange={(e) => setFilterPair(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-300 outline-none"
+              className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-300 outline-none"
             >
               <option value="All">All Pairs</option>
               {PAIRS.map(p => <option key={p} value={p}>{p}</option>)}
@@ -513,7 +513,7 @@ export default function TradeJournal() {
             <select
               value={filterResult}
               onChange={(e) => setFilterResult(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-300 outline-none"
+              className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-300 outline-none"
             >
               <option value="All">All Results</option>
               <option value="WIN">Wins</option>
@@ -525,7 +525,7 @@ export default function TradeJournal() {
                 if (sortBy === 'date') { setSortBy('pnl') }
                 else { setSortBy('date'); setSortDir(sortDir === 'desc' ? 'asc' : 'desc') }
               }}
-              className="flex items-center gap-1 px-2 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-slate-400 hover:text-white transition-colors"
+              className="flex items-center gap-1 px-2 py-2 min-h-10 bg-white/5 border border-white/10 rounded-lg text-xs text-slate-400 hover:text-white transition-colors"
             >
               <Filter size={12} />
               {sortBy === 'date' ? 'Date' : 'P&L'}
@@ -552,7 +552,7 @@ export default function TradeJournal() {
             {trades.length === 0 && (
               <button
                 onClick={() => { resetForm(); setShowForm(true) }}
-                className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
+                className="px-5 py-2.5 min-h-10 bg-gradient-to-r from-cyan-500 to-emerald-500 text-black text-xs font-bold rounded-xl hover:opacity-90 transition-all"
               >
                 Log Your First Trade
               </button>

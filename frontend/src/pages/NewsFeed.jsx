@@ -414,11 +414,11 @@ export default function NewsFeed() {
                   {/* Buttons */}
                   <div className="mt-4 flex gap-2">
                     <a href={a.url} target="_blank" rel="noopener noreferrer"
-                      className="flex-1 py-2 px-4 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold text-center hover:bg-cyan-500/20 transition-all">
+                      className="flex-1 py-2 px-4 min-h-10 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold text-center hover:bg-cyan-500/20 transition-all">
                       Read
                     </a>
                     <button onClick={() => setSelectedArticle(a)}
-                      className="flex items-center gap-1.5 py-2 px-4 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl text-sm font-semibold hover:bg-emerald-500/20 transition-all">
+                      className="flex items-center gap-1.5 py-2 px-4 min-h-10 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl text-sm font-semibold hover:bg-emerald-500/20 transition-all">
                       <Zap className="w-3.5 h-3.5" /> Analyze
                     </button>
                   </div>

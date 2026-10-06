@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import DashboardLayout from '../components/layout/DashboardLayout'
 import {
   TrendingUp, TrendingDown, Minus, RefreshCw,
@@ -6,6 +6,17 @@ import {
   Activity, Zap
 } from 'lucide-react'
 import { authedFetch } from '../lib/authFetch'
+import ConvictionMeter from '../components/ui/ConvictionMeter'
+
+// The last read fetched for a pair on this device, or null.
+function savedBias(asset) {
+  try {
+    const saved = localStorage.getItem('bf_bias_' + asset)
+    return saved ? JSON.parse(saved) : null
+  } catch {
+    return null
+  }
+}
 
 const ASSETS = [
   'EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'GBPJPY',
@@ -75,21 +86,19 @@ function SkeletonCard() {
 export default function BiasMatrix() {
   const [selectedAsset, setSelectedAsset] = useState('EURUSD')
   const [loading, setLoading] = useState(false)
-  const [bias, setBias] = useState(null)
+  const [bias, setBias] = useState(() => savedBias('EURUSD'))
   const [error, setError] = useState('')
   // A pair the engine doesn't cover isn't a failure — it's a coverage gap. Tracked separately so it
   // renders as a plain note instead of a red error the user might read as something being broken.
   const [notice, setNotice] = useState('')
 
-  useEffect(() => {
+  // The last read saved for a pair is shown as soon as the pair is picked: read when the page opens
+  // (bias's initial value) and on each switch (selectAsset) rather than copied in by an effect.
+  const selectAsset = asset => {
+    setSelectedAsset(asset)
     setError(''); setNotice('')
-    try {
-      const saved = localStorage.getItem('bf_bias_' + selectedAsset)
-      setBias(saved ? JSON.parse(saved) : null)
-    } catch {
-      setBias(null)
-    }
-  }, [selectedAsset])
+    setBias(savedBias(asset))
+  }
 
   const loadBias = async () => {
     setLoading(true)
@@ -120,11 +129,6 @@ export default function BiasMatrix() {
     setLoading(false)
   }
 
-  const confColor = (bias?.confidence || 0) >= 75
-    ? 'text-emerald-400' : (bias?.confidence || 0) >= 60
-    ? 'text-cyan-400' : (bias?.confidence || 0) >= 50
-    ? 'text-amber-400' : 'text-red-400'
-
   return (
     <DashboardLayout title="AI Bias Engine" subtitle="AI-powered macro trading bias">
       <div className="space-y-6 max-w-5xl">
@@ -142,8 +146,8 @@ export default function BiasMatrix() {
               {ASSETS.map(asset => (
                 <button
                   key={asset}
-                  onClick={() => setSelectedAsset(asset)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  onClick={() => selectAsset(asset)}
+                  className={`px-3 py-1.5 min-h-10 rounded-lg text-xs font-semibold border transition-all ${
                     selectedAsset === asset
                       ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400'
                       : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
@@ -215,28 +219,19 @@ export default function BiasMatrix() {
                   </p>
                   <DirectionBadge direction={bias.direction} />
                 </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-xs text-slate-500 mb-1">Confidence</p>
-                    <p className={`text-4xl font-black ${confColor}`}>
-                      {bias.confidence}%
-                    </p>
-                  </div>
-                  <TradeGrade grade={bias.tradeGrade} />
-                </div>
+                <TradeGrade grade={bias.tradeGrade} />
               </div>
 
-              {/* Confidence bar */}
-              <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-2">
-                <div
-                  className={`h-full rounded-full transition-all duration-1000 ${
-                    (bias.confidence || 0) >= 75 ? 'bg-emerald-400' :
-                    (bias.confidence || 0) >= 60 ? 'bg-cyan-400' :
-                    (bias.confidence || 0) >= 50 ? 'bg-amber-400' : 'bg-red-400'
-                  }`}
-                  style={{ width: `${bias.confidence}%` }}
-                />
-              </div>
+              {/* Conviction on the engine's own 40–92 scale, with its grade. It used to read
+                  "73%" over a 0–100 bar: a scale the engine does not use, and one that reads
+                  as a probability. */}
+              <ConvictionMeter
+                value={typeof bias.confidence === 'number' ? bias.confidence : null}
+                grade={bias.tradeGrade && bias.tradeGrade !== '-' ? bias.tradeGrade : null}
+                size="md"
+                scale
+                className="mb-2"
+              />
               {bias.confidenceReasoning && (
                 <p className="text-xs text-slate-500 italic">{bias.confidenceReasoning}</p>
               )}

@@ -336,7 +336,7 @@ export default function COTReport() {
         <div className="flex items-center justify-end">
           <button
             onClick={fetchCOT}
-            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-cyan-400 transition-colors"
+            className="flex items-center gap-1.5 min-h-10 text-xs text-slate-500 hover:text-cyan-400 transition-colors"
           >
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Refresh

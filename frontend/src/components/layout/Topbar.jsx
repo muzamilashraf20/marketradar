@@ -152,7 +152,8 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={onMenuClick}
-            className="md:hidden text-slate-400 hover:text-white transition-colors p-1 shrink-0"
+            className="md:hidden w-10 h-10 -ml-2 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0"
+            aria-label="Open menu"
           >
             <Menu size={20} />
           </button>
@@ -182,7 +183,8 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
           {/* Search */}
           <button
             onClick={() => setSearchOpen(true)}
-            className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all"
+            className="w-10 h-10 flex items-center justify-center text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all"
+            aria-label="Search pages"
             title="Search (Ctrl+K)"
           >
             <Search size={16} />
@@ -192,7 +194,8 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
           <div className="relative" ref={notifRef}>
             <button
               onClick={() => { setNotifOpen(!notifOpen); setDropdownOpen(false) }}
-              className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all relative"
+              className="w-10 h-10 flex items-center justify-center text-slate-500 hover:text-white hover:bg-white/5 rounded-lg transition-all relative"
+              aria-label="Notifications"
             >
               <Bell size={16} />
               {unreadCount > 0 && (
@@ -278,7 +281,8 @@ export default function Topbar({ title, subtitle, onMenuClick }) {
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => { setDropdownOpen(!dropdownOpen); setNotifOpen(false) }}
-              className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-lg hover:bg-white/5 transition-all"
+              className="flex items-center gap-2 pl-2 pr-1 py-1.5 rounded-lg hover:bg-white/5 transition-all"
+              aria-label="Account menu"
             >
               <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-emerald-500 flex items-center justify-center text-black text-xs font-bold shrink-0">
                 {initial}

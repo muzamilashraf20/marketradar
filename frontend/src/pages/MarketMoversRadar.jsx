@@ -122,7 +122,7 @@ export default function MarketMoversRadar() {
           <span className="text-xs text-slate-500">— Tracking statements from world leaders, central bankers & market movers</span>
           <button
             onClick={fetchNews}
-            className="ml-auto text-slate-500 hover:text-cyan-400 transition-colors shrink-0"
+            className="ml-auto -my-3 -mr-3 w-10 h-10 flex items-center justify-center text-slate-500 hover:text-cyan-400 transition-colors shrink-0"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
@@ -171,7 +171,7 @@ export default function MarketMoversRadar() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search news or mover..."
-              className="w-full pl-9 pr-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
+              className="w-full pl-9 pr-3 py-2 min-h-10 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
             />
           </div>
 
@@ -184,7 +184,7 @@ export default function MarketMoversRadar() {
                 <button
                   key={mover.id}
                   onClick={() => setActiveFilter(mover.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all shrink-0 ${
+                  className={`flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-10 min-w-10 rounded-lg text-xs font-medium border whitespace-nowrap transition-all shrink-0 ${
                     isActive
                       ? mover.color + ' border-current'
                       : 'bg-white/5 text-slate-500 border-white/10 hover:border-white/20'
@@ -334,7 +334,7 @@ export default function MarketMoversRadar() {
                         href={article.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[10px] text-slate-600 hover:text-cyan-400 transition-colors flex items-center gap-1"
+                        className="min-h-10 text-[10px] text-slate-600 hover:text-cyan-400 transition-colors flex items-center gap-1"
                       >
                         Read source <ExternalLink size={10} />
                       </a>

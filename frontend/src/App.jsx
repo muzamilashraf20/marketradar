@@ -6,7 +6,7 @@ import LandingV2 from './pages/LandingV2'
 import AboutPage from './pages/About'
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
-import Dashboard from './pages/Dashboard'
+import Today from './pages/Today'
 import NewsFeed from './pages/NewsFeed'
 import MarketMoversRadar from './pages/MarketMoversRadar'
 import BiasMatrix from './pages/BiasMatrix'
@@ -67,7 +67,7 @@ export default function App() {
             unpaid account needs — the checkout screen, Settings and Billing. Paths
             are flat; the six areas (Today, Bias, Events, Markets, Account, Journal)
             exist in the sidebar grouping only — see components/layout/navConfig.js. */}
-        <Route path="/today" element={pro(<Dashboard />)} />
+        <Route path="/today" element={pro(<Today />)} />
 
         <Route path="/bias" element={pro(<BiasMatrix />)} />
         <Route path="/bias/history" element={pro(<BiasHistory />)} />

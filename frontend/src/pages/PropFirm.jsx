@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Shield, AlertTriangle, TrendingUp, DollarSign, RefreshCw, Save, CheckCircle2, XCircle, Clock, Brain, Zap, Calendar, Trophy, BarChart3, Target } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { authedFetch } from '../lib/authFetch';
@@ -21,23 +21,37 @@ const FIRM_PRESETS = {
   topstep: { label: 'Topstep', accountSizes: [50000, 100000, 150000], dailyDD: 4, totalDD: 6, profitTarget: 6, challengeDays: 0, consistency: 40 },
 };
 
+// The settings saved on this device, read once when the page opens (same fields and defaults as before).
+function loadSaved() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch (e) {
+    console.error('Failed to load saved settings:', e);
+    return {};
+  }
+}
+
 export default function PropFirmMode() {
+  // Saved settings become each field's starting value — no effect copying them in after the first render.
+  const [saved] = useState(loadSaved);
+
   // Settings
-  const [selectedFirm, setSelectedFirm] = useState('custom');
-  const [accountSize, setAccountSize] = useState(50000);
-  const [dailyDrawdownPercent, setDailyDrawdownPercent] = useState(5);
-  const [totalDrawdownPercent, setTotalDrawdownPercent] = useState(10);
-  const [profitTarget, setProfitTarget] = useState(10);
-  const [riskPerTrade, setRiskPerTrade] = useState(1);
+  const [selectedFirm, setSelectedFirm] = useState(saved.selectedFirm || 'custom');
+  const [accountSize, setAccountSize] = useState(saved.accountSize || 50000);
+  const [dailyDrawdownPercent, setDailyDrawdownPercent] = useState(saved.dailyDrawdownPercent || 5);
+  const [totalDrawdownPercent, setTotalDrawdownPercent] = useState(saved.totalDrawdownPercent || 10);
+  const [profitTarget, setProfitTarget] = useState(saved.profitTarget || 10);
+  const [riskPerTrade, setRiskPerTrade] = useState(saved.riskPerTrade || 1);
 
   // Challenge Tracking
-  const [challengeStartDate, setChallengeStartDate] = useState('');
-  const [challengeDays, setChallengeDays] = useState(30);
+  const [challengeStartDate, setChallengeStartDate] = useState(saved.challengeStartDate || '');
+  const [challengeDays, setChallengeDays] = useState(saved.challengeDays || 30);
 
   // Current State
-  const [currentDailyPnl, setCurrentDailyPnl] = useState('');
-  const [currentTotalPnl, setCurrentTotalPnl] = useState('');
-  const [bestDayProfit, setBestDayProfit] = useState('');
+  const [currentDailyPnl, setCurrentDailyPnl] = useState(String(saved.currentDailyPnl ?? ''));
+  const [currentTotalPnl, setCurrentTotalPnl] = useState(String(saved.currentTotalPnl ?? ''));
+  const [bestDayProfit, setBestDayProfit] = useState(String(saved.bestDayProfit ?? ''));
 
   // AI Guardian State
   const [tradeSymbol, setTradeSymbol] = useState('EUR/USD');
@@ -47,29 +61,6 @@ export default function PropFirmMode() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiVerdict, setAiVerdict] = useState(null);
   const [aiError, setAiError] = useState(null);
-
-  // Load from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        setSelectedFirm(data.selectedFirm || 'custom');
-        setAccountSize(data.accountSize || 50000);
-        setDailyDrawdownPercent(data.dailyDrawdownPercent || 5);
-        setTotalDrawdownPercent(data.totalDrawdownPercent || 10);
-        setProfitTarget(data.profitTarget || 10);
-        setRiskPerTrade(data.riskPerTrade || 1);
-        setChallengeStartDate(data.challengeStartDate || '');
-        setChallengeDays(data.challengeDays || 30);
-        setCurrentDailyPnl(String(data.currentDailyPnl ?? ''));
-        setCurrentTotalPnl(String(data.currentTotalPnl ?? ''));
-        setBestDayProfit(String(data.bestDayProfit ?? ''));
-      } catch (e) {
-        console.error('Failed to load saved settings:', e);
-      }
-    }
-  }, []);
 
   const handleSave = () => {
     const data = {
@@ -386,7 +377,7 @@ export default function PropFirmMode() {
                 <select
                   value={tradeSymbol}
                   onChange={(e) => setTradeSymbol(e.target.value)}
-                  className="w-full bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500"
+                  className="w-full min-h-10 bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500"
                 >
                   {['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','NZD/USD','USD/CAD','GBP/JPY','EUR/JPY','EUR/GBP','AUD/JPY','XAU/USD','BTC/USD'].map(s => (
                     <option key={s} value={s}>{s}</option>
@@ -399,7 +390,7 @@ export default function PropFirmMode() {
                 <div className="grid grid-cols-2 gap-1">
                   <button
                     onClick={() => setTradeDirection('BUY')}
-                    className={`px-2 py-2 rounded-lg text-sm font-semibold transition-all ${
+                    className={`px-2 py-2 min-h-10 rounded-lg text-sm font-semibold transition-all ${
                       tradeDirection === 'BUY'
                         ? 'bg-emerald-500/20 border border-emerald-500/50 text-emerald-300'
                         : 'bg-[#030712] border border-white/10 text-slate-400 hover:border-white/20'
@@ -409,7 +400,7 @@ export default function PropFirmMode() {
                   </button>
                   <button
                     onClick={() => setTradeDirection('SELL')}
-                    className={`px-2 py-2 rounded-lg text-sm font-semibold transition-all ${
+                    className={`px-2 py-2 min-h-10 rounded-lg text-sm font-semibold transition-all ${
                       tradeDirection === 'SELL'
                         ? 'bg-red-500/20 border border-red-500/50 text-red-300'
                         : 'bg-[#030712] border border-white/10 text-slate-400 hover:border-white/20'
@@ -423,13 +414,13 @@ export default function PropFirmMode() {
               <div>
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">Lot Size</label>
                 <input type="number" step="0.01" value={tradeLotSize} onChange={(e) => setTradeLotSize(e.target.value)}
-                  className="w-full bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500" />
+                  className="w-full min-h-10 bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500" />
               </div>
 
               <div>
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">Stop Loss (pips)</label>
                 <input type="number" value={tradeStopLoss} onChange={(e) => setTradeStopLoss(e.target.value)}
-                  className="w-full bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500" />
+                  className="w-full min-h-10 bg-[#030712] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-cyan-500" />
               </div>
             </div>
 
@@ -451,7 +442,9 @@ export default function PropFirmMode() {
                   <div className="flex-1">
                     <p className={`text-xs uppercase tracking-wider font-bold ${getVerdictStyles(aiVerdict.verdict).text}`}>{getVerdictStyles(aiVerdict.verdict).label}</p>
                     <h3 className="text-xl font-black text-white mt-1">{aiVerdict.headline}</h3>
-                    {aiVerdict.confidence != null && (<p className="text-xs text-slate-400 mt-1">AI Confidence: {aiVerdict.confidence}%</p>)}
+                    {/* The model's own rating of this verdict, 0–100. Not engine conviction and not a
+                        probability, so it is never written as a percentage. */}
+                    {aiVerdict.confidence != null && (<p className="text-xs text-slate-400 mt-1">Verdict confidence {aiVerdict.confidence}/100 · the model&rsquo;s own rating, not a probability</p>)}
                   </div>
                 </div>
                 {aiVerdict.reasons?.length > 0 && (
@@ -524,7 +517,7 @@ export default function PropFirmMode() {
           </div>
 
           <button onClick={handleReset}
-            className="mt-4 flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-slate-300 rounded-xl text-sm hover:bg-white/10 transition-all">
+            className="mt-4 flex items-center gap-2 px-4 py-2 min-h-10 bg-white/5 border border-white/10 text-slate-300 rounded-xl text-sm hover:bg-white/10 transition-all">
             <RefreshCw className="w-4 h-4" /> Reset P&L to Zero
           </button>
         </div>

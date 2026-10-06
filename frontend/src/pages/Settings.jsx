@@ -194,7 +194,7 @@ const [copied, setCopied] = useState(false)
               <input
                 type="text"
                 placeholder="Your name"
-                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+                className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
               />
             </div>
             <div className="flex items-center justify-between gap-4">
@@ -203,7 +203,7 @@ const [copied, setCopied] = useState(false)
                 type="email"
                 value={email}
                 readOnly
-                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-500 w-56 cursor-not-allowed"
+                className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-500 w-56 cursor-not-allowed"
               />
             </div>
           </div>
@@ -280,7 +280,7 @@ const [copied, setCopied] = useState(false)
                   <button
                     onClick={handleUnsubscribe}
                     disabled={emailSaving}
-                    className="text-xs text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1"
+                    className="min-h-10 text-xs text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1"
                   >
                     {emailSaving ? (
                       <><Loader2 size={11} className="animate-spin" /> Processing...</>
@@ -336,7 +336,7 @@ const [copied, setCopied] = useState(false)
               <input
                 type="password"
                 placeholder="••••••••"
-                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+                className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
               />
             </div>
             <div className="flex items-center justify-between gap-4">
@@ -344,7 +344,7 @@ const [copied, setCopied] = useState(false)
               <input
                 type="password"
                 placeholder="••••••••"
-                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
+                className="min-h-10 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/50 w-56 transition-colors"
               />
             </div>
           </div>
@@ -363,7 +363,7 @@ const [copied, setCopied] = useState(false)
             </div>
             <button
               onClick={() => navigate('/billing')}
-              className="text-xs font-semibold px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-white/20 transition-colors"
+              className="text-xs font-semibold px-3 py-2 min-h-10 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-white/20 transition-colors"
             >
               Open Billing
             </button>
@@ -388,7 +388,7 @@ const [copied, setCopied] = useState(false)
               </ol>
             </div>
             
-             <a href="https://t.me/BiasForgeAlertsBot" target="_blank" rel="noopener noreferrer" className="block text-center py-2.5 rounded-lg bg-[#26A5E4]/10 border border-[#26A5E4]/20 text-[#26A5E4] text-xs font-semibold hover:bg-[#26A5E4]/20 transition-colors">
+             <a href="https://t.me/BiasForgeAlertsBot" target="_blank" rel="noopener noreferrer" className="block text-center py-3 rounded-lg bg-[#26A5E4]/10 border border-[#26A5E4]/20 text-[#26A5E4] text-xs font-semibold hover:bg-[#26A5E4]/20 transition-colors">
               Open @BiasForgeAlertsBot on Telegram
             </a>
             <p className="text-[10px] text-slate-600">
@@ -411,11 +411,11 @@ const [copied, setCopied] = useState(false)
                 type="text"
                 readOnly
                 value={referralLink}
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-slate-300 font-mono truncate"
+                className="flex-1 min-h-10 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-slate-300 font-mono truncate"
               />
               <button
                 onClick={copyReferral}
-                className={`px-3 py-2.5 rounded-lg border text-xs font-semibold transition-all ${
+                className={`px-3 py-2.5 min-h-10 rounded-lg border text-xs font-semibold transition-all ${
                   copied
                     ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400'
                     : 'bg-white/5 border-white/10 text-slate-300 hover:text-white hover:border-white/20'
@@ -427,13 +427,13 @@ const [copied, setCopied] = useState(false)
             <div className="flex gap-2">
               <button
                 onClick={shareTwitter}
-                className="flex-1 py-2 rounded-lg bg-[#1DA1F2]/10 border border-[#1DA1F2]/20 text-[#1DA1F2] text-xs font-semibold hover:bg-[#1DA1F2]/20 transition-colors"
+                className="flex-1 py-2 min-h-10 rounded-lg bg-[#1DA1F2]/10 border border-[#1DA1F2]/20 text-[#1DA1F2] text-xs font-semibold hover:bg-[#1DA1F2]/20 transition-colors"
               >
                 Share on X / Twitter
               </button>
               <button
                 onClick={shareWhatsApp}
-                className="flex-1 py-2 rounded-lg bg-[#25D366]/10 border border-[#25D366]/20 text-[#25D366] text-xs font-semibold hover:bg-[#25D366]/20 transition-colors"
+                className="flex-1 py-2 min-h-10 rounded-lg bg-[#25D366]/10 border border-[#25D366]/20 text-[#25D366] text-xs font-semibold hover:bg-[#25D366]/20 transition-colors"
               >
                 Share on WhatsApp
               </button>
@@ -444,7 +444,7 @@ const [copied, setCopied] = useState(false)
         <div className="flex items-center justify-between pb-8">
           <button
             onClick={handleLogout}
-            className="flex items-center gap-2 text-sm text-slate-400 hover:text-red-400 transition-colors"
+            className="flex items-center gap-2 min-h-10 text-sm text-slate-400 hover:text-red-400 transition-colors"
           >
             <LogOut size={15} />
             Sign Out

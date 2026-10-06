@@ -153,7 +153,7 @@ function AnalyzeModal({ event, onClose }) {
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-300 text-sm">{error}</div>
             <button
               onClick={fetchAnalysis}
-              className="mt-3 flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-sm font-medium hover:bg-cyan-500/20 transition-colors"
+              className="mt-3 flex items-center gap-2 px-4 py-2 min-h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-sm font-medium hover:bg-cyan-500/20 transition-colors"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Try again
             </button>
@@ -592,7 +592,7 @@ export default function EconomicCalendar() {
 
                 <div className="mt-4">
                   <button onClick={() => setSelectedEvent(event)}
-                    className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold hover:bg-cyan-500/20 transition-all">
+                    className="flex items-center gap-2 px-4 py-2 min-h-10 bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 rounded-xl text-sm font-semibold hover:bg-cyan-500/20 transition-all">
                     <Zap className="w-4 h-4" />
                     AI Analyze — PRO
                   </button>

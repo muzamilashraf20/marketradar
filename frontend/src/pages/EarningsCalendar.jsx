@@ -173,7 +173,7 @@ export default function EarningsCalendar() {
             </div>
             <button
               onClick={() => setFilterTier('Movers')}
-              className="text-xs font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-3 py-1.5 rounded-lg hover:bg-amber-400/20 transition-all"
+              className="text-xs font-bold text-amber-400 bg-amber-400/10 border border-amber-400/20 px-3 py-1.5 min-h-10 rounded-lg hover:bg-amber-400/20 transition-all"
             >
               Show Only Movers →
             </button>
@@ -332,7 +332,7 @@ export default function EarningsCalendar() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by ticker (AAPL, MSFT...)"
-              className="w-full pl-9 pr-3 py-2 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
+              className="w-full pl-9 pr-3 py-2 min-h-10 bg-white/5 border border-white/10 rounded-lg text-xs text-white placeholder-slate-600 outline-none focus:border-cyan-500/30 transition-colors"
             />
           </div>
 
@@ -342,7 +342,7 @@ export default function EarningsCalendar() {
               <button
                 key={f}
                 onClick={() => setFilterTime(f)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 rounded-lg text-xs font-medium border transition-all ${
                   filterTime === f
                     ? 'bg-cyan-400/10 text-cyan-400 border-cyan-400/20'
                     : 'bg-white/5 text-slate-500 border-white/10 hover:border-white/20'
@@ -361,7 +361,7 @@ export default function EarningsCalendar() {
             {/* Market Movers filter */}
             <button
               onClick={() => setFilterTier(filterTier === 'Movers' ? 'All' : 'Movers')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-10 rounded-lg text-xs font-medium border transition-all ${
                 filterTier === 'Movers'
                   ? 'bg-amber-400/10 text-amber-400 border-amber-400/20'
                   : 'bg-white/5 text-slate-500 border-white/10 hover:border-white/20'
@@ -379,7 +379,7 @@ export default function EarningsCalendar() {
 
           <button
             onClick={fetchEarnings}
-            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-cyan-400 transition-colors ml-auto"
+            className="flex items-center gap-1.5 min-h-10 text-xs text-slate-500 hover:text-cyan-400 transition-colors ml-auto"
           >
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Refresh

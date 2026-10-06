@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useCleanMode } from '../../hooks/useCleanMode'
@@ -30,6 +30,17 @@ export default function Sidebar({ onClose }) {
 
   const groups = isAdmin ? [...NAV_GROUPS, ADMIN_GROUP] : NAV_GROUPS
   const activeSection = sectionOf(pathname)
+
+  // Rows are 40px tap targets, so on a short screen the list scrolls. Bring the current page's link
+  // into view inside the nav (the nav only — the page itself never scrolls for this).
+  const navRef = useRef(null)
+  useEffect(() => {
+    const nav = navRef.current
+    const cur = nav?.querySelector('[aria-current="page"]')
+    if (!nav || !cur) return
+    const n = nav.getBoundingClientRect(), c = cur.getBoundingClientRect()
+    if (c.top < n.top || c.bottom > n.bottom) nav.scrollTop += c.top - n.top - (n.height - c.height) / 2
+  }, [pathname])
 
   const toggle = id => {
     setFolded(prev => {
@@ -75,7 +86,7 @@ export default function Sidebar({ onClose }) {
       </div>
 
       {/* Areas */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto" aria-label="Dashboard">
+      <nav ref={navRef} className="flex-1 px-3 py-4 space-y-1 overflow-y-auto" aria-label="Dashboard">
         {groups.map(g => {
           const Icon = g.icon
           const sectionActive = activeSection === g.id
@@ -90,7 +101,7 @@ export default function Sidebar({ onClose }) {
                 to={item.path}
                 onClick={onClose}
                 aria-current={current ? 'page' : undefined}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
+                className={`flex items-center gap-3 px-3 min-h-10 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
                   current
                     ? 'bg-bf-accent/10 border-bf-accent text-bf-text'
                     : 'border-transparent text-bf-text-2 hover:text-bf-text hover:bg-white/5'
@@ -111,7 +122,7 @@ export default function Sidebar({ onClose }) {
                 onClick={() => toggle(g.id)}
                 aria-expanded={open}
                 aria-controls={listId}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
+                className={`w-full flex items-center gap-3 px-3 min-h-10 rounded-lg text-sm font-medium border-l-2 transition-colors ${FOCUS_RING} ${
                   sectionActive
                     ? 'border-bf-accent text-bf-text'
                     : 'border-transparent text-bf-text-2 hover:text-bf-text hover:bg-white/5'
@@ -136,7 +147,7 @@ export default function Sidebar({ onClose }) {
                           to={item.path}
                           onClick={onClose}
                           aria-current={current ? 'page' : undefined}
-                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${FOCUS_RING} ${
+                          className={`flex items-center gap-2 px-2.5 min-h-10 rounded-md text-[13px] transition-colors ${FOCUS_RING} ${
                             current
                               ? 'bg-bf-accent/10 text-bf-accent-soft font-medium'
                               : 'text-bf-text-2 hover:text-bf-text hover:bg-white/5'

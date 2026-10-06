@@ -105,7 +105,7 @@ export default function Billing() {
             </div>
           </div>
           {planLoaded && !isPro && (
-            <Button size="sm" onClick={() => navigate('/subscribe')}>Get BiasForge Pro</Button>
+            <Button size="md" onClick={() => navigate('/subscribe')}>Get BiasForge Pro</Button>
           )}
         </div>
 
@@ -178,7 +178,7 @@ export default function Billing() {
                     <button
                       onClick={resendReceipt}
                       disabled={receiptState.status === 'loading'}
-                      className="w-full py-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-semibold hover:text-white hover:border-white/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                      className="w-full py-3 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs font-semibold hover:text-white hover:border-white/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                     >
                       {receiptState.status === 'loading' && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
                       {receiptState.status === 'loading' ? 'Sending…' : 'Email me my receipt again'}
@@ -216,7 +216,7 @@ export default function Billing() {
                       <button
                         onClick={requestCancellation}
                         disabled={cancelState.status === 'loading'}
-                        className="w-full py-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-xs font-semibold hover:bg-red-500/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                        className="w-full py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-xs font-semibold hover:bg-red-500/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                       >
                         {cancelState.status === 'loading' && <Loader2 size={13} className="animate-spin" aria-hidden="true" />}
                         {cancelState.status === 'loading' ? 'Sending request…' : 'Request cancellation'}

@@ -69,7 +69,7 @@ export default function Tooltip({
         type="button"
         aria-label={children ? undefined : label}
         aria-describedby={id}
-        className={`inline-flex items-center justify-center rounded text-bf-muted hover:text-bf-text transition-colors ${FOCUS_RING}`}
+        className={`relative inline-flex items-center justify-center rounded text-bf-muted hover:text-bf-text transition-colors before:absolute before:-inset-[14px] before:content-[''] ${FOCUS_RING}`}
         onPointerDown={e => { pointer.current = e.pointerType }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => { setHover(false); setDismissed(false) }}

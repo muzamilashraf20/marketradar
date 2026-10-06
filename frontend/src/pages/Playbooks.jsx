@@ -43,7 +43,7 @@ const PLAYBOOKS = [
     ],
 
     commonMistakes: [
-      'Trading the initial 1-5 minute spike (97% lose on this)',
+      'Trading the initial 1-5 minute spike (spreads widen and price whipsaws both ways)',
       'Holding losing position through the Fed Chair press conference',
       'Ignoring Dot Plot — hawkish hold can still tank USD if dots dovish',
       'Using normal lot size — drawdown can hit limits instantly',
@@ -338,18 +338,12 @@ export default function Playbooks() {
         {/* Hero Stats Banner */}
         <div className="relative bg-gradient-to-br from-cyan-500/10 via-[#020617] to-emerald-500/10 border border-cyan-500/30 rounded-2xl p-6 overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl -z-0" />
-          <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Counts only. The "Avg. Win Rate 68%" and "Risk:Reward 1:2.4" that sat here had no data
+              behind them; BiasForge publishes no win rate. */}
+          <div className="relative z-10 grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs uppercase tracking-wider text-slate-400 mb-1">Total Playbooks</p>
               <p className="text-3xl font-black text-white">{PLAYBOOKS.length}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wider text-slate-400 mb-1">Avg. Win Rate</p>
-              <p className="text-3xl font-black text-emerald-400">68%</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wider text-slate-400 mb-1">Risk:Reward</p>
-              <p className="text-3xl font-black text-cyan-400">1:2.4</p>
             </div>
             <div>
               <p className="text-xs uppercase tracking-wider text-slate-400 mb-1">Events Covered</p>
@@ -365,7 +359,7 @@ export default function Playbooks() {
             <button
               key={impact}
               onClick={() => setFilterImpact(impact)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              className={`px-3 py-1.5 min-h-10 rounded-lg text-xs font-semibold transition-all ${
                 filterImpact === impact
                   ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-300'
                   : 'bg-white/5 border border-white/10 text-slate-400 hover:border-white/20'
