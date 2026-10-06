@@ -26,7 +26,7 @@ import ContactPage from './pages/Contact'
    markup that does not match the visible answers, and two hand-kept copies
    would drift on the first edit. */
 export { FAQ } from './components/landing/v2/faqData'
-export { PRICE_MONTHLY, PRICE_ANNUAL, GUMROAD_URL } from './components/landing/v2/Plan'
+export { PRICE_MONTHLY, PRICE_ANNUAL, GUMROAD_URL } from './components/landing/v2/pricing'
 
 export function render({ events, calls }) {
   // The components read these off globalThis during their first render. The

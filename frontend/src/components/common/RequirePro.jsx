@@ -37,7 +37,7 @@ export default function RequirePro({ children, allowUnpaid = false }) {
   return <Navigate to={`/subscribe?next=${next}`} replace />
 }
 
-function Holding({ label }) {
+export function Holding({ label }) {
   return (
     <div className="min-h-screen bg-bf-bg flex items-center justify-center" role="status" aria-live="polite">
       <div className="flex flex-col items-center gap-4">
@@ -48,7 +48,7 @@ function Holding({ label }) {
   )
 }
 
-function PlanError({ retry }) {
+export function PlanError({ retry }) {
   const [busy, setBusy] = useState(false)
   const onRetry = async () => {
     setBusy(true)

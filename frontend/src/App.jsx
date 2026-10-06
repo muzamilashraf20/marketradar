@@ -28,7 +28,7 @@ import TradeJournal from './pages/TradeJournal'
 import ContentStudio from './pages/ContentStudio'
 import NotFound from './pages/NotFound'
 import RequirePro from './components/common/RequirePro'
-import { LegacyRedirect, DashboardRedirect, PricingRedirect } from './components/common/Redirects'
+import { LegacyRedirect, DashboardRedirect, PricingRedirect, SettingsAnchors } from './components/common/Redirects'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -82,7 +82,7 @@ export default function App() {
         <Route path="/market-movers" element={pro(<MarketMoversRadar />)} />
 
         <Route path="/prop-firm" element={pro(<PropFirm />)} />
-        <Route path="/settings" element={unpaid(<SettingsPage />)} />
+        <Route path="/settings" element={unpaid(<SettingsAnchors><SettingsPage /></SettingsAnchors>)} />
         <Route path="/billing" element={unpaid(<Billing />)} />
 
         <Route path="/journal" element={pro(<TradeJournal />)} />

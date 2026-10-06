@@ -7,23 +7,11 @@ import Card from '../../ui/Card'
 import { FOCUS_RING } from '../../ui/styles'
 import { Section } from './Section'
 import { FAQ } from './faqData'
+import { GUMROAD_URL, PRICE_MONTHLY, PRICE_ANNUAL, ANNUAL_PER_MONTH, ANNUAL_SAVING, INCLUDED } from './pricing'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
-export const GUMROAD_URL = 'https://biasforge.gumroad.com/l/ntjpje'
-export const PRICE_MONTHLY = 40
-export const PRICE_ANNUAL = 399
-const ANNUAL_PER_MONTH = (PRICE_ANNUAL / 12).toFixed(2)   // 33.25
-const ANNUAL_SAVING = PRICE_MONTHLY * 12 - PRICE_ANNUAL     // 81
-
-const INCLUDED = [
-  'Macro bias and invalidation level for seven major pairs and gold',
-  'Prop Firm Mode with live drawdown tracking',
-  'Economic calendar with directional context',
-  'Impact-scored live news',
-  'COT positioning and currency strength',
-  'Trade journal',
-]
+// Prices, the Gumroad link and the feature list live in ./pricing (shared with /subscribe).
 
 /* Section 9 — one plan. Annual is the default, and both prices are in the markup
    either way, so the page still states the full price with JavaScript off. */

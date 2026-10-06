@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Mail, Send, Loader2, AlertCircle } from 'lucide-react';
 import SimplePageLayout from '../components/common/SimplePageLayout';
 
@@ -6,7 +7,14 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const SUPPORT_EMAIL = 'support@biasforge.co';
 
 export default function Contact() {
-  const [form, setForm] = useState({ name: '', email: '', message: '' });
+  // The subscribe screen can open this with the account email and a drafted message ("Paid with a
+  // different email?"). It comes in router state, never the URL, so the address is not logged anywhere.
+  const { state } = useLocation();
+  const [form, setForm] = useState(() => ({
+    name: '',
+    email: typeof state?.email === 'string' ? state.email : '',
+    message: typeof state?.message === 'string' ? state.message : '',
+  }));
   const [sent, setSent] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');

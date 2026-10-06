@@ -41,6 +41,15 @@ export function DashboardRedirect() {
   return <Navigate to={{ pathname: '/today', search, hash: tokens ? '' : hash }} replace />
 }
 
+/* Billing used to be a panel inside Settings. A link to it there (#billing,
+   #subscription) now goes to its own page; any other Settings URL is untouched. */
+const BILLING_ANCHORS = new Set(['#billing', '#subscription'])
+export function SettingsAnchors({ children }) {
+  const { search, hash } = useLocation()
+  if (BILLING_ANCHORS.has(hash.toLowerCase())) return <Navigate to={{ pathname: '/billing', search }} replace />
+  return children
+}
+
 /* /pricing: the checkout screen for a signed-in account, the landing's pricing
    section for a visitor. The crypto checkout cancels back to
    /pricing?crypto=cancelled, so the query is kept either way. */

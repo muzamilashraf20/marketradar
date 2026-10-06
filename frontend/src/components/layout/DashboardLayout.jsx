@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Topbar from './Topbar'
 import OnboardingTour from '../common/OnboardingTour'
+import WelcomeToast from '../common/WelcomeToast'
 import { useAuth } from '../../context/AuthContext'
 
 /* The app shell: sidebar, topbar and the page. It no longer decides access —
@@ -77,6 +78,9 @@ export default function DashboardLayout({ title, subtitle, children }) {
       {/* Onboarding tour for first-time subscribers. Not for an unpaid account on
           Settings or Billing: every page it points at would send them to checkout. */}
       {isPro && <OnboardingTour />}
+
+      {/* "Welcome to Pro" after a payment the subscribe screen was waiting for. */}
+      <WelcomeToast />
     </div>
   )
 }
