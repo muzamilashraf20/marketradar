@@ -30,6 +30,9 @@ const block = rawBlock.replace(LOADER, '')
 // outside the social block — the real one is passed in rather than faked.
 const dedupeBiasRows = new Function(`${cutOut('// Collapse bias_history rows that record the SAME', '// The Bias History banner')}
 return dedupeBiasRows`)()
+// Same for the event_explainer's instrument list: BRIEF_PAIRS and eventReactsIn live with the brief.
+const eventReactsIn = new Function(`${cutOut('const BRIEF_PAIRS = {', '// Which already-released prints LEAD a given event')}
+return eventReactsIn`)()
 
 let pass = 0, fail = 0
 const REAL = { log: console.log, error: console.error, warn: console.warn }
@@ -96,6 +99,9 @@ function build() {
     // igLanes below decides whether this run does any Instagram work at all.
     'igDailyCap', 'igStoryDailyCap', 'loadRenderer', 'socialUploadPng', 'socialPastTexts', 'generateCarousel',
     'anthropic', 'trackAI', 'sendTGPhoto', 'socialDraftMessage', 'socialKeyboard', 'tgCall', 'getCached', 'firstSentence', 'newsCardData', 'dedupeBiasRows',
+    // Defined next to NEWS_ALERT_IMPACT_MIN, outside this block: read from the source below so the
+    // test follows the real value.
+    'SOCIAL_NEWS_IMPACT_MIN', 'eventReactsIn',
     `${block}\nreturn { enqueueBiasCardDraft, runSocialPlanner, enqueueNewsReactions, nextEventPreview, eventsAllPast, isSameStory, NEWS_DAILY_MAX, calledItCandidate, planIgCarousel }`,
   )(supabase, createDraftAndNotify, async k => snap[k] ?? null, (k, v) => { snap[k] = v }, async (c, t) => { dms.push({ text: t }) }, () => '111', s => String(s ?? ''),
     async () => calendar, { macro_insight: 'education', trader_pain: 'trader_psychology', contrarian: 'trader_psychology' },
@@ -110,8 +116,9 @@ function build() {
     // The real one lives in the drafts section; the news lane falls back to it when a card was
     // not rendered, which is always the case here because createDraftAndNotify is faked.
     (facts = {}, postText = '') => ({ summary: facts.oneliner || postText, assets: facts.instruments || [], impactScore: facts.impactScore, time: facts.publishedAt || null, date: new Date(NOW).toISOString() }),
-    dedupeBiasRows)
+    dedupeBiasRows, SOCIAL_NEWS_IMPACT_MIN, eventReactsIn)
 }
+const SOCIAL_NEWS_IMPACT_MIN = Number(src.match(/const SOCIAL_NEWS_IMPACT_MIN = (\d+)/)?.[1])
 const restore = () => { console.log = REAL.log; console.error = REAL.error; console.warn = REAL.warn }
 const run = async fn => { const m = build(); try { return await fn(m) } finally { restore() } }
 
@@ -134,6 +141,25 @@ const plannerLine = () => logs.filter(l => l.startsWith('[social planner]')).pop
   check('news draft: pillar macro_news, trigger news, headline in facts', drafts[0]?.pillar === 'macro_news' && drafts[0]?.sourceRef?.trigger === 'news' && drafts[0]?.facts?.headline.startsWith('Fed holds'), JSON.stringify(drafts[0]))
   check('DM sent right away', dms.length === 1)
   check('the decision is logged', logs.some(l => /\[social news\] drafted #\d+ from "Fed holds/.test(l)), logs.join(' | '))
+
+  // The social bar (9) is separate from the alert bar (8): an 8 reaches here from the alert path
+  // but is not drafted, and does not use up the day's cap.
+  check('social bar is 9 and the alert bar stays 8', SOCIAL_NEWS_IMPACT_MIN === 9 && /const NEWS_ALERT_IMPACT_MIN = 8\b/.test(src), `${SOCIAL_NEWS_IMPACT_MIN}`)
+  const ecb = impact => news({ title: 'ECB official hints at slower pace of cuts', impact, marketTags: ['EUR↑'] })
+  reset(); at('2026-09-22', '09:00')
+  await run(m => m.enqueueNewsReactions([ecb(8)]))
+  check('impact 8 → no draft, "below social bar" logged', drafted('news_reaction').length === 0 && logs.includes('📰 [social news] skipped "ECB official hints at slower pace of cuts" (impact 8) — below social bar 9'), logs.join(' | '))
+  reset(); at('2026-09-22', '09:00')
+  await run(m => m.enqueueNewsReactions([ecb(9)]))
+  check('impact 9 → drafted', drafted('news_reaction').length === 1 && logs.some(l => /drafted #\d+ from "ECB official.*\(1\/3 today\)/.test(l)), logs.join(' | '))
+  reset(); at('2026-09-22', '09:00')
+  for (let i = 0; i < 2; i++) qrow({ content_type: 'news_reaction', source_ref: { facts: { headline: `old story number ${i} about something else`, marketTags: [] } } })
+  await run(m => m.enqueueNewsReactions([ecb(8), news({ title: 'Oil jumps as supply talks collapse in Vienna', marketTags: ['Oil↑'] })]))
+  check('below-bar items do not count toward the daily cap', drafted('news_reaction').length === 1 && drafts[0].facts.headline.startsWith('Oil') && logs.some(l => /\(3\/3 today\)/.test(l)), logs.join(' | '))
+
+  // Back to the single 9/10 story from the top, for the cap checks that follow.
+  reset(); at('2026-09-22', '09:00')
+  await run(m => m.enqueueNewsReactions([news({ minutesAgo: 1, impact: 9 })]))
 
   // Two more distinct stories, then a fourth.
   await run(m => m.enqueueNewsReactions([
@@ -159,7 +185,7 @@ const plannerLine = () => logs.filter(l => l.startsWith('[social planner]')).pop
   reset(); at('2026-09-22', '09:00')
   await run(m => m.enqueueNewsReactions([
     news({ title: 'Fed keeps rates on hold, no cuts seen before December', impact: 9 }),
-    news({ title: 'Fed leaves rates on hold and says no cut likely before December', impact: 8, marketTags: ['USD↑', 'Gold↓'] }),
+    news({ title: 'Fed leaves rates on hold and says no cut likely before December', impact: 9, marketTags: ['USD↑', 'Gold↓'] }),
   ]))
   check('same story reworded by another outlet → only one draft', drafted('news_reaction').length === 1, JSON.stringify(drafts.map(d => d.facts.headline)))
 
