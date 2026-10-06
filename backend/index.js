@@ -1245,7 +1245,7 @@ for (const [path, fn, label] of [['approve', socialApproveById, 'approve'], ['sk
 // ⏰ SOCIAL TRIGGERS — what gets drafted, and when
 // ============================================
 // The content plan, per platform:
-//   X         bias_card (engine-driven, daily) · news_reaction (immediately on high-impact news, max
+//   X         bias_card (engine-driven, daily) · news_reaction (immediately on impact 9+ news, max
 //             3/day) · event_preview (upcoming high-impact USD events, max 2/day) · a rotation pillar
 //             only on a quiet day
 //   LinkedIn  one education post a day, Sunday–Friday · weekly results on Saturday
@@ -1359,13 +1359,21 @@ async function newsReactionFacts(item) {
   return facts
 }
 
-// Called from the news alert path the moment high-impact items are recognised — same items, same
-// threshold as the subscriber alert. Drafts right away (no delay), highest impact first, at most
-// NEWS_DAILY_MAX a UTC day, and never the same story twice. Every decision is logged. A run that
-// is still generating when the next alert fires is not doubled up.
+// Called from the news alert path the moment high-impact items are recognised. The alert hands over
+// everything at its own bar (NEWS_ALERT_IMPACT_MIN); only items at SOCIAL_NEWS_IMPACT_MIN or above
+// become drafts — the rest are logged and dropped here, before the cap, so they never use it up.
+// Drafts right away (no delay), highest impact first, at most NEWS_DAILY_MAX a UTC day, and never
+// the same story twice. Every decision is logged. A run that is still generating when the next
+// alert fires is not doubled up.
 let newsEnqueueBusy = false
 async function enqueueNewsReactions(items) {
   if (!Array.isArray(items) || !items.length) return
+  items = items.filter(item => {
+    if (item.impact >= SOCIAL_NEWS_IMPACT_MIN) return true
+    console.log(`📰 [social news] skipped "${String(item.title || '').slice(0, 70)}" (impact ${item.impact}) — below social bar ${SOCIAL_NEWS_IMPACT_MIN}`)
+    return false
+  })
+  if (!items.length) return
   if (newsEnqueueBusy) { console.log(`📰 [social news] previous batch still drafting — ${items.length} item(s) left for the next alert`); return }
   newsEnqueueBusy = true
   try {
@@ -2608,9 +2616,11 @@ function tgMoverAlert(articles) {
   return `🚨 <b>MARKET MOVER ALERT</b> 🚨\n\n${items}\n\n🔗 <a href="https://www.biasforge.co/market-movers">Open MarketMovers Radar</a>`
 }
 
-// The bar for "worth interrupting someone over". Named so the social planner uses the SAME bar as
-// the subscriber alerts instead of a second number that can drift away from this one.
+// Two bars, deliberately different. NEWS_ALERT_IMPACT_MIN is "worth interrupting a subscriber
+// over" (Telegram/email alerts). SOCIAL_NEWS_IMPACT_MIN is "worth a public post": the alert hands
+// its items to enqueueNewsReactions, which drops anything below the social bar itself.
 const NEWS_ALERT_IMPACT_MIN = 8
+const SOCIAL_NEWS_IMPACT_MIN = 9
 
 async function checkAndSendNewsAlerts() {
   const eSubs = emailSubscribers.filter(s => s.active && s.preferences?.news !== false)
@@ -2621,9 +2631,10 @@ async function checkAndSendNewsAlerts() {
     const hi = cached.filter(a => a.impact >= NEWS_ALERT_IMPACT_MIN && !sentNewsAlerts.has(a.title))
     if (hi.length === 0) return
 
-    // Social: a ⚡ NEWS draft for the admin from the same items this alert fires on, at the same
-    // threshold. Not awaited and fully caught — the subscriber alert and the bias refresh below
-    // matter more than a social draft, and nothing in the social path may delay or break them.
+    // Social: a ⚡ NEWS draft for the admin from the same items this alert fires on; only those at
+    // SOCIAL_NEWS_IMPACT_MIN or above are drafted (enforced inside enqueueNewsReactions). Not
+    // awaited and fully caught — the subscriber alert and the bias refresh below matter more than
+    // a social draft, and nothing in the social path may delay or break them.
     enqueueNewsReactions(hi).catch(e => console.warn(`⚠️ [social news] enqueue failed: ${e?.message || e}`))
 
     // ⚡ CATALYST CLASSIFICATION: Tier 1 (refresh only) vs Tier 2 (market-shaker → full re-pick)
@@ -4521,18 +4532,40 @@ const V2_CYCLE_MIN = parseInt(process.env.V2_SHADOW_INTERVAL_MIN || '120', 10)
 const TODAY_BIAS_STALE_AFTER_MIN = V2_CYCLE_MIN + TODAY_BIAS_TTL / 60000 + 15
 
 // ── 💰 AI cost tracking — logs every Anthropic call's token usage and estimated cost ──
-const MODEL_PRICES = { 'claude-sonnet-4-6': { in: 3, out: 15 }, 'claude-haiku-4-5-20251001': { in: 1, out: 5 } } // $ per 1M tokens
+// $ per 1M tokens, from Anthropic's pricing page (checked 2026-10-06). On every model here a cache
+// write bills 1.25x input (5-minute TTL) or 2x (1-hour TTL) and a cache read 0.1x input. Web search
+// is $10 per 1,000 searches on top of tokens.
+const MODEL_PRICES = {
+  'claude-sonnet-5': { in: 2, out: 10 },
+  'claude-sonnet-4-6': { in: 3, out: 15 },
+  'claude-haiku-4-5-20251001': { in: 1, out: 5 },
+}
+const WEB_SEARCH_USD = 10 / 1000
+const unpricedModels = new Set()   // warn once per id, not on every call
 let aiCosts = { date: new Date().toISOString().slice(0, 10), totalUSD: 0, calls: 0, byFeature: {} }
 function trackAI(label, model, usage) {
   try {
     const day = new Date().toISOString().slice(0, 10)
     if (aiCosts.date !== day) aiCosts = { date: day, totalUSD: 0, calls: 0, byFeature: {} }
-    const p = MODEL_PRICES[model] || { in: 3, out: 15 }
-    const cost = ((usage?.input_tokens || 0) * p.in + (usage?.output_tokens || 0) * p.out) / 1e6
+    let p = MODEL_PRICES[model]
+    if (!p) {
+      if (!unpricedModels.has(model)) { unpricedModels.add(model); console.warn(`⚠️ [ai-costs] unpriced model ${model}, estimating at Sonnet 4.6 rates`) }
+      p = MODEL_PRICES['claude-sonnet-4-6']
+    }
+    const u = usage || {}
+    // input_tokens excludes cached tokens, so writes and reads are added on top at their own rates.
+    // usage.cache_creation splits writes by TTL when present; without it, writes are 5-minute.
+    const write1h = u.cache_creation?.ephemeral_1h_input_tokens || 0
+    const write5m = Math.max(0, (u.cache_creation_input_tokens || 0) - write1h)
+    const read = u.cache_read_input_tokens || 0
+    const searches = u.server_tool_use?.web_search_requests || 0
+    const cost = ((u.input_tokens || 0) * p.in + write5m * p.in * 1.25 + write1h * p.in * 2 + read * p.in * 0.1 + (u.output_tokens || 0) * p.out) / 1e6
+      + searches * WEB_SEARCH_USD
     aiCosts.totalUSD += cost; aiCosts.calls++
     if (!aiCosts.byFeature[label]) aiCosts.byFeature[label] = { calls: 0, usd: 0 }
     aiCosts.byFeature[label].calls++; aiCosts.byFeature[label].usd = +(aiCosts.byFeature[label].usd + cost).toFixed(4)
-    console.log(`💰 [${label}] in:${usage?.input_tokens || 0} out:${usage?.output_tokens || 0} ≈ $${cost.toFixed(4)} | today: $${aiCosts.totalUSD.toFixed(3)} (${aiCosts.calls} calls)`)
+    const extra = (write5m + write1h ? ` cache-w:${write5m + write1h}` : '') + (read ? ` cache-r:${read}` : '') + (searches ? ` searches:${searches}` : '')
+    console.log(`💰 [${label}] in:${u.input_tokens || 0} out:${u.output_tokens || 0}${extra} ≈ $${cost.toFixed(4)} | today: $${aiCosts.totalUSD.toFixed(3)} (${aiCosts.calls} calls)`)
   } catch (e) {}
 }
 
@@ -6717,6 +6750,8 @@ guess it and do not let it change the headline answer.
 If the only figures you can find are for a different month, that is "not available" — say so rather than reporting the wrong month.`
   let messages = [{ role: 'user', content: prompt }]
   let m, pauses = 0
+  // Every request in the pause_turn loop is billed on its own: sum them, searches included.
+  const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 0 } }
   for (;;) {
     m = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -6725,14 +6760,20 @@ If the only figures you can find are for a different month, that is "not availab
       tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6, allowed_domains: cfg.domains }],
       messages,
     })
+    const u = m.usage || {}
+    usage.input_tokens += u.input_tokens || 0
+    usage.output_tokens += u.output_tokens || 0
+    usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0
+    usage.cache_read_input_tokens += u.cache_read_input_tokens || 0
+    usage.server_tool_use.web_search_requests += u.server_tool_use?.web_search_requests || 0
     // Server-tool loop caps at 10 iterations and stops with pause_turn — resume by appending the
     // assistant turn, with no extra user message.
     if (m.stop_reason !== 'pause_turn' || pauses >= 2) break
     pauses++
     messages = [...messages, { role: 'assistant', content: m.content }]
   }
-  trackAI('release-search', 'claude-sonnet-4-6', m.usage)
-  const searches = m.usage?.server_tool_use?.web_search_requests || 0
+  trackAI('release-search', 'claude-sonnet-4-6', usage)
+  const searches = usage.server_tool_use.web_search_requests
   const text = m.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim().replace(/```json|```/g, '').trim()
   let out = null
   try { out = JSON.parse(text) } catch (e) {
