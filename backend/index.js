@@ -6598,7 +6598,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Manufacturing PMI',
     subject: 'headline PMI index value',
     match: /^ism manufacturing pmi$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],                  // a diffusion index; outside this is a parse error, not a print
     cadence: 'monthly',
     polarity: 'direct',
@@ -6607,7 +6607,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Services PMI',
     subject: 'headline PMI index value',
     match: /^ism (services|non-manufacturing) pmi$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6620,7 +6620,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Manufacturing Prices Index',
     subject: 'Prices Index (prices paid) sub-index value',
     match: /^ism manufacturing prices$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6630,7 +6630,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Services Prices Index',
     subject: 'Prices Index (prices paid) sub-index value',
     match: /^ism (services|non-manufacturing) prices$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6754,10 +6754,12 @@ If the only figures you can find are for a different month, that is "not availab
   const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 0 } }
   for (;;) {
     m = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5',
       max_tokens: 2048,
+      // Sonnet 5 thinks by default; that is billed output and can eat the 2048 before the JSON lands.
+      thinking: { type: 'disabled' },
       system: RELEASE_SEARCH_GUARD,
-      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6, allowed_domains: cfg.domains }],
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_domains: cfg.domains }],
       messages,
     })
     const u = m.usage || {}
@@ -6768,11 +6770,11 @@ If the only figures you can find are for a different month, that is "not availab
     usage.server_tool_use.web_search_requests += u.server_tool_use?.web_search_requests || 0
     // Server-tool loop caps at 10 iterations and stops with pause_turn — resume by appending the
     // assistant turn, with no extra user message.
-    if (m.stop_reason !== 'pause_turn' || pauses >= 2) break
+    if (m.stop_reason !== 'pause_turn' || pauses >= 1) break
     pauses++
     messages = [...messages, { role: 'assistant', content: m.content }]
   }
-  trackAI('release-search', 'claude-sonnet-4-6', usage)
+  trackAI('release-search', 'claude-sonnet-5', usage)
   const searches = usage.server_tool_use.web_search_requests
   const text = m.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim().replace(/```json|```/g, '').trim()
   let out = null
@@ -6816,6 +6818,8 @@ const RA_PUBLISH_DELAY_MS = 20 * 60 * 1000            // give the publisher time
 const RA_BACKOFF_MS = [0, 40 * 60 * 1000, 2 * 60 * 60 * 1000]   // extra wait before attempts 2 and 3
 const RA_MAX_ATTEMPTS = 3
 async function sweepReleaseActuals() {
+  // Kill switch: every attempt is a paid web search whether it finds the print or not. Off unless set.
+  if (process.env.RELEASE_SEARCH_ENABLED !== 'true') return
   if (raTableMissing()) return
   // No time-of-day gate. An earlier version only swept 11–21 UTC on weekdays, which bought nothing
   // — the expensive step is the search, and that is already gated by the due-filter below — while
@@ -8867,6 +8871,7 @@ app.listen(5000, () => {
   setTimeout(() => { sweepReleaseActuals().catch(e => console.error('release-actuals boot sweep error:', e?.message)) }, 2 * 60 * 1000)
   setInterval(() => { sweepReleaseActuals().catch(e => console.error('release-actuals sweep error:', e?.message)) }, 15 * 60 * 1000)
   console.log(`🔎 Release-actuals sweeper (15min, ${Object.keys(SEARCHED_SERIES).join('/')}, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
+  console.log(`🔎 Release-actuals search ${process.env.RELEASE_SEARCH_ENABLED === 'true' ? 'ENABLED' : 'DISABLED (set RELEASE_SEARCH_ENABLED=true to run)'}`)
   // Daily site rebuild. Har 30min check karo ki rebuild hour aa gaya ya nahi —
   // ek fixed 24h interval har restart pe khisak jaata hai, ye din ke hisaab se
   // guard karta hai. Guard memory mein hai, to ek restart usi hour ke andar
