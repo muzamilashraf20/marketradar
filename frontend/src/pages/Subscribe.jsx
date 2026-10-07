@@ -7,9 +7,10 @@ import Card from '../components/ui/Card'
 import { FOCUS_RING } from '../components/ui/styles'
 import { Holding, PlanError } from '../components/common/RequirePro'
 import {
-  GUMROAD_URL, PRICE_MONTHLY, PRICE_ANNUAL, ANNUAL_PER_MONTH, ANNUAL_SAVING, INCLUDED,
+  gumroadUrl, PRICE_MONTHLY, PRICE_ANNUAL, ANNUAL_PER_MONTH, ANNUAL_SAVING, INCLUDED,
 } from '../components/landing/v2/pricing'
 import { nextFromSearch } from '../lib/nextPath'
+import { authedFetch } from '../lib/authFetch'
 import { readPayWait, savePayWait, clearPayWait, PAY_WAIT_MS, PAY_POLL_MS } from '../lib/payWait'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -37,16 +38,17 @@ const withoutParam = (path, key) => {
    PAYING
    · Card: Gumroad. One product link for both billing periods — it is a single
      membership with Monthly ($40, Gumroad's default) and Yearly ($399), chosen
-     on Gumroad's own page. The landing's pricing uses the same single link. No
-     query parameters are added to it.
-   · Crypto: NOWPayments through /api/crypto/create-payment, with the signed-in
-     email and the chosen period — the same call the landing makes. Its success
-     URL is /dashboard?crypto=success, which arrives back here (via /today and
-     RequirePro) as ?next=/today?crypto=success and starts the wait.
+     on Gumroad's own page. The link carries ?uid=<account id>, which Gumroad
+     hands back to the webhook, so the payment lands on this account whatever
+     email is typed at checkout.
+   · Crypto: NOWPayments through /api/crypto/create-payment, sent with the
+     session token so the invoice names the account by id — the same call the
+     landing makes. Its success URL is /dashboard?crypto=success, which arrives
+     back here (via /today and RequirePro) as ?next=/today?crypto=success and
+     starts the wait.
 
-   Both webhooks match a payment to an account by email, so the account email is
-   shown above the pay buttons, and a buyer who used another address has a way
-   to say so. */
+   "Paid with a different email?" stays as the way out for a payment that
+   still does not show up. */
 export default function Subscribe() {
   const { user, isPro, planLoaded, planError, fetchPlan, logout } = useAuth()
   const location = useLocation()
@@ -138,7 +140,9 @@ export default function Subscribe() {
     setCryptoFailed(false)
     setCryptoLoading(true)
     try {
-      const res = await fetch(`${API_URL}/api/crypto/create-payment`, {
+      // With the session token the server puts the account id in the order; the email is its fallback.
+      const res = await authedFetch(`${API_URL}/api/crypto/create-payment`, {
+        token: user?.token,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, plan: annual ? 'annual' : 'monthly' }),
@@ -254,13 +258,14 @@ export default function Subscribe() {
               ))}
             </ul>
 
-            {/* Above the pay buttons: both payment webhooks find the account by this address. */}
+            {/* Above the pay buttons. Both checkouts carry the account id, so any email works. */}
             <p className="mt-7 rounded-lg border border-bf-accent/30 bg-bf-accent/10 px-3.5 py-3 text-[13.5px] leading-relaxed">
-              Signed in as <span className="font-semibold break-all">{email}</span>. Use this email at checkout.
+              Signed in as <span className="font-semibold break-all">{email}</span>. Your payment is linked to
+              this account, whatever email you use at checkout.
             </p>
 
             <Button
-              href={GUMROAD_URL}
+              href={gumroadUrl(user?.id)}
               external
               size="lg"
               fullWidth

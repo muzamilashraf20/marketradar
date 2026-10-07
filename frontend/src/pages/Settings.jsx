@@ -105,17 +105,11 @@ const [copied, setCopied] = useState(false)
     setEmailSaving(true)
     setEmailMessage({ type: '', text: '' })
     try {
-      await authedFetch(`${API_BASE}/api/email/subscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, preferences: emailSub.preferences }),
-      })
-      // Use the unsubscribe by setting active false via preferences route
-      await authedFetch(`${API_BASE}/api/email/preferences`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, preferences: { calendar: false, news: false } }),
-      })
+      // The same route as the unsubscribe link in every alert email: sets active=false and sends
+      // nothing. (This used to call /api/email/subscribe first, which re-activated the address and
+      // sent a welcome email, then only switched the preferences off.)
+      const res = await fetch(`${API_BASE}/api/email/unsubscribe?email=${encodeURIComponent(email)}`)
+      if (!res.ok) throw new Error(`unsubscribe ${res.status}`)
       setEmailSub(prev => ({ ...prev, subscribed: false }))
       setEmailMessage({ type: 'success', text: 'Unsubscribed from all email alerts.' })
     } catch {

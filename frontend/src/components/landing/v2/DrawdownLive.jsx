@@ -101,7 +101,9 @@ function Ring({ pct }) {
         })}
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span ref={shown} className={`bf-mono text-[19px] font-bold tabular-nums ${tone.text}`}>{pct1(pct)}</span>
+        {/* Fixed 5ch box: the count-up runs "0.0%" → "35.6%", and a centred span that grows by a
+            character moves — a layout shift. The box stays put; only the glyphs change. */}
+        <span ref={shown} className={`inline-block min-w-[5ch] text-center bf-mono text-[19px] font-bold tabular-nums ${tone.text}`}>{pct1(pct)}</span>
         <span className="text-[9.5px] uppercase tracking-wider bf-t3">of limit</span>
       </div>
     </div>

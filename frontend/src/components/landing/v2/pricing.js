@@ -5,6 +5,9 @@
 // One Gumroad product, "BiasForge Pro": a membership with Monthly ($40, Gumroad's default) and
 // Yearly ($399), chosen on Gumroad's own page. The same link serves both periods.
 export const GUMROAD_URL = 'https://biasforge.gumroad.com/l/ntjpje'
+// The checkout link for a signed-in account. Gumroad hands URL parameters back to the webhook as
+// url_params, so ?uid= links the purchase to this account whatever email is typed at Gumroad.
+export const gumroadUrl = uid => (uid ? `${GUMROAD_URL}?uid=${encodeURIComponent(uid)}` : GUMROAD_URL)
 export const PRICE_MONTHLY = 40
 export const PRICE_ANNUAL = 399
 export const ANNUAL_PER_MONTH = (PRICE_ANNUAL / 12).toFixed(2)   // 33.25

@@ -7,7 +7,11 @@ import Card from '../../ui/Card'
 import { FOCUS_RING } from '../../ui/styles'
 import { Section } from './Section'
 import { FAQ } from './faqData'
-import { GUMROAD_URL, PRICE_MONTHLY, PRICE_ANNUAL, ANNUAL_PER_MONTH, ANNUAL_SAVING, INCLUDED } from './pricing'
+import { gumroadUrl, PRICE_MONTHLY, PRICE_ANNUAL, ANNUAL_PER_MONTH, ANNUAL_SAVING, INCLUDED } from './pricing'
+import { authedFetch } from '../../../lib/authFetch'
+
+// A visitor makes the account first and pays from /subscribe, so every purchase is tied to an account.
+const SIGN_UP_TO_PAY = '/login?next=/subscribe'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -26,16 +30,23 @@ export default function Plan() {
   const auth = useAuth()
   const navigate = useNavigate()
 
-  /* Crypto checkout via NOWPayments. Carried over from the previous pricing
-     section unchanged: it needs an email to attribute the payment, so an
-     anonymous visitor is sent to sign in first, exactly as before. */
+  /* Card: signed in → Gumroad with ?uid=<account id>, so the payment lands on
+     this account. Signed out (and the prerendered HTML) → create the account
+     first; the visitor pays from /subscribe. Never straight to Gumroad. */
+  const user = auth?.user
+  const cardHref = user?.id ? gumroadUrl(user.id) : SIGN_UP_TO_PAY
+
+  /* Crypto checkout via NOWPayments. It needs an account to attribute the
+     payment, so an anonymous visitor is sent to sign up first. Signed in, the
+     session token lets the server put the account id in the order. */
   const handleCrypto = async () => {
-    const email = auth?.user?.email
-    if (!email) { navigate('/login'); return }
+    const email = user?.email
+    if (!email) { navigate(SIGN_UP_TO_PAY); return }
     setCryptoFailed(false)
     setCryptoLoading(true)
     try {
-      const res = await fetch(`${API_URL}/api/crypto/create-payment`, {
+      const res = await authedFetch(`${API_URL}/api/crypto/create-payment`, {
+        token: user?.token,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, plan: annual ? 'annual' : 'monthly' }),
@@ -111,7 +122,7 @@ export default function Plan() {
             ))}
           </ul>
 
-          <Button href={GUMROAD_URL} external size="lg" fullWidth className="mt-8">
+          <Button href={cardHref} external={!!user?.id} size="lg" fullWidth className="mt-8">
             Get access
           </Button>
 
