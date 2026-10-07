@@ -1,7 +1,7 @@
 // Test vectors for lib/gumroadPing.js — which event a Gumroad POST is, and the expiry a charge buys.
 //   node backend/scripts/gumroadPing.test.mjs
 
-import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from '../lib/gumroadPing.js'
+import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, gumroadUrlUid, isUuid, GRACE_DAYS } from '../lib/gumroadPing.js'
 
 let pass = 0, fail = 0
 function check(name, ok, detail = '') {
@@ -70,6 +70,27 @@ check('cancel: manual grant (Pro, NULL expiry) left alone', cancelExpiry({ tier:
 check('cancel: no row → nothing to change', cancelExpiry(null, PAID) === undefined)
 check('cancel: unparseable cancelled_at → left alone', cancelExpiry({ tier: 'pro', expires_at: A }, 'soon') === undefined)
 check('cancel: payment-failure cancel in the past → lapses now', Date.parse(cancelExpiry({ tier: 'pro', expires_at: A }, '2026-09-01T00:00:00Z')) < Date.parse('2026-09-27T00:00:00Z'))
+
+// ── test pings: log only ──────────────────────────────────────────────────────
+check('test=true sale → test', ...is(classifyGumroadPing({ ...sale, test: 'true' }), { kind: 'test', event: 'test', email: 'buyer@x.co' }))
+check('test=true refund → still test (never downgrades)', classifyGumroadPing({ ...sale, resource_name: 'refund', refunded: 'true', test: 'true' }).kind === 'test')
+check('boolean test=true → test', classifyGumroadPing({ email: 'a@b.co', test: true }).kind === 'test')
+check('test="false" → normal sale', classifyGumroadPing({ email: 'a@b.co', test: 'false' }).kind === 'sale')
+check('test with no email → still test', classifyGumroadPing({ test: 'true' }).kind === 'test')
+
+// ── url_params uid: three shapes, UUID only ───────────────────────────────────
+const U = '3f1c2b9e-8a4d-4c1e-9b2f-0a1b2c3d4e5f'
+check('uuid check', isUuid(U) && !isUuid('123') && !isUuid(null))
+check('object shape (url_params[uid]=… parsed extended)', gumroadUrlUid({ url_params: { uid: U, source_url: 'x' } }) === U)
+check('JSON string shape', gumroadUrlUid({ url_params: JSON.stringify({ uid: U }) }) === U)
+check('Ruby-hash string shape', gumroadUrlUid({ url_params: `{"source_url"=>"https%3A%2F%2Fx", "uid"=>"${U}"}` }) === U)
+check('single-quoted docs-style string', gumroadUrlUid({ url_params: `{'source_url' : 'x', 'uid' : '${U}'}` }) === U)
+check('flat url_params[uid] key', gumroadUrlUid({ 'url_params[uid]': U }) === U)
+check('uppercase uid normalised', gumroadUrlUid({ url_params: { uid: U.toUpperCase() } }) === U)
+check('not a UUID → null (email fallback)', gumroadUrlUid({ url_params: { uid: 'admin' } }) === null)
+check('no url_params → null', gumroadUrlUid({ email: 'a@b.co' }) === null)
+check('url_params without uid → null', gumroadUrlUid({ url_params: { campaignid: 'c123' } }) === null)
+check('garbage string → null', gumroadUrlUid({ url_params: 'not json' }) === null)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

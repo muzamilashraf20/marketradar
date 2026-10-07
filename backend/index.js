@@ -11,7 +11,7 @@ import { createTdBudget } from './lib/tdBudget.js'
 import { createJwtVerifier } from './lib/jwtVerify.js'
 import { deadChatReason } from './lib/tgDead.js'
 import { hasPro, isAdminUser, gateMode, secretMatches, createAccessResolver } from './lib/planAccess.js'
-import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, GRACE_DAYS } from './lib/gumroadPing.js'
+import { classifyGumroadPing, gumroadExpiry, nextExpiry, cancelExpiry, gumroadUrlUid, isUuid, GRACE_DAYS } from './lib/gumroadPing.js'
 import { generateDraft, generateCarousel, checkCarousel, slideText, CAROUSEL_TYPES } from './social/generator.js'
 import { validateSocialPost } from './social/guardrails.js'
 import { publishToX } from './social/xPublisher.js'
@@ -2847,6 +2847,92 @@ async function findAuthUserByEmail(email) {
   return null
 }
 
+// The auth user behind a checkout uid. null = no such user (callers fall back to email). Any other
+// failure throws, so the webhook answers 500 and the provider retries rather than the payment landing
+// on the wrong row.
+async function findAuthUserById(id) {
+  if (!isUuid(id)) return null
+  const { data, error } = await supabase.auth.admin.getUserById(id)
+  if (error) {
+    if (error.status === 404 || error.code === 'user_not_found') return null
+    throw new Error(`auth user lookup failed: ${error.message}`)
+  }
+  return data?.user || null
+}
+
+// ── Payment → plan row ───────────────────────────────────────────────────────
+// user_plans: id PK, user_id UNIQUE (FK auth.users), email UNIQUE. One row per user, and `email`
+// always holds the ACCOUNT email — an email paid with at Gumroad lives only in gumroad_email. Rows
+// are never merged or deleted here. Lookup errors throw: a database blip must never read as "no row".
+const normEmail = e => String(e || '').toLowerCase().trim() || null
+
+// Any failed write throws, so the webhook answers 500 and the provider retries. A unique violation is
+// named in the log rather than swallowed: it means two rows want the same user_id or email, which only
+// a human should untangle.
+function planWriteError(error, what) {
+  if (error?.code === '23505') console.error(`user_plans ${what}: UNIQUE VIOLATION (23505) — ${error.message}${error.details ? ` · ${error.details}` : ''} — needs a manual fix`)
+  return new Error(`user_plans ${what} failed: ${error.message}`)
+}
+
+async function planRowWhere(column, value) {
+  const { data, error } = await supabase.from('user_plans').select('*').eq(column, value)
+    .order('updated_at', { ascending: false }).limit(1)
+  if (error) throw new Error(`user_plans lookup by ${column} failed: ${error.message}`)
+  return data?.[0] || null
+}
+
+async function updatePlanRow(row, patch) {
+  const { error } = await supabase.from('user_plans').update(patch).eq('id', row.id)
+  if (error) throw planWriteError(error, 'update')
+}
+
+// uid path. The account's row: its own (by user_id), else an unclaimed row (user_id NULL) under the
+// ACCOUNT email, claimed now so the upsert below does not collide with it on email. A user_id-NULL row
+// under a different paid email is an orphan from an earlier email-only purchase: logged, never touched.
+async function planRowForAccount(account, paidEmail) {
+  const accountEmail = normEmail(account.email)
+  const uid8 = String(account.id).slice(0, 8)
+  let row = await planRowWhere('user_id', account.id)
+  if (!row && accountEmail) {
+    const { data, error } = await supabase.from('user_plans').update({ user_id: account.id })
+      .eq('email', accountEmail).is('user_id', null).select()
+    if (error) throw planWriteError(error, 'claim')
+    row = data?.[0] || null
+    if (row) console.log(`Plan row under ${accountEmail} claimed for user ${uid8}`)
+  }
+  const paid = normEmail(paidEmail)
+  if (paid && paid !== accountEmail) {
+    const orphan = await planRowWhere('email', paid)
+    if (orphan && !orphan.user_id) console.warn(`Orphan plan row under ${paid} (user_id NULL, tier ${orphan.tier}) left alone — user ${uid8} paid with that email; merge by hand if it matters`)
+  }
+  return row
+}
+
+// uid path write: keyed on user_id, with the account email in `email` whether the row is new or not.
+async function upsertPlanForAccount(account, patch) {
+  const { error } = await supabase.from('user_plans')
+    .upsert({ user_id: account.id, email: normEmail(account.email), ...patch }, { onConflict: 'user_id' })
+  if (error) throw planWriteError(error, 'upsert by user_id')
+}
+
+// Email path. The row a ping is about when it names no account: the subscription a sale was linked to,
+// else the email paid with (a uid-linked purchase keeps it in gumroad_email), else a row under that
+// email. For rows written before this change, only the last step can match — the old lookup.
+async function planRowForGumroad({ subscriptionId, email }) {
+  if (subscriptionId) { const r = await planRowWhere('gumroad_subscription_id', String(subscriptionId)); if (r) return r }
+  if (!email) return null
+  return (await planRowWhere('gumroad_email', email)) || planRowWhere('email', email)
+}
+
+// Email path, no row found: as before, a row under the paid email, attached to the account that signed
+// up with it if there is one (else /api/user/plan claims it at sign-up).
+async function upsertPlanForEmail(email, patch) {
+  const authUser = await findAuthUserByEmail(email)
+  const { error } = await supabase.from('user_plans')
+    .upsert({ user_id: authUser?.id || null, email, ...patch }, { onConflict: 'email' })
+  if (error) throw planWriteError(error, 'upsert by email')
+}
+
 // ── What an anonymous caller may see of a LIVE bias ──────────────────────────
 //
 // The landing page needs real engine output to be worth anything, so these
@@ -2953,8 +3039,8 @@ app.get('/api/billing/status', async (req, res) => {
   const user = await requireUser(req, res); if (!user) return
   try {
     const { data: planRow } = await supabase
-      .from('user_plans').select('tier').eq('user_id', user.id).single()
-    const { ok, reason, sale, active } = await findGumroadSale(user.email)
+      .from('user_plans').select('tier, gumroad_email').eq('user_id', user.id).single()
+    const { ok, reason, sale, active } = await findGumroadSale(planRow?.gumroad_email || user.email)
     res.json({
       success: true,
       email: user.email,
@@ -2980,12 +3066,15 @@ app.get('/api/billing/status', async (req, res) => {
 // "Manage membership" link the customer needs in order to cancel.
 app.post('/api/billing/resend-receipt', async (req, res) => {
   const user = await requireUser(req, res); if (!user) return
-  const { ok, reason, sale } = await findGumroadSale(user.email)
+  // The sale is under the email paid with, which a uid-linked purchase may not share with the account.
+  const { data: planRow } = await supabase.from('user_plans').select('gumroad_email').eq('user_id', user.id).maybeSingle()
+  const saleEmail = planRow?.gumroad_email || user.email
+  const { ok, reason, sale } = await findGumroadSale(saleEmail)
   if (!sale) {
     return res.status(404).json({
       error: ok ? 'no_sale' : reason,
       message: ok
-        ? `We could not find a Gumroad purchase under ${user.email}.`
+        ? `We could not find a Gumroad purchase under ${saleEmail}.`
         : 'We could not reach Gumroad just now.',
       supportEmail: SUPPORT_EMAIL,
     })
@@ -3011,8 +3100,8 @@ app.post('/api/billing/cancel-request', async (req, res) => {
   const note = String(req.body?.note || '').trim().slice(0, 2000)
   try {
     const { data: planRow } = await supabase
-      .from('user_plans').select('tier, updated_at').eq('user_id', user.id).single()
-    const { sale } = await findGumroadSale(user.email)
+      .from('user_plans').select('tier, updated_at, gumroad_email').eq('user_id', user.id).single()
+    const { sale } = await findGumroadSale(planRow?.gumroad_email || user.email)
     const when = new Date().toISOString()
     const saleRows = sale
       ? `<p><b>Gumroad sale id:</b> ${esc(sale.id)}<br><b>Subscription id:</b> ${esc(sale.subscription_id || '—')}<br><b>Product:</b> ${esc(sale.product_name || '—')} (${esc(sale.formatted_display_price || '—')})</p>`
@@ -5940,9 +6029,17 @@ app.post('/api/gumroad/webhook', async (req, res) => {
   try {
     // Sale pings carry `email`; cancellation / subscription_ended posts carry `user_email` and no
     // resource_name. classifyGumroadPing (lib/gumroadPing.js) reads both shapes.
-    const { product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test } = req.body
+    const { product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test, url_params } = req.body
     const { kind, event, email: buyerEmail } = classifyGumroadPing(req.body)
-    console.log('Gumroad webhook:', { event, email: buyerEmail, product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test })
+    const uid = gumroadUrlUid(req.body)
+    // url_params is logged raw: its wire shape is undocumented, and the first real ping settles it.
+    console.log('Gumroad webhook:', { event, email: buyerEmail, uid, url_params: url_params ?? req.body['url_params[uid]'] ?? null, product_name, sale_id, subscription_id, recurrence, sale_timestamp, is_recurring_charge, refunded, resource_name, test })
+
+    // test=true: the seller buying their own product, or a test ping. Never reads or writes user_plans.
+    if (kind === 'test') {
+      console.log(`Gumroad test ping (${buyerEmail || 'no email'}) — logged only, no plan change`)
+      return res.json({ success: true, action: 'test_logged' })
+    }
     if (!buyerEmail) return res.status(400).json({ error: 'No email provided' })
     const now = new Date().toISOString()
 
@@ -5951,25 +6048,37 @@ app.post('/api/gumroad/webhook', async (req, res) => {
       return res.json({ success: true, action: 'ignored', event })
     }
 
+    // The checkout link carries ?uid=<user id>, so the purchase lands on the signed-in account
+    // whatever email was typed at Gumroad. A forged or stale uid finds no user and falls back to the
+    // email path, exactly like a link without one. Renewal, cancellation and refund pings may carry no
+    // uid: the email path finds a uid-linked row by its subscription id or gumroad_email.
+    const account = uid ? await findAuthUserById(uid) : null
+    if (uid && !account) console.warn(`Gumroad ${event} ${sale_id || subscription_id || ''}: uid_unknown ${uid.slice(0, 8)} — linking by email`)
+    const existing = account
+      ? await planRowForAccount(account, buyerEmail)
+      : await planRowForGumroad({ subscriptionId: subscription_id, email: buyerEmail })
+    const who = account ? `uid ${uid.slice(0, 8)} (paid as ${buyerEmail})` : buyerEmail
+
     // A cancellation is sent when the buyer cancels, not when access should end: keep them Pro to
     // the paid-through date and let hasPro() lapse it. subscription_ended then confirms the end.
     if (kind === 'cancel') {
-      const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
       const expires = cancelExpiry(existing, req.body.cancelled_at)
       if (expires === undefined) {
-        console.log(`Gumroad cancellation for ${buyerEmail}: ${!existing ? 'no plan row' : existing.tier === 'pro' && !existing.expires_at ? 'Pro with no expiry (manual grant)' : `unusable cancelled_at "${req.body.cancelled_at}"`} — row left unchanged`)
+        console.log(`Gumroad cancellation for ${who}: ${!existing ? 'no plan row' : existing.tier === 'pro' && !existing.expires_at ? 'Pro with no expiry (manual grant)' : `unusable cancelled_at "${req.body.cancelled_at}"`} — row left unchanged`)
         return res.json({ success: true, action: 'unchanged', event })
       }
-      const { error } = await supabase.from('user_plans').update({ expires_at: expires, updated_at: now }).eq('email', buyerEmail)
-      if (error) throw new Error(`cancellation update failed: ${error.message}`)
-      console.log(`Cancellation for ${buyerEmail}: Pro until ${expires}, then lapses`)
+      await updatePlanRow(existing, { expires_at: expires, updated_at: now })
+      console.log(`Cancellation for ${who}: Pro until ${expires}, then lapses`)
       return res.json({ success: true, action: 'expires', event, expires_at: expires })
     }
 
     if (kind === 'revoke') {
-      const { error } = await supabase.from('user_plans').update({ tier: 'free', updated_at: now }).eq('email', buyerEmail)
-      if (error) throw new Error(`downgrade failed: ${error.message}`)
-      console.log(`Downgraded ${buyerEmail} to free (${event})`)
+      if (!existing) {
+        console.log(`Gumroad ${event} for ${who}: no plan row — nothing to downgrade`)
+        return res.json({ success: true, action: 'unchanged', event })
+      }
+      await updatePlanRow(existing, { tier: 'free', updated_at: now })
+      console.log(`Downgraded ${who} to free (${event})`)
       return res.json({ success: true, action: 'downgraded', event })
     }
 
@@ -5980,21 +6089,21 @@ app.post('/api/gumroad/webhook', async (req, res) => {
     if (saleTimeFallback) console.warn(`Gumroad sale ${sale_id}: unparseable sale_timestamp "${sale_timestamp}" — timed from now`)
     if (!expiresAt) console.warn(`Gumroad sale ${sale_id}: unknown recurrence "${recurrence}" — expires_at left unchanged`)
 
-    const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
     const expires = nextExpiry(existing, expiresAt)   // undefined = leave the column alone
     if (existing?.tier === 'pro' && !existing.expires_at && expiresAt) {
-      console.log(`Gumroad sale for ${buyerEmail}: Pro with no expiry (manual grant) — expiry left unset`)
+      console.log(`Gumroad sale for ${who}: Pro with no expiry (manual grant) — expiry left unset`)
     }
-    const patch = { tier: 'pro', updated_at: now, ...(expires !== undefined ? { expires_at: expires } : {}) }
-    if (existing) {
-      const { error } = await supabase.from('user_plans').update(patch).eq('email', buyerEmail)
-      if (error) throw new Error(`upgrade failed: ${error.message}`)
-    } else {
-      const authUser = await findAuthUserByEmail(buyerEmail)
-      const { error } = await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, ...patch }, { onConflict: 'email' })
-      if (error) throw new Error(`upgrade failed: ${error.message}`)
+    // gumroad_email / gumroad_subscription_id let later cancellation, refund and renewal pings —
+    // which carry only the Gumroad email and subscription id — find this row.
+    const patch = {
+      tier: 'pro', updated_at: now, gumroad_email: buyerEmail,
+      ...(subscription_id ? { gumroad_subscription_id: String(subscription_id) } : {}),
+      ...(expires !== undefined ? { expires_at: expires } : {}),
     }
-    console.log(`Upgraded ${buyerEmail} to PRO (${recurrence || 'no recurrence'}, ${months ?? '?'} mo + ${GRACE_DAYS}d grace) until ${expires ?? existing?.expires_at ?? 'no expiry'}`)
+    if (account) await upsertPlanForAccount(account, patch)
+    else if (existing) await updatePlanRow(existing, patch)
+    else await upsertPlanForEmail(buyerEmail, patch)
+    console.log(`Upgraded ${who} to PRO via ${account ? 'uid' : 'email'} (${recurrence || 'no recurrence'}, ${months ?? '?'} mo + ${GRACE_DAYS}d grace) until ${expires ?? existing?.expires_at ?? 'no expiry'}`)
     res.json({ success: true, action: 'upgraded', expires_at: expires ?? existing?.expires_at ?? null })
   } catch (e) {
     console.error('Gumroad webhook error:', e.message)
@@ -6020,10 +6129,14 @@ function npSortObject(obj) {
 // PART 1 — create an invoice, return the hosted checkout URL
 app.post('/api/crypto/create-payment', async (req, res) => {
   try {
-    const { email, plan } = req.body
-    if (!email) return res.status(400).json({ error: 'No email provided' })
+    const { plan } = req.body
+    // Signed in → the invoice names the account by id, so the payment lands on it whatever happens to
+    // the email. The body email stays as the fallback until every client sends its token.
+    const user = await optionalUser(req)
+    const buyerEmail = normEmail(user?.email || req.body.email)
+    if (!user && !buyerEmail) return res.status(400).json({ error: 'No email provided' })
     if (plan !== 'monthly' && plan !== 'annual') return res.status(400).json({ error: 'Invalid plan' })
-    const buyerEmail = email.toLowerCase().trim()
+    const ref = user?.id || buyerEmail
     const price = plan === 'annual' ? 399 : 40
     const { data } = await axios.post('https://api.nowpayments.io/v1/invoice', {
       price_amount: price,
@@ -6031,7 +6144,7 @@ app.post('/api/crypto/create-payment', async (req, res) => {
       // pay_currency is deliberately omitted, not sent as null — NOWPayments rejects a null with
       // INVALID_REQUEST_PARAMS ("pay_currency must be a string"). Leaving the field out is what
       // lets the customer pick BTC / USDT / USDC on the hosted NOWPayments page.
-      order_id: `biasforge_${plan}_${buyerEmail}_${Date.now()}`,
+      order_id: `biasforge_${plan}_${ref}_${Date.now()}`,
       order_description: `BiasForge Pro ${plan}`,
       ipn_callback_url: 'https://marketradar-production.up.railway.app/api/crypto/webhook',
       success_url: 'https://biasforge.co/dashboard?crypto=success',
@@ -6039,7 +6152,7 @@ app.post('/api/crypto/create-payment', async (req, res) => {
     }, {
       headers: { 'x-api-key': process.env.NOWPAYMENTS_API_KEY, 'Content-Type': 'application/json' }
     })
-    console.log('Crypto invoice created:', { email: buyerEmail, plan, id: data?.id })
+    console.log('Crypto invoice created:', { email: buyerEmail, uid: user ? String(user.id).slice(0, 8) : null, plan, id: data?.id })
     res.json({ success: true, invoice_url: data.invoice_url })
   } catch (e) {
     console.error('Crypto create-payment error:', e.response?.data || e.message)
@@ -6067,36 +6180,51 @@ app.post('/api/crypto/webhook', async (req, res) => {
     const { payment_status, order_id } = req.body
     console.log('Crypto webhook:', { payment_status, order_id })
 
-    // Only credit on fully-paid statuses (waiting/confirming/partially_paid do NOT upgrade)
-    if (payment_status !== 'finished' && payment_status !== 'confirmed') {
+    // Credit ONLY on 'finished'. NOWPayments sends 'confirmed' and then 'finished' for the same
+    // payment; crediting both stacked two terms for one charge. Every other status — confirmed,
+    // waiting, confirming, sending, partially_paid, failed, expired — is logged and acknowledged.
+    if (payment_status !== 'finished') {
+      console.log(`Crypto webhook: ${payment_status} for ${order_id} — no credit until 'finished'`)
       return res.json({ success: true, action: 'ignored', status: payment_status })
     }
 
-    // order_id = biasforge_<plan>_<email>_<timestamp>. Email may contain '_',
-    // so plan is index 1, timestamp is the last chunk, email is everything between.
+    // order_id = biasforge_<plan>_<ref>_<timestamp>. ref is the account's user id (invoices created
+    // while signed in) or, for older invoices, the email. An email may contain '_', so plan is index 1,
+    // the timestamp is the last chunk, and ref is everything between.
     const parts = (order_id || '').split('_')
     const plan = parts[1]
-    const buyerEmail = parts.slice(2, -1).join('_')
-    if (!buyerEmail || (plan !== 'monthly' && plan !== 'annual')) {
+    const ref = parts.slice(2, -1).join('_')
+    if (!ref || (plan !== 'monthly' && plan !== 'annual')) {
       console.error('Crypto webhook: cannot parse order_id', order_id)
       return res.status(400).json({ error: 'Bad order_id' })
     }
+    let account = null
+    if (isUuid(ref)) {
+      account = await findAuthUserById(ref.toLowerCase())
+      if (!account) {
+        console.error(`Crypto webhook: order ${order_id} names no known user — PAID BUT NOT CREDITED, credit by hand`)
+        return res.status(400).json({ error: 'Unknown user' })
+      }
+    }
+    const buyerEmail = account ? normEmail(account.email) : normEmail(ref)
+
+    // uid order: the account's own row (claiming an unclaimed one under its email). Older email
+    // orders: the row under that email, as before.
+    const existing = account ? await planRowForAccount(account, null) : await planRowWhere('email', buyerEmail)
 
     // Stack the new term on top of any remaining active time
-    const { data: existing } = await supabase.from('user_plans').select('*').eq('email', buyerEmail).single()
     const days = plan === 'annual' ? 365 : 30
     const now = Date.now()
     const existingMs = existing?.expires_at ? new Date(existing.expires_at).getTime() : 0
     const base = existingMs > now ? existingMs : now
     const expiresAt = new Date(base + days * 24 * 60 * 60 * 1000).toISOString()
 
-    if (existing) {
-      await supabase.from('user_plans').update({ tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }).eq('email', buyerEmail)
-    } else {
-      const authUser = await findAuthUserByEmail(buyerEmail)
-      await supabase.from('user_plans').upsert({ user_id: authUser?.id || null, email: buyerEmail, tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }, { onConflict: 'email' })
-    }
-    console.log(`Crypto: upgraded ${buyerEmail} to PRO until ${expiresAt}`)
+    // A failed write throws → 500, so NOWPayments re-sends the IPN instead of the log claiming success.
+    const patch = { tier: 'pro', expires_at: expiresAt, updated_at: new Date().toISOString() }
+    if (account) await upsertPlanForAccount(account, patch)
+    else if (existing) await updatePlanRow(existing, patch)
+    else await upsertPlanForEmail(buyerEmail, patch)
+    console.log(`Crypto: upgraded ${account ? `uid ${ref.slice(0, 8)} (${buyerEmail})` : buyerEmail} to PRO until ${expiresAt}`)
     res.json({ success: true, action: 'upgraded', expires_at: expiresAt })
   } catch (e) {
     console.error('Crypto webhook error:', e.message)
@@ -6251,44 +6379,35 @@ app.get('/api/user/plan', async (req, res) => {
 
     const hit = planRowCache.get(user.id)
     let plan = hit && Date.now() - hit.at < PLAN_ROW_TTL && hasPro(hit.row) ? hit.row : null
-    // Check if plan exists
-    if (!plan) ({ data: plan } = await supabase
-      .from('user_plans')
-      .select('*')
-      .eq('user_id', user.id)
-      .single())
+    // A failed read is "could not check", never "not Pro": the app shows Retry, not the checkout.
+    const unavailable = (step, error) => {
+      console.warn(`plan ${step} failed for user ${String(user.id).slice(0, 8)}: ${error.message}`)
+      return res.status(503).json({ success: false, code: 'plan_unavailable', error: 'Could not check your plan just now. Try again.' })
+    }
+    if (!plan) {
+      const { data, error } = await supabase.from('user_plans').select('*').eq('user_id', user.id).maybeSingle()
+      if (error) return unavailable('lookup', error)
+      plan = data
+    }
 
     // No row under this user id — but someone who paid before signing up (or whose account the
-    // webhook could not find) has a row under their email with user_id NULL. Claim that row rather
-    // than creating a free one beside it; the free insert would fail on the email key anyway.
+    // webhook could not find) has a row under their email with user_id NULL. Claim that row.
     if (!plan && user.email) {
-      const { data: claimed } = await supabase
+      const { data: claimed, error } = await supabase
         .from('user_plans')
         .update({ user_id: user.id })
         .eq('email', user.email.toLowerCase().trim())
         .is('user_id', null)
         .select()
         .maybeSingle()
+      if (error) return unavailable('claim', error)
       if (claimed) {
         plan = claimed
         console.log(`Plan row claimed by email for user ${String(user.id).slice(0, 8)} (tier ${claimed.tier})`)
       }
     }
-
-    // If no plan exists, create free plan
-    if (!plan) {
-      const { data: newPlan } = await supabase
-        .from('user_plans')
-        .insert({
-          user_id: user.id,
-          email: user.email,
-          tier: 'free',
-          trial_start: new Date().toISOString(),
-        })
-        .select()
-        .single()
-      plan = newPlan
-    }
+    // Still no row: not Pro. Nothing is inserted — there is no free tier, and a row is created by the
+    // first payment, not by signing in.
 
     // Crypto plans don't auto-renew — downgrade once past expiry.
     // Gumroad/subscription pro users have expires_at = null, so they're never touched here.
@@ -6598,7 +6717,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Manufacturing PMI',
     subject: 'headline PMI index value',
     match: /^ism manufacturing pmi$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],                  // a diffusion index; outside this is a parse error, not a print
     cadence: 'monthly',
     polarity: 'direct',
@@ -6607,7 +6726,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Services PMI',
     subject: 'headline PMI index value',
     match: /^ism (services|non-manufacturing) pmi$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6620,7 +6739,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Manufacturing Prices Index',
     subject: 'Prices Index (prices paid) sub-index value',
     match: /^ism manufacturing prices$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6630,7 +6749,7 @@ const SEARCHED_SERIES = {
     label: 'ISM Services Prices Index',
     subject: 'Prices Index (prices paid) sub-index value',
     match: /^ism (services|non-manufacturing) prices$/i,
-    domains: ['ismworld.org'],
+    domains: ['ismworld.org', 'prnewswire.com'],
     range: [25, 80],
     cadence: 'monthly',
     polarity: 'direct',
@@ -6754,10 +6873,12 @@ If the only figures you can find are for a different month, that is "not availab
   const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 0 } }
   for (;;) {
     m = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5',
       max_tokens: 2048,
+      // Sonnet 5 thinks by default; that is billed output and can eat the 2048 before the JSON lands.
+      thinking: { type: 'disabled' },
       system: RELEASE_SEARCH_GUARD,
-      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6, allowed_domains: cfg.domains }],
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_domains: cfg.domains }],
       messages,
     })
     const u = m.usage || {}
@@ -6768,11 +6889,11 @@ If the only figures you can find are for a different month, that is "not availab
     usage.server_tool_use.web_search_requests += u.server_tool_use?.web_search_requests || 0
     // Server-tool loop caps at 10 iterations and stops with pause_turn — resume by appending the
     // assistant turn, with no extra user message.
-    if (m.stop_reason !== 'pause_turn' || pauses >= 2) break
+    if (m.stop_reason !== 'pause_turn' || pauses >= 1) break
     pauses++
     messages = [...messages, { role: 'assistant', content: m.content }]
   }
-  trackAI('release-search', 'claude-sonnet-4-6', usage)
+  trackAI('release-search', 'claude-sonnet-5', usage)
   const searches = usage.server_tool_use.web_search_requests
   const text = m.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim().replace(/```json|```/g, '').trim()
   let out = null
@@ -6816,6 +6937,8 @@ const RA_PUBLISH_DELAY_MS = 20 * 60 * 1000            // give the publisher time
 const RA_BACKOFF_MS = [0, 40 * 60 * 1000, 2 * 60 * 60 * 1000]   // extra wait before attempts 2 and 3
 const RA_MAX_ATTEMPTS = 3
 async function sweepReleaseActuals() {
+  // Kill switch: every attempt is a paid web search whether it finds the print or not. Off unless set.
+  if (process.env.RELEASE_SEARCH_ENABLED !== 'true') return
   if (raTableMissing()) return
   // No time-of-day gate. An earlier version only swept 11–21 UTC on weekdays, which bought nothing
   // — the expensive step is the search, and that is already gated by the due-filter below — while
@@ -8867,6 +8990,7 @@ app.listen(5000, () => {
   setTimeout(() => { sweepReleaseActuals().catch(e => console.error('release-actuals boot sweep error:', e?.message)) }, 2 * 60 * 1000)
   setInterval(() => { sweepReleaseActuals().catch(e => console.error('release-actuals sweep error:', e?.message)) }, 15 * 60 * 1000)
   console.log(`🔎 Release-actuals sweeper (15min, ${Object.keys(SEARCHED_SERIES).join('/')}, admin DM ${process.env.TG_ADMIN_CHAT_ID ? 'configured' : 'NOT configured — will log only'})`)
+  console.log(`🔎 Release-actuals search ${process.env.RELEASE_SEARCH_ENABLED === 'true' ? 'ENABLED' : 'DISABLED (set RELEASE_SEARCH_ENABLED=true to run)'}`)
   // Daily site rebuild. Har 30min check karo ki rebuild hour aa gaya ya nahi —
   // ek fixed 24h interval har restart pe khisak jaata hai, ye din ke hisaab se
   // guard karta hai. Guard memory mein hai, to ek restart usi hour ke andar
