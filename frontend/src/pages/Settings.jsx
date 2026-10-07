@@ -216,7 +216,9 @@ const [copied, setCopied] = useState(false)
             )}
           </div>
 
-          <div className="px-5 py-4 space-y-4">
+          {/* Min height = the taller of the two loaded states (subscribed ≈ 267px desktop / 299px at
+              375px), so the status arriving late does not push the cards below it down (CLS). */}
+          <div className="px-5 py-4 space-y-4 min-h-[300px] sm:min-h-[268px]">
             <p className="text-xs text-slate-500">
               Get email alerts for high impact economic events (1hr & 30min reminders) and breaking market news (impact 8+).
             </p>
