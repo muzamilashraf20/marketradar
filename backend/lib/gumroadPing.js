@@ -18,6 +18,8 @@ const RECURRENCE_MONTHS = { monthly: 1, quarterly: 3, biannually: 6, yearly: 12,
 export const GRACE_DAYS = 3
 
 // { kind, event, email } — kind is one of:
+//   'test'          test=true (the seller buying their own product, or a test ping): log only,
+//                   never read or write user_plans. Checked first, so a test refund is a test too.
 //   'sale'          a charge (first or recurring): extend
 //   'cancel'        cancellation: Pro runs to the paid-through date (cancelled_at), then lapses
 //   'revoke'        refund, dispute or subscription end: drop to free now
@@ -26,6 +28,7 @@ export function classifyGumroadPing(body = {}) {
   const email = String(body.email || body.user_email || '').toLowerCase().trim() || null
   const rn = String(body.resource_name || '').toLowerCase()
 
+  if (truthy(body.test)) return { kind: 'test', event: 'test', email }
   if (rn === 'refund' || truthy(body.refunded)) return { kind: 'revoke', event: 'refund', email }
   if (rn === 'dispute' || truthy(body.disputed)) return { kind: 'revoke', event: 'dispute', email }
   if (rn === 'dispute_won' || truthy(body.dispute_won)) return { kind: 'ignore', event: 'dispute_won', email }
@@ -34,6 +37,27 @@ export function classifyGumroadPing(body = {}) {
   if (rn === 'subscription_updated' || body.effective_as_of) return { kind: 'ignore', event: 'subscription_updated', email }
   if (rn === 'subscription_restarted' || body.restarted_at) return { kind: 'ignore', event: 'subscription_restarted', email }
   return { kind: 'sale', event: 'sale', email }
+}
+
+// The checkout link carries ?uid=<supabase user id>; Gumroad hands URL parameters back as the
+// `url_params` dictionary. Its form-encoded shape is not documented, so accept three: an object
+// (url_params[uid]=… parsed by express.urlencoded extended), a string holding JSON or a Ruby-style
+// hash, and a flat "url_params[uid]" key. Returns the uid only if it is a UUID, else null — anything
+// else falls back to the email path.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const isUuid = v => typeof v === 'string' && UUID_RE.test(v.trim())
+
+export function gumroadUrlUid(body = {}) {
+  const p = body.url_params
+  let raw = null
+  if (p && typeof p === 'object') raw = p.uid
+  else if (typeof p === 'string' && p.trim()) {
+    try { raw = JSON.parse(p)?.uid } catch {
+      raw = p.match(/["']?uid["']?\s*(?:=>|:)\s*["']([^"']+)["']/i)?.[1]
+    }
+  }
+  if (raw == null) raw = body['url_params[uid]']
+  return isUuid(raw) ? String(raw).trim().toLowerCase() : null
 }
 
 // Add calendar months in UTC, clamping to the month's last day (Jan 31 + 1 month = Feb 28/29,
