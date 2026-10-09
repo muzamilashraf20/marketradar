@@ -1,8 +1,11 @@
 {
   "day": "2026-10-09",
-  "mode": "upcoming",
-  "summary": "2 high-impact release row(s) ahead",
+  "mode": "recap",
+  "summary": "recap of 5 row(s), next week not yet published",
   "releases": [
+    "2026-10-06T06:35:00.000Z|JPY|BOJ Gov Ueda Speaks|-|-",
+    "2026-10-07T18:00:00.000Z|USD|FOMC Meeting Minutes|-|-",
+    "2026-10-08T12:15:00.000Z|GBP|BOE Gov Bailey Speaks|-|-",
     "2026-10-09T12:30:00.000Z|CAD|Employment Change|6.1K|-41.7K",
     "2026-10-09T12:30:00.000Z|CAD|Unemployment Rate|6.5%|6.4%"
   ]
